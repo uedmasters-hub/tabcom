@@ -1,4 +1,7 @@
+import { useEffect } from "react";
+
 import AppShell from "../../components/layout/AppShell";
+import { useChatStore } from "../../stores/chat.store";
 import { useWorkspaceStore } from "../../stores/workspace.store";
 
 import TabBar from "./components/TabBar";
@@ -22,6 +25,11 @@ const titles = {
  */
 export default function WorkspaceScreen() {
   const tab = useWorkspaceStore((state) => state.tab);
+  const ensureSeeded = useChatStore((state) => state.ensureSeeded);
+
+  useEffect(() => {
+    ensureSeeded();
+  }, [ensureSeeded]);
 
   return (
     <AppShell>

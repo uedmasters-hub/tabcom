@@ -1,6 +1,7 @@
 import { Globe, Inbox, Settings, Users } from "lucide-react";
 
 import { cn } from "../../../lib/cn";
+import { useChatStore } from "../../../stores/chat.store";
 import {
   useWorkspaceStore,
   type WorkspaceTab,
@@ -22,6 +23,10 @@ export default function TabBar() {
   const tab = useWorkspaceStore((state) => state.tab);
   const setTab = useWorkspaceStore((state) => state.setTab);
 
+  const unread = useChatStore((state) =>
+    state.conversations.reduce((sum, item) => sum + item.unread, 0)
+  );
+
   return (
     <nav
       aria-label="Workspace"
@@ -29,6 +34,7 @@ export default function TabBar() {
     >
       {tabs.map(({ id, label, icon: Icon }) => {
         const isActive = tab === id;
+        const showBadge = id === "inbox" && unread > 0;
 
         return (
           <button
@@ -43,7 +49,15 @@ export default function TabBar() {
                 : "text-slate-400 hover:text-slate-600"
             )}
           >
-            <Icon size={20} strokeWidth={isActive ? 2.4 : 2} />
+            <span className="relative">
+              <Icon size={20} strokeWidth={isActive ? 2.4 : 2} />
+
+              {showBadge && (
+                <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white">
+                  {unread}
+                </span>
+              )}
+            </span>
             {label}
           </button>
         );

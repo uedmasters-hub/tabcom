@@ -7,6 +7,7 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { useAppStore } from "../../../stores/app.store";
+import { useChatStore } from "../../../stores/chat.store";
 import {
   useProfileStore,
   type ProfileVisibility,
@@ -41,8 +42,10 @@ export default function SettingsView() {
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const setVisibility = useProfileStore((state) => state.setVisibility);
   const resetProfile = useProfileStore((state) => state.resetProfile);
+  const resetChat = useChatStore((state) => state.resetChat);
 
   const signOut = () => {
+    resetChat();
     resetProfile();
     setScreen("welcome");
   };
