@@ -3,6 +3,11 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { extensionStorage } from "../lib/extension-storage";
+import {
+  sendDm,
+  type WireMessage,
+  type WireUser,
+} from "../lib/realtime";
 import type { Contact, Conversation, Message } from "../types/chat";
 
 /**
@@ -55,17 +60,25 @@ function uid(): string {
 interface ChatState {
   hasHydrated: boolean;
 
+  /** Connected to the realtime server. */
+  live: boolean;
+
   contacts: Contact[];
   conversations: Conversation[];
   messages: Record<string, Message[]>;
 
   /** Conversation currently open in the Inbox tab (null = list view). */
   activeConversationId: string | null;
-  /** Contact ids currently "typing" (simulated). */
+  /** Contact ids currently "typing" (simulated or relayed). */
   typing: string[];
 
   setHasHydrated: (value: boolean) => void;
   ensureSeeded: () => void;
+
+  setLiveStatus: (live: boolean) => void;
+  applyRoster: (users: WireUser[]) => void;
+  receiveDm: (from: WireUser, message: WireMessage) => void;
+  receiveTyping: (fromUsername: string) => void;
 
   openConversation: (conversationId: string) => void;
   closeConversation: () => void;
@@ -145,8 +158,33 @@ export const useChatStore = create<ChatState>()(
         );
       };
 
+      /** Route an outgoing message: socket for live contacts, canned reply for demo. */
+      const deliver = (conversationId: string, message: Message) => {
+        const conversation = get().conversations.find(
+          (item) => item.id === conversationId
+        );
+        if (!conversation) return;
+
+        const contact = get().contacts.find(
+          (item) => item.id === conversation.contactId
+        );
+
+        if (contact?.id.startsWith("u-")) {
+          sendDm(contact.username, {
+            id: message.id,
+            kind: message.kind,
+            text: message.text,
+            url: message.url,
+            sentAt: message.sentAt,
+          });
+        } else {
+          scheduleReply(conversationId, conversation.contactId);
+        }
+      };
+
       return {
         hasHydrated: false,
+        live: false,
         contacts: [],
         conversations: [],
         messages: {},
@@ -154,6 +192,116 @@ export const useChatStore = create<ChatState>()(
         typing: [],
 
         setHasHydrated: (value) => set({ hasHydrated: value }),
+
+        setLiveStatus: (live) => set({ live }),
+
+        applyRoster: (users) =>
+          set((state) => {
+            const rosterUsernames = new Set(users.map((u) => u.username));
+
+            const liveContacts: Contact[] = users.map((user) => ({
+              id: `u-${user.username}`,
+              name: user.name,
+              username: user.username,
+              color: user.color,
+              presence: "online",
+            }));
+
+            // Live contacts who left stay visible (their history remains)
+            // but flip to offline. Demo contacts are untouched.
+            const departed = state.contacts
+              .filter(
+                (contact) =>
+                  contact.id.startsWith("u-") &&
+                  !rosterUsernames.has(contact.username)
+              )
+              .map((contact) => ({
+                ...contact,
+                presence: "offline" as const,
+              }));
+
+            const demo = state.contacts.filter((contact) =>
+              contact.id.startsWith("c-")
+            );
+
+            return { contacts: [...liveContacts, ...departed, ...demo] };
+          }),
+
+        receiveDm: (from, message) => {
+          const contactId = `u-${from.username}`;
+
+          set((state) => {
+            const contacts = state.contacts.some(
+              (contact) => contact.id === contactId
+            )
+              ? state.contacts
+              : [
+                  {
+                    id: contactId,
+                    name: from.name,
+                    username: from.username,
+                    color: from.color,
+                    presence: "online" as const,
+                  },
+                  ...state.contacts,
+                ];
+
+            let conversation = state.conversations.find(
+              (item) => item.contactId === contactId
+            );
+
+            const conversations = conversation
+              ? state.conversations
+              : [
+                  (conversation = {
+                    id: uid(),
+                    contactId,
+                    unread: 0,
+                    lastMessageAt: message.sentAt,
+                  }),
+                  ...state.conversations,
+                ];
+
+            const incoming: Message = {
+              id: message.id,
+              authorId: contactId,
+              kind: message.kind,
+              text: message.text,
+              url: message.url,
+              sentAt: message.sentAt,
+            };
+
+            const isViewing =
+              state.activeConversationId === conversation.id;
+
+            return {
+              contacts,
+              ...appendMessage(
+                { messages: state.messages, conversations },
+                conversation.id,
+                incoming,
+                !isViewing
+              ),
+              typing: state.typing.filter((id) => id !== contactId),
+            };
+          });
+        },
+
+        receiveTyping: (fromUsername) => {
+          const contactId = `u-${fromUsername}`;
+
+          set((state) => ({
+            typing: state.typing.includes(contactId)
+              ? state.typing
+              : [...state.typing, contactId],
+          }));
+
+          setTimeout(() => {
+            set((state) => ({
+              typing: state.typing.filter((id) => id !== contactId),
+            }));
+          }, 3000);
+        },
 
         ensureSeeded: () => {
           if (get().contacts.length > 0) return;
@@ -238,13 +386,7 @@ export const useChatStore = create<ChatState>()(
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
-
-          const conversation = get().conversations.find(
-            (item) => item.id === conversationId
-          );
-          if (conversation) {
-            scheduleReply(conversationId, conversation.contactId);
-          }
+          deliver(conversationId, message);
         },
 
         shareCurrentTab: async (conversationId) => {
@@ -265,13 +407,7 @@ export const useChatStore = create<ChatState>()(
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
-
-          const conversation = get().conversations.find(
-            (item) => item.id === conversationId
-          );
-          if (conversation) {
-            scheduleReply(conversationId, conversation.contactId);
-          }
+          deliver(conversationId, message);
         },
 
         totalUnread: () =>

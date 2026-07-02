@@ -6,6 +6,7 @@ import {
   OptionCard,
   SectionLabel,
 } from "../../../components/ui";
+import { disconnectRealtime } from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
 import { useChatStore } from "../../../stores/chat.store";
 import {
@@ -45,6 +46,7 @@ export default function SettingsView() {
   const resetChat = useChatStore((state) => state.resetChat);
 
   const signOut = () => {
+    disconnectRealtime();
     resetChat();
     resetProfile();
     setScreen("welcome");

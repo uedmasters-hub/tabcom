@@ -2,6 +2,8 @@ import { ArrowLeft, ExternalLink, Link as LinkIcon, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
+import { sendTyping } from "../../../../lib/realtime";
+
 import { Avatar } from "../../../../components/ui";
 import { cn } from "../../../../lib/cn";
 import { ME, useChatStore } from "../../../../stores/chat.store";
@@ -90,6 +92,7 @@ export default function ChatView({
 
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const lastTypingSent = useRef(0);
 
   const conversation = conversations.find(
     (item) => item.id === conversationId
@@ -177,7 +180,17 @@ export default function ChatView({
 
         <input
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+
+            if (
+              contact.id.startsWith("u-") &&
+              Date.now() - lastTypingSent.current > 1500
+            ) {
+              lastTypingSent.current = Date.now();
+              sendTyping(contact.username);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
