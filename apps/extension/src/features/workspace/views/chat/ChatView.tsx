@@ -15,6 +15,12 @@ const presenceColors = {
   offline: "bg-slate-300",
 } as const;
 
+/**
+ * Stable fallback so the selector never returns a fresh reference.
+ * A new `?? []` per call makes useSyncExternalStore loop -> blank screen.
+ */
+const NO_MESSAGES: Message[] = [];
+
 function MessageBubble({ message }: { message: Message }) {
   const isMine = message.authorId === ME;
 
@@ -74,7 +80,7 @@ export default function ChatView({
   const contacts = useChatStore((state) => state.contacts);
   const conversations = useChatStore((state) => state.conversations);
   const messages = useChatStore(
-    (state) => state.messages[conversationId] ?? []
+    (state) => state.messages[conversationId] ?? NO_MESSAGES
   );
   const typing = useChatStore((state) => state.typing);
 
