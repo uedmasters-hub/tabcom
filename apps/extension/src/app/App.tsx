@@ -1,22 +1,30 @@
 import WelcomeScreen from "../features/welcome";
 import SignInScreen from "../features/signin";
 
-import { useAppStore } from "../stores/app.store";
+import {
+  VisibilityScreen,
+  IdentityScreen,
+} from "../features/onboarding";
 
-import { VisibilityScreen } from "../features/onboarding";
+import { useAppStore } from "../stores/app.store";
 
 export default function App() {
   const screen = useAppStore((state) => state.screen);
 
   switch (screen) {
+    case "welcome":
+      return <WelcomeScreen />;
+
     case "signin":
       return <SignInScreen />;
 
-    case "welcome":
-    default:
-      return <WelcomeScreen />;
-
     case "visibility":
       return <VisibilityScreen />;
+
+    case "identity":
+      return <IdentityScreen />;
+
+    default:
+      return <WelcomeScreen />;
   }
 }

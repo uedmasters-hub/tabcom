@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type AppScreen =
+type AppScreen =
   | "welcome"
   | "signin"
   | "visibility"
