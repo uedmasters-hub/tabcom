@@ -1,6 +1,6 @@
 export default defineBackground(() => {
-  chrome.runtime.onInstalled.addListener(async () => {
-    await chrome.sidePanel.setPanelBehavior({
+  browser.runtime.onInstalled.addListener(async () => {
+    await browser.sidePanel.setPanelBehavior({
       openPanelOnActionClick: true,
     });
   });

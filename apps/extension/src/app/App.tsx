@@ -4,6 +4,7 @@ import SignInScreen from "../features/signin";
 import {
   VisibilityScreen,
   IdentityScreen,
+  AvatarScreen,
 } from "../features/onboarding";
 
 import { useAppStore } from "../stores/app.store";
@@ -23,6 +24,9 @@ export default function App() {
 
     case "identity":
       return <IdentityScreen />;
+
+    case "avatar":
+      return <AvatarScreen />;
 
     default:
       return <WelcomeScreen />;
