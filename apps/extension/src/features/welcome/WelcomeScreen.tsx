@@ -1,18 +1,18 @@
 import { ArrowRight } from "lucide-react";
-import { useAppStore } from "../../stores/app.store";
+
 import AppShell from "../../components/layout/AppShell";
+import ScreenHeader from "../../components/layout/ScreenHeader";
+import { Button, SectionLabel } from "../../components/ui";
+import { useAppStore } from "../../stores/app.store";
 
 export default function WelcomeScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
 
   return (
     <AppShell>
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-5">
+      <ScreenHeader>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">
-            Tabcom
-          </h1>
+          <h1 className="text-xl font-semibold tracking-tight">Tabcom</h1>
           <p className="mt-1 text-xs text-slate-500">
             Browser-first communication
           </p>
@@ -21,13 +21,10 @@ export default function WelcomeScreen() {
         <span className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500">
           v0.1
         </span>
-      </header>
+      </ScreenHeader>
 
-      {/* Hero */}
       <section className="flex flex-1 flex-col justify-center px-6">
-        <span className="mb-6 text-xs font-semibold uppercase tracking-[0.24em] text-blue-600">
-          Introducing Tabcom
-        </span>
+        <SectionLabel className="mb-6">Introducing Tabcom</SectionLabel>
 
         <h2 className="max-w-xs text-4xl font-bold leading-tight tracking-tight">
           Your communication workspace inside the browser.
@@ -39,17 +36,15 @@ export default function WelcomeScreen() {
         </p>
 
         <div className="mt-10">
-          <button
+          <Button
             onClick={() => setScreen("signin")}
-            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition-all hover:bg-slate-800"
+            rightIcon={<ArrowRight size={16} />}
           >
             Continue
-            <ArrowRight size={16} />
-          </button>
+          </Button>
         </div>
       </section>
 
-      {/* Footer */}
       <footer className="flex items-center justify-between border-t border-slate-200 px-6 py-4 text-xs text-slate-500">
         <span>Privacy First</span>
 
