@@ -3,7 +3,9 @@ import { create } from "zustand";
 export type AppScreen =
   | "welcome"
   | "signin"
-  | "profile"
+  | "visibility"
+  | "identity"
+  | "avatar"
   | "workspace";
 
 interface AppState {
