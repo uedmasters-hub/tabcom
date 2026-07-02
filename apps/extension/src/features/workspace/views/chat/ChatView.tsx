@@ -13,6 +13,7 @@ import { sendTyping } from "../../../../lib/realtime";
 import { Avatar } from "../../../../components/ui";
 import { cn } from "../../../../lib/cn";
 import { ME, useChatStore } from "../../../../stores/chat.store";
+import ConsentPanel from "./ConsentPanel";
 import { useProfileStore } from "../../../../stores/profile.store";
 import type { Message } from "../../../../types/chat";
 import { formatClockTime } from "../../../../utils/time";
@@ -108,6 +109,7 @@ export default function ChatView({
   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
 
   const visibility = useProfileStore((state) => state.visibility);
+  const connections = useChatStore((state) => state.connections);
 
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -127,6 +129,11 @@ export default function ChatView({
   }, [messages.length, isTyping]);
 
   if (!conversation || !contact) return null;
+
+  const isLiveContact = contact.id.startsWith("u-");
+  const connection = isLiveContact
+    ? (connections[contact.username] ?? "none")
+    : "accepted";
 
   const submit = () => {
     sendText(conversationId, draft);
@@ -185,8 +192,10 @@ export default function ChatView({
         <div ref={bottomRef} />
       </div>
 
-      {/* Composer — complete end while private (server enforces too) */}
-      {visibility === "private" && contact.id.startsWith("u-") ? (
+      {/* Composer — consent gate, then privacy gate (server enforces both) */}
+      {isLiveContact && connection !== "accepted" ? (
+        <ConsentPanel contact={contact} status={connection} />
+      ) : visibility === "private" && contact.id.startsWith("u-") ? (
         <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
           <ShieldOff size={18} className="shrink-0 text-slate-400" />
           <p className="text-xs leading-5 text-slate-500">
@@ -212,7 +221,8 @@ export default function ChatView({
             setDraft(event.target.value);
 
             if (
-              contact.id.startsWith("u-") &&
+              isLiveContact &&
+              connection === "accepted" &&
               Date.now() - lastTypingSent.current > 1500
             ) {
               lastTypingSent.current = Date.now();

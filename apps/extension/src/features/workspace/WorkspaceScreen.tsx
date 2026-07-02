@@ -57,6 +57,15 @@ export default function WorkspaceScreen() {
 
         onDmError: (toUsername, reason) =>
           useChatStore.getState().receiveDmError(toUsername, reason),
+
+        onConnections: (snapshot) =>
+          useChatStore.getState().receiveConnections(snapshot),
+
+        onConnectRequest: (from) =>
+          useChatStore.getState().receiveConnectRequest(from),
+
+        onConnectUpdate: (username, status) =>
+          useChatStore.getState().receiveConnectUpdate(username, status),
       }
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility

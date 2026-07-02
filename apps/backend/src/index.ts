@@ -2,18 +2,19 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 
 /**
- * Tabcom realtime server — privacy-first relay.
+ * Tabcom realtime server — privacy-first relay with consent-based contact.
  *
  * Privacy model (enforced HERE, never trusted to clients):
- *  - PUBLIC users appear in the community roster and can send/receive DMs.
- *  - PRIVATE users are a complete end: excluded from every roster
- *    broadcast, cannot receive DMs, cannot send DMs. The server rejects
- *    both directions, so a modified client cannot bypass it.
- *  - ZERO message retention: this server relays and forgets. No message
- *    is ever written to memory beyond the relay call, disk, or logs.
- *
- * In-memory presence only. Auth + history (opt-in) arrive with the
- * NestJS + PostgreSQL upgrade; this socket protocol is stable.
+ *  - PUBLIC users appear in the community roster; PRIVATE users are a
+ *    complete end (invisible, cannot send or receive anything).
+ *  - CONSENT BEFORE CONTACT: messages only flow between users whose
+ *    connection is ACCEPTED. Until then only a single connection
+ *    request can be delivered.
+ *  - BLOCK is invisible: a blocked requester sees exactly what any
+ *    requester sees. Report auto-blocks.
+ *  - ZERO message retention: messages are relayed and forgotten.
+ *    The connection registry is in-memory and session-scoped; it moves
+ *    to PostgreSQL (with user consent for retention) in the DB upgrade.
  */
 
 export type Visibility = "public" | "private";
@@ -33,7 +34,11 @@ export interface WireMessage {
   sentAt: number;
 }
 
-export type DmErrorReason = "sender_private" | "recipient_unavailable";
+type PairStatus = "pending" | "accepted";
+interface Pair {
+  status: PairStatus;
+  requester: string; // username that initiated
+}
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "application/json" });
@@ -43,12 +48,21 @@ const httpServer = createServer((_req, res) => {
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
 const users = new Map<string, WireUser>(); // socket.id -> user
+const pairs = new Map<string, Pair>(); // pairKey -> connection state
+const blocks = new Set<string>(); // "blocker|blocked"
 
 function sanitizeVisibility(value: unknown): Visibility {
   return value === "private" ? "private" : "public";
 }
 
-/** Only public users are ever broadcast. Private users do not exist here. */
+function pairKey(a: string, b: string): string {
+  return [a, b].sort().join("|");
+}
+
+function isBlockedEitherWay(a: string, b: string): boolean {
+  return blocks.has(`${a}|${b}`) || blocks.has(`${b}|${a}`);
+}
+
 function publicRoster(): WireUser[] {
   return [...users.values()].filter((user) => user.visibility === "public");
 }
@@ -67,27 +81,182 @@ function publicSocketIdsFor(username: string): string[] {
   return ids;
 }
 
+function allSocketIdsFor(username: string): string[] {
+  const ids: string[] = [];
+  for (const [id, user] of users) {
+    if (user.username === username) ids.push(id);
+  }
+  return ids;
+}
+
+/** Send this user their current connection snapshot. */
+function sendConnections(socketId: string, username: string): void {
+  const snapshot: Array<{ username: string; status: string }> = [];
+
+  for (const [key, pair] of pairs) {
+    const [a, b] = key.split("|") as [string, string];
+    if (a !== username && b !== username) continue;
+
+    const other = a === username ? b : a;
+    if (isBlockedEitherWay(username, other)) continue;
+
+    snapshot.push({
+      username: other,
+      status:
+        pair.status === "accepted"
+          ? "accepted"
+          : pair.requester === username
+            ? "pending_out"
+            : "pending_in",
+    });
+  }
+
+  for (const entry of blocks) {
+    const [blocker, blocked] = entry.split("|") as [string, string];
+    if (blocker === username) {
+      snapshot.push({ username: blocked, status: "blocked" });
+    }
+  }
+
+  io.to(socketId).emit("connections", snapshot);
+}
+
+function notify(username: string, event: string, payload: unknown): void {
+  for (const id of allSocketIdsFor(username)) {
+    io.to(id).emit(event, payload);
+  }
+}
+
 io.on("connection", (socket) => {
   socket.on("hello", (raw: Partial<WireUser>) => {
     if (!raw?.username) return;
 
-    users.set(socket.id, {
+    const user: WireUser = {
       username: String(raw.username).slice(0, 20).toLowerCase(),
       name: String(raw.name ?? raw.username).slice(0, 40),
       color: String(raw.color ?? "#2563EB").slice(0, 9),
       visibility: sanitizeVisibility(raw.visibility),
-    });
+    };
 
+    users.set(socket.id, user);
     broadcastRoster();
+    sendConnections(socket.id, user.username);
   });
 
   socket.on("visibility", (raw: unknown) => {
     const user = users.get(socket.id);
     if (!user) return;
-
     user.visibility = sanitizeVisibility(raw);
     broadcastRoster();
   });
+
+  // ---- Consent-based contact -------------------------------------------
+
+  socket.on("connect_request", ({ to }: { to: string }) => {
+    const from = users.get(socket.id);
+    if (!from || !to || to === from.username) return;
+    if (from.visibility === "private") return; // complete end
+
+    // Blocked pairs: acknowledge as pending to the requester (no leak),
+    // deliver nothing.
+    if (isBlockedEitherWay(from.username, to)) {
+      socket.emit("connect_update", { username: to, status: "pending_out" });
+      return;
+    }
+
+    const key = pairKey(from.username, to);
+    const existing = pairs.get(key);
+
+    if (existing?.status === "accepted") {
+      socket.emit("connect_update", { username: to, status: "accepted" });
+      return;
+    }
+
+    // Both requested each other -> auto-accept.
+    if (existing?.status === "pending" && existing.requester !== from.username) {
+      existing.status = "accepted";
+      notify(from.username, "connect_update", { username: to, status: "accepted" });
+      notify(to, "connect_update", { username: from.username, status: "accepted" });
+      return;
+    }
+
+    const targets = publicSocketIdsFor(to);
+    if (targets.length === 0) {
+      socket.emit("connect_error", { to, reason: "unavailable" });
+      return;
+    }
+
+    pairs.set(key, { status: "pending", requester: from.username });
+
+    socket.emit("connect_update", { username: to, status: "pending_out" });
+    for (const id of targets) {
+      io.to(id).emit("connect_request", { from });
+    }
+  });
+
+  socket.on(
+    "connect_response",
+    ({ to, action }: { to: string; action: "accept" | "deny" }) => {
+      const me = users.get(socket.id);
+      if (!me || !to) return;
+
+      const key = pairKey(me.username, to);
+      const pair = pairs.get(key);
+
+      // Only the recipient of a pending request may respond.
+      if (!pair || pair.status !== "pending" || pair.requester !== to) return;
+
+      if (action === "accept") {
+        pair.status = "accepted";
+        notify(me.username, "connect_update", { username: to, status: "accepted" });
+        notify(to, "connect_update", { username: me.username, status: "accepted" });
+      } else {
+        pairs.delete(key);
+        notify(me.username, "connect_update", { username: to, status: "none" });
+        notify(to, "connect_update", { username: me.username, status: "declined" });
+      }
+    }
+  );
+
+  socket.on("block", ({ username }: { username: string }) => {
+    const me = users.get(socket.id);
+    if (!me || !username) return;
+
+    blocks.add(`${me.username}|${username}`);
+    pairs.delete(pairKey(me.username, username));
+
+    // Only the blocker learns anything.
+    notify(me.username, "connect_update", { username, status: "blocked" });
+  });
+
+  socket.on("unblock", ({ username }: { username: string }) => {
+    const me = users.get(socket.id);
+    if (!me || !username) return;
+
+    blocks.delete(`${me.username}|${username}`);
+    notify(me.username, "connect_update", { username, status: "none" });
+  });
+
+  socket.on(
+    "report",
+    ({ username, reason }: { username: string; reason?: string }) => {
+      const me = users.get(socket.id);
+      if (!me || !username) return;
+
+      // Minimal, privacy-conscious log: who/whom/why, no message content
+      // (the server never has message content to attach).
+      console.log(
+        `[report] @${me.username} reported @${username}` +
+          (reason ? ` — ${String(reason).slice(0, 200)}` : "")
+      );
+
+      blocks.add(`${me.username}|${username}`);
+      pairs.delete(pairKey(me.username, username));
+      notify(me.username, "connect_update", { username, status: "blocked" });
+    }
+  );
+
+  // ---- Messaging (public + accepted only) ------------------------------
 
   socket.on(
     "dm",
@@ -95,22 +264,24 @@ io.on("connection", (socket) => {
       const from = users.get(socket.id);
       if (!from || !to || !message) return;
 
-      // Complete end while private: senders in private mode cannot message.
       if (from.visibility === "private") {
-        socket.emit("dm_error", {
-          to,
-          reason: "sender_private" satisfies DmErrorReason,
-        });
+        socket.emit("dm_error", { to, reason: "sender_private" });
         return;
       }
 
-      // Private or offline recipients are indistinguishable — no presence leak.
+      // Consent gate: connection must be accepted and unblocked.
+      const pair = pairs.get(pairKey(from.username, to));
+      if (
+        pair?.status !== "accepted" ||
+        isBlockedEitherWay(from.username, to)
+      ) {
+        socket.emit("dm_error", { to, reason: "not_connected" });
+        return;
+      }
+
       const targets = publicSocketIdsFor(to);
       if (targets.length === 0) {
-        socket.emit("dm_error", {
-          to,
-          reason: "recipient_unavailable" satisfies DmErrorReason,
-        });
+        socket.emit("dm_error", { to, reason: "recipient_unavailable" });
         return;
       }
 
@@ -123,7 +294,12 @@ io.on("connection", (socket) => {
   socket.on("typing", ({ to }: { to: string }) => {
     const from = users.get(socket.id);
     if (!from || !to) return;
-    if (from.visibility === "private") return; // silently dropped
+    if (from.visibility === "private") return;
+
+    const pair = pairs.get(pairKey(from.username, to));
+    if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) {
+      return;
+    }
 
     for (const id of publicSocketIdsFor(to)) {
       io.to(id).emit("typing", { from: from.username });
@@ -141,5 +317,7 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 httpServer.listen(PORT, () => {
   console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
-  console.log("[tabcom] privacy: zero message retention, server-enforced visibility");
+  console.log(
+    "[tabcom] privacy: zero message retention, server-enforced visibility, consent before contact"
+  );
 });

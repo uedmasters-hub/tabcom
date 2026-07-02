@@ -32,7 +32,18 @@ export interface WireMessage {
   sentAt: number;
 }
 
-export type DmErrorReason = "sender_private" | "recipient_unavailable";
+export type DmErrorReason =
+  | "sender_private"
+  | "recipient_unavailable"
+  | "not_connected";
+
+export type ConnectionStatus =
+  | "none"
+  | "pending_out"
+  | "pending_in"
+  | "accepted"
+  | "declined"
+  | "blocked";
 
 export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;
@@ -40,6 +51,11 @@ export interface RealtimeHandlers {
   onDm: (from: WireUser, message: WireMessage) => void;
   onTyping: (fromUsername: string) => void;
   onDmError: (toUsername: string, reason: DmErrorReason) => void;
+  onConnections: (
+    snapshot: Array<{ username: string; status: ConnectionStatus }>
+  ) => void;
+  onConnectRequest: (from: WireUser) => void;
+  onConnectUpdate: (username: string, status: ConnectionStatus) => void;
 }
 
 let socket: Socket | null = null;
@@ -78,6 +94,46 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
     ({ to, reason }: { to: string; reason: DmErrorReason }) =>
       handlers.onDmError(to, reason)
   );
+
+  socket.on(
+    "connections",
+    (snapshot: Array<{ username: string; status: ConnectionStatus }>) =>
+      handlers.onConnections(snapshot)
+  );
+
+  socket.on("connect_request", ({ from }: { from: WireUser }) =>
+    handlers.onConnectRequest(from)
+  );
+
+  socket.on(
+    "connect_update",
+    ({ username, status }: { username: string; status: ConnectionStatus }) =>
+      handlers.onConnectUpdate(username, status)
+  );
+}
+
+/** Ask to connect with someone. Consent gate: no chat until they accept. */
+export function sendConnectRequest(toUsername: string): void {
+  socket?.emit("connect_request", { to: toUsername });
+}
+
+export function respondToConnectRequest(
+  toUsername: string,
+  action: "accept" | "deny"
+): void {
+  socket?.emit("connect_response", { to: toUsername, action });
+}
+
+export function blockUser(username: string): void {
+  socket?.emit("block", { username });
+}
+
+export function unblockUser(username: string): void {
+  socket?.emit("unblock", { username });
+}
+
+export function reportUser(username: string, reason?: string): void {
+  socket?.emit("report", { username, reason });
 }
 
 export function disconnectRealtime(): void {

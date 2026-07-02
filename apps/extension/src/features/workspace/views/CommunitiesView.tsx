@@ -17,6 +17,7 @@ export default function CommunitiesView() {
   const live = useChatStore((state) => state.live);
   const contacts = useChatStore((state) => state.contacts);
   const startConversation = useChatStore((state) => state.startConversation);
+  const connections = useChatStore((state) => state.connections);
   const setTab = useWorkspaceStore((state) => state.setTab);
 
   const visibility = useProfileStore((state) => state.visibility);
@@ -98,7 +99,37 @@ export default function CommunitiesView() {
                 </span>
               </span>
 
-              <MessageSquare size={18} className="shrink-0 text-slate-400" />
+              {(() => {
+                const status = connections[contact.username] ?? "none";
+                if (status === "accepted")
+                  return (
+                    <MessageSquare
+                      size={18}
+                      className="shrink-0 text-slate-400"
+                    />
+                  );
+                const label =
+                  status === "pending_out"
+                    ? "Requested"
+                    : status === "pending_in"
+                      ? "Respond"
+                      : status === "blocked"
+                        ? "Blocked"
+                        : "Connect";
+                const tone =
+                  status === "pending_in"
+                    ? "border-blue-200 bg-blue-50 text-blue-600"
+                    : status === "blocked"
+                      ? "border-slate-200 text-slate-400"
+                      : "border-slate-200 text-slate-500";
+                return (
+                  <span
+                    className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tone}`}
+                  >
+                    {label}
+                  </span>
+                );
+              })()}
             </button>
           </li>
         ))}

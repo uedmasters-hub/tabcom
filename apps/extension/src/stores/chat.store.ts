@@ -4,7 +4,13 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { extensionStorage } from "../lib/extension-storage";
 import {
+  blockUser,
+  reportUser,
+  respondToConnectRequest,
+  sendConnectRequest,
   sendDm,
+  unblockUser,
+  type ConnectionStatus,
   type WireMessage,
   type WireUser,
 } from "../lib/realtime";
@@ -81,8 +87,22 @@ interface ChatState {
   receiveTyping: (fromUsername: string) => void;
   receiveDmError: (
     toUsername: string,
-    reason: "sender_private" | "recipient_unavailable"
+    reason: "sender_private" | "recipient_unavailable" | "not_connected"
   ) => void;
+
+  /** username -> connection status. Server snapshot is the authority. */
+  connections: Record<string, ConnectionStatus>;
+  connectionFor: (contact: Contact) => ConnectionStatus;
+  receiveConnections: (
+    snapshot: Array<{ username: string; status: ConnectionStatus }>
+  ) => void;
+  receiveConnectRequest: (from: WireUser) => void;
+  receiveConnectUpdate: (username: string, status: ConnectionStatus) => void;
+  requestConnect: (contact: Contact) => void;
+  respondToRequest: (contact: Contact, action: "accept" | "deny") => void;
+  block: (contact: Contact) => void;
+  unblock: (contact: Contact) => void;
+  report: (contact: Contact, reason?: string) => void;
 
   openConversation: (conversationId: string) => void;
   closeConversation: () => void;
@@ -187,9 +207,52 @@ export const useChatStore = create<ChatState>()(
         }
       };
 
+      /** Append a local system notice to (or create) a contact's conversation. */
+      const systemNotice = (
+        contactId: string,
+        text: string,
+        unread: boolean
+      ) => {
+        set((state) => {
+          let conversation = state.conversations.find(
+            (item) => item.contactId === contactId
+          );
+
+          const conversations = conversation
+            ? state.conversations
+            : [
+                (conversation = {
+                  id: uid(),
+                  contactId,
+                  unread: 0,
+                  lastMessageAt: Date.now(),
+                }),
+                ...state.conversations,
+              ];
+
+          const notice: Message = {
+            id: uid(),
+            authorId: "system",
+            kind: "system",
+            text,
+            sentAt: Date.now(),
+          };
+
+          const isViewing = state.activeConversationId === conversation.id;
+
+          return appendMessage(
+            { messages: state.messages, conversations },
+            conversation.id,
+            notice,
+            unread && !isViewing
+          );
+        });
+      };
+
       return {
         hasHydrated: false,
         live: false,
+        connections: {},
         contacts: [],
         conversations: [],
         messages: {},
@@ -307,12 +370,151 @@ export const useChatStore = create<ChatState>()(
             text:
               reason === "sender_private"
                 ? "Not sent — you're in private mode. Switch to public in Settings to message people."
-                : `Not delivered — @${toUsername} is unavailable (private or offline).`,
+                : reason === "not_connected"
+                  ? `Not sent — you're not connected with @${toUsername}.`
+                  : `Not delivered — @${toUsername} is unavailable (private or offline).`,
             sentAt: Date.now(),
           };
 
           set((state) =>
             appendMessage(state, conversation.id, notice, false)
+          );
+        },
+
+        connectionFor: (contact) => {
+          if (!contact.id.startsWith("u-")) return "accepted"; // demo contacts
+          return get().connections[contact.username] ?? "none";
+        },
+
+        receiveConnections: (snapshot) => {
+          const connections: Record<string, ConnectionStatus> = {};
+          for (const item of snapshot) connections[item.username] = item.status;
+          set({ connections });
+        },
+
+        receiveConnectRequest: (from) => {
+          const contactId = `u-${from.username}`;
+
+          set((state) => ({
+            connections: {
+              ...state.connections,
+              [from.username]: "pending_in",
+            },
+            contacts: state.contacts.some((c) => c.id === contactId)
+              ? state.contacts
+              : [
+                  {
+                    id: contactId,
+                    name: from.name,
+                    username: from.username,
+                    color: from.color,
+                    presence: "online" as const,
+                  },
+                  ...state.contacts,
+                ],
+          }));
+
+          systemNotice(
+            contactId,
+            `@${from.username} wants to connect. Review the request to accept, deny, block or report.`,
+            true
+          );
+        },
+
+        receiveConnectUpdate: (username, status) => {
+          set((state) => {
+            const connections = { ...state.connections };
+            if (status === "none") delete connections[username];
+            else connections[username] = status;
+            return { connections };
+          });
+
+          const contactId = `u-${username}`;
+          if (status === "accepted") {
+            systemNotice(
+              contactId,
+              `You're now connected with @${username}. Say hi!`,
+              true
+            );
+          } else if (status === "declined") {
+            systemNotice(
+              contactId,
+              `@${username} declined your request. You can send another one later.`,
+              false
+            );
+          }
+        },
+
+        requestConnect: (contact) => {
+          if (!contact.id.startsWith("u-")) return;
+          sendConnectRequest(contact.username);
+          set((state) => ({
+            connections: {
+              ...state.connections,
+              [contact.username]: "pending_out",
+            },
+          }));
+          systemNotice(
+            contact.id,
+            `Connection request sent to @${contact.username}. You can chat once they accept.`,
+            false
+          );
+        },
+
+        respondToRequest: (contact, action) => {
+          respondToConnectRequest(contact.username, action);
+          if (action === "deny") {
+            set((state) => {
+              const connections = { ...state.connections };
+              delete connections[contact.username];
+              return { connections };
+            });
+            systemNotice(contact.id, "Request denied.", false);
+          }
+          // accept confirmation arrives via connect_update from the server
+        },
+
+        block: (contact) => {
+          blockUser(contact.username);
+          set((state) => ({
+            connections: {
+              ...state.connections,
+              [contact.username]: "blocked",
+            },
+          }));
+          systemNotice(
+            contact.id,
+            `You blocked @${contact.username}. They can't contact you and won't know they're blocked.`,
+            false
+          );
+        },
+
+        unblock: (contact) => {
+          unblockUser(contact.username);
+          set((state) => {
+            const connections = { ...state.connections };
+            delete connections[contact.username];
+            return { connections };
+          });
+          systemNotice(
+            contact.id,
+            `You unblocked @${contact.username}. Connecting again requires a new request.`,
+            false
+          );
+        },
+
+        report: (contact, reason) => {
+          reportUser(contact.username, reason);
+          set((state) => ({
+            connections: {
+              ...state.connections,
+              [contact.username]: "blocked",
+            },
+          }));
+          systemNotice(
+            contact.id,
+            `You reported @${contact.username}. They've been blocked automatically.`,
+            false
           );
         },
 
