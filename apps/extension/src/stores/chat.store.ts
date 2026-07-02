@@ -79,6 +79,10 @@ interface ChatState {
   applyRoster: (users: WireUser[]) => void;
   receiveDm: (from: WireUser, message: WireMessage) => void;
   receiveTyping: (fromUsername: string) => void;
+  receiveDmError: (
+    toUsername: string,
+    reason: "sender_private" | "recipient_unavailable"
+  ) => void;
 
   openConversation: (conversationId: string) => void;
   closeConversation: () => void;
@@ -160,6 +164,7 @@ export const useChatStore = create<ChatState>()(
 
       /** Route an outgoing message: socket for live contacts, canned reply for demo. */
       const deliver = (conversationId: string, message: Message) => {
+        if (message.kind === "system") return; // local notices never leave the device
         const conversation = get().conversations.find(
           (item) => item.id === conversationId
         );
@@ -285,6 +290,30 @@ export const useChatStore = create<ChatState>()(
               typing: state.typing.filter((id) => id !== contactId),
             };
           });
+        },
+
+        receiveDmError: (toUsername, reason) => {
+          const contactId = `u-${toUsername}`;
+
+          const conversation = get().conversations.find(
+            (item) => item.contactId === contactId
+          );
+          if (!conversation) return;
+
+          const notice: Message = {
+            id: uid(),
+            authorId: "system",
+            kind: "system",
+            text:
+              reason === "sender_private"
+                ? "Not sent — you're in private mode. Switch to public in Settings to message people."
+                : `Not delivered — @${toUsername} is unavailable (private or offline).`,
+            sentAt: Date.now(),
+          };
+
+          set((state) =>
+            appendMessage(state, conversation.id, notice, false)
+          );
         },
 
         receiveTyping: (fromUsername) => {

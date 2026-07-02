@@ -8,13 +8,15 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node test/relay.test.mjs"
   },
   "dependencies": {
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.9",
+    "socket.io-client": "^4.8.3",
     "tsx": "^4.21.1",
     "typescript": "^5.9.3"
   }

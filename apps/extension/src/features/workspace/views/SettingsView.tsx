@@ -6,7 +6,10 @@ import {
   OptionCard,
   SectionLabel,
 } from "../../../components/ui";
-import { disconnectRealtime } from "../../../lib/realtime";
+import {
+  disconnectRealtime,
+  updateVisibility,
+} from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
 import { useChatStore } from "../../../stores/chat.store";
 import {
@@ -41,7 +44,12 @@ export default function SettingsView() {
   const username = useProfileStore((state) => state.username);
   const visibility = useProfileStore((state) => state.visibility);
   const avatarColor = useProfileStore((state) => state.avatarColor);
-  const setVisibility = useProfileStore((state) => state.setVisibility);
+  const setVisibilityLocal = useProfileStore((state) => state.setVisibility);
+
+  const setVisibility = (value: ProfileVisibility) => {
+    setVisibilityLocal(value);
+    updateVisibility(value); // server-enforced, takes effect immediately
+  };
   const resetProfile = useProfileStore((state) => state.resetProfile);
   const resetChat = useChatStore((state) => state.resetChat);
 

@@ -67,7 +67,9 @@ export default function ConversationList() {
                     {last
                       ? last.kind === "link"
                         ? `🔗 ${last.text}`
-                        : last.text
+                        : last.kind === "system"
+                          ? `⚠︎ ${last.text}`
+                          : last.text
                       : "Say hi 👋"}
                   </span>
 

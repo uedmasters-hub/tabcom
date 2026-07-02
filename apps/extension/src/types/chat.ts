@@ -8,7 +8,7 @@ export interface Contact {
   presence: Presence;
 }
 
-export type MessageKind = "text" | "link";
+export type MessageKind = "text" | "link" | "system";
 
 export interface Message {
   id: string;

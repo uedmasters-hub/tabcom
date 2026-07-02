@@ -33,12 +33,13 @@ export default function WorkspaceScreen() {
   const username = useProfileStore((state) => state.username);
   const displayName = useProfileStore((state) => state.displayName);
   const avatarColor = useProfileStore((state) => state.avatarColor);
+  const visibility = useProfileStore((state) => state.visibility);
 
   useEffect(() => {
     ensureSeeded();
 
     initRealtime(
-      { username, name: displayName, color: avatarColor },
+      { username, name: displayName, color: avatarColor, visibility },
       {
         onConnectionChange: (live) =>
           useChatStore.getState().setLiveStatus(live),
@@ -53,9 +54,13 @@ export default function WorkspaceScreen() {
 
         onTyping: (fromUsername) =>
           useChatStore.getState().receiveTyping(fromUsername),
+
+        onDmError: (toUsername, reason) =>
+          useChatStore.getState().receiveDmError(toUsername, reason),
       }
     );
-  }, [ensureSeeded, username, displayName, avatarColor]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
+  }, []);
 
   return (
     <AppShell>

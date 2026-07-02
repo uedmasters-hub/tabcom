@@ -1,4 +1,10 @@
-import { ArrowLeft, ExternalLink, Link as LinkIcon, Send } from "lucide-react";
+import {
+  ArrowLeft,
+  ExternalLink,
+  Link as LinkIcon,
+  Send,
+  ShieldOff,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
@@ -7,6 +13,7 @@ import { sendTyping } from "../../../../lib/realtime";
 import { Avatar } from "../../../../components/ui";
 import { cn } from "../../../../lib/cn";
 import { ME, useChatStore } from "../../../../stores/chat.store";
+import { useProfileStore } from "../../../../stores/profile.store";
 import type { Message } from "../../../../types/chat";
 import { formatClockTime } from "../../../../utils/time";
 
@@ -25,6 +32,16 @@ const NO_MESSAGES: Message[] = [];
 
 function MessageBubble({ message }: { message: Message }) {
   const isMine = message.authorId === ME;
+
+  if (message.kind === "system") {
+    return (
+      <div className="flex justify-center">
+        <p className="max-w-[85%] rounded-full bg-slate-50 px-4 py-1.5 text-center text-xs text-slate-500">
+          {message.text}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className={cn("flex", isMine ? "justify-end" : "justify-start")}>
@@ -89,6 +106,8 @@ export default function ChatView({
   const closeConversation = useChatStore((state) => state.closeConversation);
   const sendText = useChatStore((state) => state.sendText);
   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
+
+  const visibility = useProfileStore((state) => state.visibility);
 
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -166,7 +185,16 @@ export default function ChatView({
         <div ref={bottomRef} />
       </div>
 
-      {/* Composer */}
+      {/* Composer — complete end while private (server enforces too) */}
+      {visibility === "private" && contact.id.startsWith("u-") ? (
+        <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+          <ShieldOff size={18} className="shrink-0 text-slate-400" />
+          <p className="text-xs leading-5 text-slate-500">
+            You're in private mode — messaging is paused. Switch to public
+            in Settings to send and receive.
+          </p>
+        </div>
+      ) : (
       <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-3">
         <button
           type="button"
@@ -211,6 +239,7 @@ export default function ChatView({
           <Send size={16} />
         </button>
       </div>
+      )}
     </div>
   );
 }

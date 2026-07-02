@@ -6,14 +6,22 @@ import { io, type Socket } from "socket.io-client";
  * Dependency direction: stores/components import this module; this module
  * never imports stores. Incoming events are delivered through handlers
  * wired up by WorkspaceScreen.
+ *
+ * Privacy note: visibility is enforced server-side. Client-side gating
+ * here and in the UI is UX only — the server is the authority.
  */
 
-export const REALTIME_URL = "http://localhost:3001";
+export const REALTIME_URL =
+  (import.meta.env.WXT_REALTIME_URL as string | undefined) ??
+  "http://localhost:3001";
+
+export type Visibility = "public" | "private";
 
 export interface WireUser {
   username: string;
   name: string;
   color: string;
+  visibility: Visibility;
 }
 
 export interface WireMessage {
@@ -24,11 +32,14 @@ export interface WireMessage {
   sentAt: number;
 }
 
+export type DmErrorReason = "sender_private" | "recipient_unavailable";
+
 export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;
   onRoster: (users: WireUser[]) => void;
   onDm: (from: WireUser, message: WireMessage) => void;
   onTyping: (fromUsername: string) => void;
+  onDmError: (toUsername: string, reason: DmErrorReason) => void;
 }
 
 let socket: Socket | null = null;
@@ -61,11 +72,22 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
   socket.on("typing", ({ from }: { from: string }) =>
     handlers.onTyping(from)
   );
+
+  socket.on(
+    "dm_error",
+    ({ to, reason }: { to: string; reason: DmErrorReason }) =>
+      handlers.onDmError(to, reason)
+  );
 }
 
 export function disconnectRealtime(): void {
   socket?.disconnect();
   socket = null;
+}
+
+/** Push a visibility change to the server (takes effect immediately). */
+export function updateVisibility(visibility: Visibility): void {
+  socket?.emit("visibility", visibility);
 }
 
 export function sendDm(toUsername: string, message: WireMessage): void {
