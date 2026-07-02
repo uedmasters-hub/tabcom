@@ -1,242 +1,72 @@
-/* ==========================================================================
-   Tabcom Design Tokens
-   Browser-first Design System
-   ========================================================================== */
+@import "tailwindcss";
 
-/* Reset */
+:root {
+  /* Colors */
+  --color-background: #ffffff;
+  --color-surface: #f8fafc;
+
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+
+  --color-border: #e2e8f0;
+
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+
+  /* Motion */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 350ms;
+}
 
 *,
 *::before,
 *::after {
-    box-sizing: border-box;
+  box-sizing: border-box;
 }
 
 html,
 body,
 #root {
-    width: 100%;
-    min-width: 360px;
-    height: 100%;
-    min-height: 520px;
-
-    margin: 0;
-    padding: 0;
-}
-
-html {
-    font-size: 16px;
-    text-size-adjust: 100%;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+  width: 100%;
+  min-width: 380px;
+  min-height: 600px;
+  margin: 0;
+  padding: 0;
 }
 
 body {
-    font-family:
-        Inter,
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 
-    background: var(--color-background);
-    color: var(--color-foreground);
+  background: var(--color-background);
+  color: var(--color-text);
 
-    overflow: hidden;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
-
-/* ==========================================================================
-   Design Tokens
-   ========================================================================== */
-
-:root {
-    /* Typography */
-
-    --font-sans:
-        Inter,
-        ui-sans-serif,
-        system-ui,
-        sans-serif;
-
-    --font-mono:
-        "SF Mono",
-        "JetBrains Mono",
-        monospace;
-
-    /* Radius */
-
-    --radius-xs: 4px;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 16px;
-    --radius-xl: 20px;
-    --radius-full: 999px;
-
-    /* Spacing */
-
-    --space-1: 4px;
-    --space-2: 8px;
-    --space-3: 12px;
-    --space-4: 16px;
-    --space-5: 20px;
-    --space-6: 24px;
-    --space-8: 32px;
-    --space-10: 40px;
-    --space-12: 48px;
-
-    /* Elevation */
-
-    --shadow-xs:
-        0 1px 2px rgb(0 0 0 / 0.04);
-
-    --shadow-sm:
-        0 2px 6px rgb(0 0 0 / 0.06);
-
-    --shadow-md:
-        0 8px 24px rgb(0 0 0 / 0.08);
-
-    --shadow-lg:
-        0 20px 48px rgb(0 0 0 / 0.12);
-
-    /* Motion */
-
-    --duration-fast: 120ms;
-    --duration-normal: 220ms;
-    --duration-slow: 320ms;
-
-    /* Brand */
-
-    --color-primary: #2563eb;
-    --color-primary-hover: #1d4ed8;
-    --color-primary-soft: #dbeafe;
-
-    /* Status */
-
-    --color-success: #16a34a;
-    --color-warning: #d97706;
-    --color-danger: #dc2626;
-
-    /* Neutral */
-
-    --color-background: #ffffff;
-    --color-surface: #f8fafc;
-    --color-surface-secondary: #f1f5f9;
-
-    --color-border: #e2e8f0;
-
-    --color-foreground: #0f172a;
-    --color-muted: #64748b;
-
-    --color-divider: #edf2f7;
-
-    /* Focus */
-
-    --color-focus: #2563eb;
-
-    /* Scrollbar */
-
-    --scrollbar-size: 8px;
-}
-
-/* ==========================================================================
-   Dark Theme
-   ========================================================================== */
-
-[data-theme="dark"] {
-    --color-background: #0f172a;
-    --color-surface: #162033;
-    --color-surface-secondary: #1e293b;
-
-    --color-border: #334155;
-
-    --color-foreground: #f8fafc;
-    --color-muted: #94a3b8;
-
-    --color-divider: #263244;
-
-    --shadow-xs:
-        0 1px 2px rgb(0 0 0 / 0.25);
-
-    --shadow-sm:
-        0 4px 12px rgb(0 0 0 / 0.32);
-
-    --shadow-md:
-        0 10px 30px rgb(0 0 0 / 0.38);
-
-    --shadow-lg:
-        0 20px 48px rgb(0 0 0 / 0.5);
-}
-
-/* ==========================================================================
-   Base Elements
-   ========================================================================== */
 
 button,
 input,
-textarea,
-select {
-    font: inherit;
+textarea {
+  font: inherit;
 }
 
 button {
-    cursor: pointer;
-}
-
-img,
-svg {
-    display: block;
-    max-width: 100%;
-}
-
-/* ==========================================================================
-   Links
-   ========================================================================== */
-
-a {
-    color: inherit;
-    text-decoration: none;
-}
-
-/* ==========================================================================
-   Focus Ring
-   ========================================================================== */
-
-:focus-visible {
-    outline: 2px solid var(--color-focus);
-    outline-offset: 2px;
-}
-
-/* ==========================================================================
-   Selection
-   ========================================================================== */
-
-::selection {
-    background: var(--color-primary-soft);
-}
-
-/* ==========================================================================
-   Scrollbar
-   ========================================================================== */
-
-::-webkit-scrollbar {
-    width: var(--scrollbar-size);
-    height: var(--scrollbar-size);
-}
-
-::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: var(--radius-full);
-}
-
-::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-/* ==========================================================================
-   Utility
-   ========================================================================== */
-
-.hidden {
-    display: none !important;
+  cursor: pointer;
 }
