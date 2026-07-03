@@ -60,6 +60,28 @@ const io = new Server(httpServer, { cors: { origin: "*" } });
 
 const users = new Map<string, WireUser>(); // socket.id -> user
 
+interface BoardComment {
+  id: string;
+  author: string; // username
+  text: string;
+  sentAt: number;
+}
+
+interface BoardItem {
+  id: string;
+  url: string;
+  /** Stable identity for a listing/product, independent of tracking params. */
+  canonicalKey: string;
+  title: string;
+  image?: string;
+  siteName?: string;
+  addedBy: string;
+  addedAt: number;
+  comments: BoardComment[];
+  votes: Set<string>; // usernames who voted this item up
+  decided: boolean;
+}
+
 interface Community {
   id: string;
   name: string;
@@ -67,10 +89,31 @@ interface Community {
   members: Set<string>;
   memberInfo: Map<string, { name: string; color: string }>;
   invites: Map<string, { attempts: number; pending: boolean }>;
+  /** Shared decision board — item id -> item. Zero-retention does not
+   *  apply here by design: boards are meant to persist for the group,
+   *  unlike chat messages. Cleared explicitly via board_clear. */
+  board: Map<string, BoardItem>;
+  boardDecidedId?: string;
 }
 
 const communities = new Map<string, Community>();
 const MAX_INVITE_ATTEMPTS = 3;
+
+function serializeBoardItem(item: BoardItem) {
+  return {
+    id: item.id,
+    url: item.url,
+    canonicalKey: item.canonicalKey,
+    title: item.title,
+    image: item.image,
+    siteName: item.siteName,
+    addedBy: item.addedBy,
+    addedAt: item.addedAt,
+    comments: item.comments,
+    votes: [...item.votes],
+    decided: item.decided,
+  };
+}
 
 function serializeCommunity(c: Community, forUsername?: string) {
   const invite = forUsername ? c.invites.get(forUsername) : undefined;
@@ -83,6 +126,10 @@ function serializeCommunity(c: Community, forUsername?: string) {
       ...(c.memberInfo.get(username) ?? { name: username, color: "#334155" }),
     })),
     pendingForMe: invite?.pending ?? false,
+    board: [...c.board.values()]
+      .sort((a, b) => b.votes.size - a.votes.size || b.addedAt - a.addedAt)
+      .map(serializeBoardItem),
+    boardDecidedId: c.boardDecidedId,
   };
 }
 const pairs = new Map<string, Pair>(); // pairKey -> connection state
@@ -381,6 +428,7 @@ io.on("connection", (socket) => {
       members: new Set([me.username]),
       memberInfo: new Map([[me.username, { name: me.name, color: me.color }]]),
       invites: new Map(),
+      board: new Map(),
     };
     communities.set(community.id, community);
     notify(me.username, "community_update", {
@@ -550,6 +598,189 @@ io.on("connection", (socket) => {
         for (const id of publicSocketIdsFor(member)) {
           io.to(id).emit("community_message", { communityId, from, message });
         }
+      }
+    }
+  );
+
+  // ---- Boards (shared decision layer, scoped to community membership) --
+
+  socket.on(
+    "board_add_item",
+    ({
+      communityId,
+      url,
+      canonicalKey,
+      title,
+      image,
+      siteName,
+    }: {
+      communityId: string;
+      url: string;
+      canonicalKey: string;
+      title: string;
+      image?: string;
+      siteName?: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !url || !canonicalKey) return;
+      if (!community.members.has(me.username)) return;
+
+      // De-dupe by canonical key: re-adding an existing listing just
+      // surfaces it, it doesn't fork into a duplicate item.
+      const existing = [...community.board.values()].find(
+        (item) => item.canonicalKey === canonicalKey
+      );
+      if (existing) {
+        for (const member of community.members) {
+          notify(member, "community_update", {
+            community: serializeCommunity(community),
+          });
+        }
+        return;
+      }
+
+      const item: BoardItem = {
+        id: crypto.randomUUID(),
+        url: String(url).slice(0, 2000),
+        canonicalKey: String(canonicalKey).slice(0, 300),
+        title: String(title ?? url).slice(0, 200),
+        image:
+          typeof image === "string" && image.startsWith("http")
+            ? image.slice(0, 1000)
+            : undefined,
+        siteName: siteName ? String(siteName).slice(0, 60) : undefined,
+        addedBy: me.username,
+        addedAt: Date.now(),
+        comments: [],
+        votes: new Set(),
+        decided: false,
+      };
+
+      community.board.set(item.id, item);
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_remove_item",
+    ({ communityId, itemId }: { communityId: string; itemId: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+
+      const item = community.board.get(itemId);
+      if (!item) return;
+
+      // Admin or the person who added it may remove it.
+      if (community.admin !== me.username && item.addedBy !== me.username) {
+        return;
+      }
+
+      community.board.delete(itemId);
+      if (community.boardDecidedId === itemId) {
+        community.boardDecidedId = undefined;
+      }
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_comment",
+    ({
+      communityId,
+      itemId,
+      text,
+    }: {
+      communityId: string;
+      itemId: string;
+      text: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = community.board.get(itemId);
+      if (!item) return;
+
+      item.comments.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        text: String(text).trim().slice(0, 500),
+        sentAt: Date.now(),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_vote",
+    ({ communityId, itemId }: { communityId: string; itemId: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = community.board.get(itemId);
+      if (!item) return;
+
+      // Toggle: voting again retracts the vote.
+      if (item.votes.has(me.username)) item.votes.delete(me.username);
+      else item.votes.add(me.username);
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_decide",
+    ({
+      communityId,
+      itemId,
+    }: {
+      communityId: string;
+      itemId: string | null;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin concludes
+
+      for (const item of community.board.values()) item.decided = false;
+
+      if (itemId) {
+        const item = community.board.get(itemId);
+        if (!item) return;
+        item.decided = true;
+        community.boardDecidedId = itemId;
+      } else {
+        community.boardDecidedId = undefined; // reopen the decision
+      }
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
       }
     }
   );

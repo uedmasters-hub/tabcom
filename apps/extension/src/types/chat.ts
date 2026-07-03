@@ -36,6 +36,27 @@ export interface CommunityMember {
   color: string;
 }
 
+export interface BoardComment {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+}
+
+export interface BoardItem {
+  id: string;
+  url: string;
+  canonicalKey: string;
+  title: string;
+  image?: string;
+  siteName?: string;
+  addedBy: string;
+  addedAt: number;
+  comments: BoardComment[];
+  votes: string[];
+  decided: boolean;
+}
+
 export interface Community {
   id: string;
   name: string;
@@ -43,6 +64,8 @@ export interface Community {
   members: CommunityMember[];
   pendingForMe: boolean;
   invitedBy?: string;
+  board: BoardItem[];
+  boardDecidedId?: string;
 }
 
 export type ConversationKind = "dm" | "community";

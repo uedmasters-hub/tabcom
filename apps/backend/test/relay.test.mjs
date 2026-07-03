@@ -474,7 +474,210 @@ await sleep(300);
 }
 pat.disconnect(); quinn.disconnect(); rio.disconnect();
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/20)`);
+
+// ---- Board tests ----
+const west = await connect({ username: "west", name: "West", color: "#2563EB", visibility: "public" });
+const xena = await connect({ username: "xena", name: "Xena", color: "#059669", visibility: "public" });
+const yara = await connect({ username: "yara", name: "Yara", color: "#7C3AED", visibility: "public" }); // non-member
+await sleep(200);
+
+{
+  const req = new Promise((r) => xena.once("connect_request", r));
+  west.emit("connect_request", { to: "xena" });
+  await req;
+  const ok = new Promise((r) => west.once("connect_update", r));
+  xena.emit("connect_response", { to: "west", action: "accept" });
+  await ok;
+}
+
+let boardCommunityId;
+{
+  const created = new Promise((r) => west.once("community_update", r));
+  west.emit("community_create", { name: "Trip Planning" });
+  const { community } = await created;
+  boardCommunityId = community.id;
+
+  const joined = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.members.some((m) => m.username === "xena")) {
+        west.off("community_update", h);
+        r();
+      }
+    };
+    west.on("community_update", h);
+  });
+  const invited = new Promise((r) => xena.once("community_invite", r));
+  west.emit("community_invite", { communityId: boardCommunityId, username: "xena" });
+  await invited;
+  xena.emit("community_invite_response", { communityId: boardCommunityId, action: "accept" });
+  await joined;
+}
+
+// TEST 21: add item, non-member cannot see updates, dedupe by canonicalKey
+{
+  let leaked = false;
+  yara.once("community_update", () => (leaked = true));
+
+  const added = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.board.length === 1) { xena.off("community_update", h); r(community); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_add_item", {
+    communityId: boardCommunityId,
+    url: "https://airbnb.com/rooms/123?ref=x",
+    canonicalKey: "airbnb:123",
+    title: "Cozy Loft",
+    siteName: "Airbnb",
+  });
+  const community1 = await added;
+  if (community1.board[0].title !== "Cozy Loft") fail("item malformed");
+
+  // re-add same canonicalKey (different tracking params) -> no duplicate
+  const stillOne = new Promise((r) => {
+    const h = ({ community }) => { xena.off("community_update", h); r(community); };
+    xena.on("community_update", h);
+  });
+  west.emit("board_add_item", {
+    communityId: boardCommunityId,
+    url: "https://airbnb.com/rooms/123?ref=y&utm=z",
+    canonicalKey: "airbnb:123",
+    title: "Cozy Loft (dup attempt)",
+  });
+  const community2 = await stillOne;
+  if (community2.board.length !== 1) fail("canonicalKey dedupe failed: " + community2.board.length);
+
+  await sleep(300);
+  if (leaked) fail("board update leaked to a non-member");
+  pass("board: item added, non-members excluded, canonicalKey dedupes re-adds");
+}
+
+// TEST 22: vote toggles, comment persists, both broadcast to all members
+let itemId;
+{
+  const c1 = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board[0];
+      if (item.votes.includes("west")) { xena.off("community_update", h); r(community); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_vote", { communityId: boardCommunityId, itemId: undefined }); // no-op, no id
+  const community = (await Promise.race([
+    c1,
+    new Promise((r) => setTimeout(() => r(null), 500)),
+  ]));
+  // fetch real itemId via a fresh add-confirmation instead
+  itemId = null;
+}
+
+// re-fetch community state cleanly via a harmless comment round trip isn't available;
+// grab id from the last known board via a vote broadcast using the known single item.
+{
+  const got = new Promise((r) => {
+    const h = ({ community }) => { xena.off("community_update", h); r(community); };
+    xena.on("community_update", h);
+  });
+  // trigger a broadcast we can read the id from: comment with a temp marker
+  west.emit("board_comment", { communityId: boardCommunityId, itemId: "___probe___", text: "x" });
+  // invalid id -> server drops silently; instead read id from initial add via community snapshot
+  const snap = await new Promise((r) => {
+    west.emit("hello", { username: "west", name: "West", color: "#2563EB", visibility: "public" });
+    west.once("communities", r);
+  });
+  itemId = snap.find((c) => c.id === boardCommunityId).board[0].id;
+  got; // unused
+}
+
+{
+  const voted = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === itemId);
+      if (item?.votes.includes("west")) { xena.off("community_update", h); r(item); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_vote", { communityId: boardCommunityId, itemId });
+  const item = await voted;
+  if (item.votes.length !== 1) fail("vote count wrong: " + item.votes.length);
+
+  const unvoted = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === itemId);
+      if (item && item.votes.length === 0) { xena.off("community_update", h); r(item); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_vote", { communityId: boardCommunityId, itemId }); // toggle off
+  await unvoted;
+
+  const commented = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === itemId);
+      if (item?.comments.length) { west.off("community_update", h); r(item); }
+    };
+    west.on("community_update", h);
+  });
+  xena.emit("board_comment", { communityId: boardCommunityId, itemId, text: "I love this one!" });
+  const commentedItem = await commented;
+  if (commentedItem.comments[0].author !== "xena") fail("comment author wrong");
+  pass("board: vote toggles on/off, comments attributed correctly, both broadcast");
+}
+
+// TEST 23: only admin can decide; non-admin decide is a no-op
+{
+  let leaked = false;
+  const spy = ({ community }) => {
+    if (community.boardDecidedId) leaked = true;
+  };
+  west.on("community_update", spy);
+  xena.emit("board_decide", { communityId: boardCommunityId, itemId }); // xena is not admin
+  await sleep(300);
+  west.off("community_update", spy);
+  if (leaked) fail("non-admin was able to decide");
+
+  const decided = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.boardDecidedId === itemId) { xena.off("community_update", h); r(community); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_decide", { communityId: boardCommunityId, itemId });
+  const community = await decided;
+  if (!community.board.find((i) => i.id === itemId).decided) fail("decided flag not set");
+  pass("board: only admin can conclude the decision");
+}
+
+// TEST 24: removing an item is restricted to admin or the adder
+{
+  const removed = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.board.length === 0) { xena.off("community_update", h); r(community); }
+    };
+    xena.on("community_update", h);
+  });
+  xena.emit("board_remove_item", { communityId: boardCommunityId, itemId }); // xena is member but not admin/adder
+  const stillThere = await Promise.race([
+    removed,
+    new Promise((r) => setTimeout(() => r("timeout"), 400)),
+  ]);
+  if (stillThere !== "timeout") fail("non-admin, non-adder removed an item");
+
+  const removed2 = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.board.length === 0) { xena.off("community_update", h); r(true); }
+    };
+    xena.on("community_update", h);
+  });
+  west.emit("board_remove_item", { communityId: boardCommunityId, itemId }); // west is admin
+  await removed2;
+  pass("board: remove restricted to admin or original adder");
+}
+
+west.disconnect(); xena.disconnect(); yara.disconnect();
+
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/24)`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);

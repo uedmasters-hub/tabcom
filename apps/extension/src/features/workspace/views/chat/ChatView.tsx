@@ -23,6 +23,7 @@ import { formatClockTime } from "../../../../utils/time";
 
 import ConsentPanel from "./ConsentPanel";
 import EmojiPicker from "./EmojiPicker";
+import BoardView from "../board/BoardView";
 import InfoPanel from "./InfoPanel";
 import {
   isFloatOpen,
@@ -159,6 +160,7 @@ export default function ChatView({
   const [draft, setDraft] = useState("");
   const [showInfo, setShowInfo] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [tab, setTab] = useState<"chat" | "board">("chat");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lastTypingSent = useRef(0);
@@ -289,6 +291,33 @@ export default function ChatView({
         </button>
       </div>
 
+      {isCommunity && (
+        <div className="flex gap-1 border-b border-slate-100 px-4 py-2.5">
+          {(["chat", "board"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={cn(
+                "rounded-full px-4 py-1.5 text-xs font-semibold capitalize transition",
+                tab === id
+                  ? "bg-slate-900 text-white"
+                  : "text-slate-500 hover:bg-slate-100"
+              )}
+            >
+              {id === "board" ? "Board" : "Chat"}
+              {id === "board" && community && community.board.length > 0 && (
+                <span className="ml-1.5">· {community.board.length}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isCommunity && tab === "board" && community ? (
+        <BoardView community={community} />
+      ) : (
+        <>
       {/* Messages */}
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {messages.map((message) => (
@@ -315,8 +344,11 @@ export default function ChatView({
         <div ref={bottomRef} />
       </div>
 
+      </>
+      )}
+
       {/* Composer — consent gate, then privacy gate (server enforces both) */}
-      {contact && isLiveContact && connection !== "accepted" ? (
+      {isCommunity && tab === "board" ? null : contact && isLiveContact && connection !== "accepted" ? (
         <ConsentPanel contact={contact} status={connection} />
       ) : gatePrivate ? (
         <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">

@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { extensionStorage } from "../lib/extension-storage";
 import {
+  addBoardItem,
   blockUser,
   hidePresenceFrom,
   removeConnection,
@@ -14,6 +15,10 @@ import {
   respondToCommunityInvite,
   respondToConnectRequest,
   sendCommunityMessage,
+  removeBoardItem,
+  commentOnBoardItem,
+  voteOnBoardItem,
+  decideBoardItem,
   sendConnectRequest,
   sendDm,
   unblockUser,
@@ -29,6 +34,7 @@ import type {
   Conversation,
   Message,
 } from "../types/chat";
+import { readPageAnchor } from "../lib/anchor";
 
 /**
  * Local-first chat data layer.
@@ -158,6 +164,13 @@ interface ChatState {
     action: "accept" | "decline"
   ) => void;
   leaveCommunity: (communityId: string) => void;
+
+  // boards
+  addCurrentTabToBoard: (communityId: string) => Promise<void>;
+  removeBoardItem: (communityId: string, itemId: string) => void;
+  commentOnBoardItem: (communityId: string, itemId: string, text: string) => void;
+  voteOnBoardItem: (communityId: string, itemId: string) => void;
+  decideBoardItem: (communityId: string, itemId: string | null) => void;
   receiveCommunities: (list: WireCommunity[]) => void;
   receiveCommunityUpdate: (community: WireCommunity) => void;
   receiveCommunityInvite: (
@@ -194,6 +207,8 @@ function toCommunity(wire: WireCommunity): Community {
     admin: wire.admin,
     members: wire.members,
     pendingForMe: wire.pendingForMe,
+    board: wire.board ?? [],
+    boardDecidedId: wire.boardDecidedId,
   };
 }
 
@@ -832,6 +847,59 @@ export const useChatStore = create<ChatState>()(
         },
 
         leaveCommunity: (communityId) => rtLeaveCommunity(communityId),
+
+        // ---- boards ---------------------------------------------------
+
+        addCurrentTabToBoard: async (communityId) => {
+          const [tab] = await browser.tabs.query({
+            active: true,
+            currentWindow: true,
+          });
+          if (!tab?.id) return;
+
+          try {
+            const response = await browser.tabs.sendMessage(tab.id, {
+              type: "tabcom:read-anchor",
+            });
+
+            if (response?.ok) {
+              addBoardItem({ communityId, ...response.anchor });
+            } else if (tab.url) {
+              // Content script unavailable on this page (e.g. chrome://) —
+              // fall back to the tab's own url/title, still de-duped by
+              // origin+path server-side via the generic strategy.
+              addBoardItem({
+                communityId,
+                url: tab.url,
+                canonicalKey: tab.url,
+                title: tab.title ?? tab.url,
+              });
+            }
+          } catch {
+            if (tab.url) {
+              addBoardItem({
+                communityId,
+                url: tab.url,
+                canonicalKey: tab.url,
+                title: tab.title ?? tab.url,
+              });
+            }
+          }
+        },
+
+        removeBoardItem: (communityId, itemId) =>
+          removeBoardItem(communityId, itemId),
+
+        commentOnBoardItem: (communityId, itemId, text) => {
+          if (!text.trim()) return;
+          commentOnBoardItem(communityId, itemId, text.trim());
+        },
+
+        voteOnBoardItem: (communityId, itemId) =>
+          voteOnBoardItem(communityId, itemId),
+
+        decideBoardItem: (communityId, itemId) =>
+          decideBoardItem(communityId, itemId),
 
         receiveCommunities: (list) => {
           const communities: Record<string, Community> = {};

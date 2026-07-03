@@ -28,12 +28,35 @@ export interface WireUser {
   photo?: string;
 }
 
+export interface WireBoardComment {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+}
+
+export interface WireBoardItem {
+  id: string;
+  url: string;
+  canonicalKey: string;
+  title: string;
+  image?: string;
+  siteName?: string;
+  addedBy: string;
+  addedAt: number;
+  comments: WireBoardComment[];
+  votes: string[];
+  decided: boolean;
+}
+
 export interface WireCommunity {
   id: string;
   name: string;
   admin: string;
   members: Array<{ username: string; name: string; color: string }>;
   pendingForMe: boolean;
+  board: WireBoardItem[];
+  boardDecidedId?: string;
 }
 
 export type CommunityErrorReason =
@@ -231,6 +254,42 @@ export function sendCommunityMessage(
   message: WireMessage
 ): void {
   socket?.emit("community_message", { communityId, message });
+}
+
+export interface BoardAddItemInput {
+  communityId: string;
+  url: string;
+  canonicalKey: string;
+  title: string;
+  image?: string;
+  siteName?: string;
+}
+
+export function addBoardItem(input: BoardAddItemInput): void {
+  socket?.emit("board_add_item", input);
+}
+
+export function removeBoardItem(communityId: string, itemId: string): void {
+  socket?.emit("board_remove_item", { communityId, itemId });
+}
+
+export function commentOnBoardItem(
+  communityId: string,
+  itemId: string,
+  text: string
+): void {
+  socket?.emit("board_comment", { communityId, itemId, text });
+}
+
+export function voteOnBoardItem(communityId: string, itemId: string): void {
+  socket?.emit("board_vote", { communityId, itemId });
+}
+
+export function decideBoardItem(
+  communityId: string,
+  itemId: string | null
+): void {
+  socket?.emit("board_decide", { communityId, itemId });
 }
 
 /** Ask to connect with someone. Consent gate: no chat until they accept. */
