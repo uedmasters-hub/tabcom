@@ -1,13 +1,6 @@
 import { browser } from "wxt/browser";
 
-import {
-  addBoardHighlight,
-  addBoardPin,
-  disconnectRealtime,
-  initRealtime,
-  removeBoardPin,
-  type WireCommunity,
-} from "../../src/lib/realtime";
+import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
 
@@ -37,12 +30,10 @@ interface StoredChatState {
 }
 
 const HIGHLIGHT_STYLE_ID = "tabcom-highlight-style";
-const IDLE_DISCONNECT_MS = 4000;
 
 let shadowHost: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
 let activeMode: { kind: "pin" | "highlight"; communityId: string } | null = null;
-let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
   const result = await browser.storage.local.get("tabcom:profile");
@@ -73,23 +64,6 @@ async function readStoredCommunities(): Promise<Record<string, WireCommunity>> {
     return state.communities ?? {};
   } catch {
     return {};
-  }
-}
-
-async function writeStoredCommunity(community: WireCommunity): Promise<void> {
-  const result = await browser.storage.local.get("tabcom:chat");
-  const raw = result["tabcom:chat"] as string | undefined;
-  if (!raw) return;
-  try {
-    const parsed = JSON.parse(raw);
-    const state = parsed.state ?? parsed;
-    state.communities = { ...state.communities, [community.id]: community };
-    if (parsed.state) parsed.state = state;
-    await browser.storage.local.set({
-      "tabcom:chat": JSON.stringify(parsed.state ? parsed : state),
-    });
-  } catch {
-    // best-effort cache write; panel resync will fix it if this fails
   }
 }
 
@@ -243,7 +217,7 @@ function showPinPopover(
     <button class="remove">Remove pin</button>
   `;
   popover.querySelector(".remove")?.addEventListener("click", async () => {
-    await withWriteConnection(() => removeBoardPin(communityId, itemId, pin.id));
+    await boardWrite("pin_remove", { communityId, itemId, pinId: pin.id });
     popover.remove();
   });
 
@@ -251,60 +225,28 @@ function showPinPopover(
   layerEl().append(popover);
 }
 
-// ---- Write path: short-lived on-demand socket -------------------------
+// ---- Write path: relay to the background service worker ---------------
+//
+// Content scripts run inside a webpage's context and can be subject to
+// that page's Content-Security-Policy, which could silently block a
+// direct WebSocket connection on a strict site. The background service
+// worker is an extension page, never subject to any website's CSP, and
+// serves every tab from one connection — so writes are relayed there.
 
-let writeConnected = false;
-
-async function withWriteConnection(action: () => void): Promise<void> {
-  const profile = await readStoredProfile();
-  if (!profile) return;
-
-  if (!writeConnected) {
-    initRealtime(
-      {
-        username: profile.username,
-        name: profile.displayName,
-        color: profile.avatarColor,
-        visibility: "public",
-        presence: "online",
-        photo: profile.photo,
-      },
-      {
-        onConnectionChange: (live) => {
-          writeConnected = live;
-        },
-        onRoster: () => {},
-        onDm: () => {},
-        onTyping: () => {},
-        onDmError: () => {},
-        onConnections: () => {},
-        onConnectRequest: () => {},
-        onConnectUpdate: () => {},
-        onCommunities: () => {},
-        onCommunityUpdate: (community) => {
-          void writeStoredCommunity(community);
-          void renderExisting();
-        },
-        onCommunityInvite: () => {},
-        onCommunityDeclined: () => {},
-        onCommunityLeft: () => {},
-        onCommunityMessage: () => {},
-        onCommunityError: () => {},
-      }
-    );
-    await new Promise((resolve) => setTimeout(resolve, 350)); // let the socket connect
+async function boardWrite(
+  action: "pin_add" | "pin_remove" | "highlight_add" | "highlight_remove",
+  payload: Record<string, unknown>
+): Promise<boolean> {
+  try {
+    const response = await browser.runtime.sendMessage({
+      type: "tabcom:board-write",
+      action,
+      payload,
+    });
+    return !!response?.ok;
+  } catch {
+    return false;
   }
-
-  action();
-  scheduleIdleDisconnect();
-}
-
-function scheduleIdleDisconnect() {
-  if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    disconnectRealtime();
-    writeConnected = false;
-  }, IDLE_DISCONNECT_MS);
 }
 
 // ---- Active modes: pin / highlight ------------------------------------
@@ -340,15 +282,13 @@ function handlePinClick(event: MouseEvent) {
 
   showComposer(event.clientX, event.clientY, async (text) => {
     const anchor = readPageAnchor();
-    await withWriteConnection(() =>
-      addBoardPin({
-        communityId: activeMode!.communityId,
-        ...anchor,
-        text,
-        xPercent,
-        yPercent,
-      })
-    );
+    await boardWrite("pin_add", {
+      communityId: activeMode!.communityId,
+      ...anchor,
+      text,
+      xPercent,
+      yPercent,
+    });
     exitMode();
   });
 }
@@ -412,13 +352,11 @@ function handleSelectionChange() {
     if (!quoteSelector) return;
 
     const anchor = readPageAnchor();
-    await withWriteConnection(() =>
-      addBoardHighlight({
-        communityId: activeMode!.communityId,
-        ...anchor,
-        ...quoteSelector,
-      })
-    );
+    await boardWrite("highlight_add", {
+      communityId: activeMode!.communityId,
+      ...anchor,
+      ...quoteSelector,
+    });
     button.remove();
     exitMode();
   });
@@ -460,6 +398,11 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     exitMode();
     sendResponse({ ok: true });
     return true;
+  }
+
+  if (message?.type === "tabcom:community-updated") {
+    void renderExisting();
+    return undefined;
   }
 
   return undefined;
