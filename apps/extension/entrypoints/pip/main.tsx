@@ -1,31 +1,36 @@
+import { motion } from "framer-motion";
+import { ExternalLink, Link as LinkIcon, Send, Smile } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Link as LinkIcon, Send } from "lucide-react";
+import { browser } from "wxt/browser";
 
 import "../../src/styles/tailwind.css";
 import "../../src/styles/globals.css";
 
+import { Avatar } from "../../src/components/ui";
+import EmojiPicker from "../../src/features/workspace/views/chat/EmojiPicker";
 import { cn } from "../../src/lib/cn";
-import { initRealtime } from "../../src/lib/realtime";
+import { initRealtime, sendTyping } from "../../src/lib/realtime";
 import { ME, useChatStore } from "../../src/stores/chat.store";
 import { useProfileStore } from "../../src/stores/profile.store";
 import { contactLabel } from "../../src/types/chat";
 import type { Message } from "../../src/types/chat";
+import { formatClockTime } from "../../src/utils/time";
 
 /**
- * Standalone floating chat window (popup-type browser window).
- *
- * Runs its own socket with the same identity — the server dedupes the
- * roster per username, and DMs are delivered to every socket, so the
- * panel and the float stay in sync through the server. Local history is
- * shared via the same persisted storage.
- *
- * Presence contract: this window announces "online" (you're actively
- * chatting). When it closes, its socket drops and your panel's chosen
- * status wins again.
+ * Floating chat window — a compact but COMPLETE chat experience:
+ * identity header with presence, typing indicator, timestamps, link
+ * cards, emoji, share-tab, spring animations. Runs its own socket.
  */
 
 const NO_MESSAGES: Message[] = [];
+
+const presenceColors = {
+  online: "bg-emerald-500",
+  away: "bg-amber-400",
+  busy: "bg-red-500",
+  offline: "bg-slate-300",
+} as const;
 
 function requestedConversationId(): string | null {
   return new URLSearchParams(window.location.search).get("conversation");
@@ -40,14 +45,10 @@ function FloatApp() {
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const photo = useProfileStore((state) => state.photo);
 
-  const contacts = useChatStore((state) => state.contacts);
   const conversations = useChatStore((state) => state.conversations);
-  const communities = useChatStore((state) => state.communities);
-  const live = useChatStore((state) => state.live);
 
   const [conversationId, setConversationId] = useState<string | null>(null);
 
-  // Connect this window's own socket once identity is available.
   useEffect(() => {
     if (!profileHydrated || !username) return;
 
@@ -57,7 +58,7 @@ function FloatApp() {
         name: displayName,
         color: avatarColor,
         visibility: "public",
-        presence: "online", // actively chatting while the float is up
+        presence: "online",
         photo,
       },
       {
@@ -98,7 +99,6 @@ function FloatApp() {
     );
   }, [profileHydrated, username, displayName, avatarColor, photo]);
 
-  // Resolve the conversation to show (query param, else most recent).
   useEffect(() => {
     if (!hasHydrated || conversationId) return;
 
@@ -115,6 +115,139 @@ function FloatApp() {
 
   if (!hasHydrated || !profileHydrated) return null;
 
+  if (!conversationId) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center bg-white px-8 text-center">
+        <p className="text-sm font-semibold">No conversation yet</p>
+        <p className="mt-1 text-xs text-slate-500">
+          Start one in the Tabcom panel — it will appear here.
+        </p>
+      </div>
+    );
+  }
+
+  return <FloatThread conversationId={conversationId} />;
+}
+
+function FloatBubble({
+  message,
+  animate,
+  showAuthor,
+}: {
+  message: Message;
+  animate: boolean;
+  showAuthor: boolean;
+}) {
+  const isMine = message.authorId === ME;
+
+  if (message.kind === "system") {
+    return (
+      <div className="flex justify-center">
+        <p className="max-w-[90%] rounded-full bg-slate-50 px-3 py-1 text-center text-[11px] text-slate-500">
+          {message.text}
+        </p>
+      </div>
+    );
+  }
+
+  const bubble = (
+    <div className={cn("flex", isMine ? "justify-end" : "justify-start")}>
+      <div className="max-w-[80%]">
+        {showAuthor && !isMine && message.authorName && (
+          <p
+            className="mb-0.5 ml-2.5 text-[10px] font-semibold"
+            style={{ color: message.authorColor ?? "#64748B" }}
+          >
+            {message.authorName}
+          </p>
+        )}
+
+        <div
+          className={cn(
+            "rounded-2xl px-3.5 py-2 text-[13px] leading-5",
+            isMine
+              ? "rounded-br-md bg-slate-900 text-white"
+              : "rounded-bl-md bg-slate-100 text-slate-900"
+          )}
+        >
+          {message.kind === "link" && message.url ? (
+            <button
+              type="button"
+              onClick={() => browser.tabs.create({ url: message.url })}
+              className="flex items-start gap-1.5 text-left"
+            >
+              <ExternalLink size={13} className="mt-0.5 shrink-0" />
+              <span>
+                <span className="block font-medium underline underline-offset-2">
+                  {message.text}
+                </span>
+                <span
+                  className={cn(
+                    "mt-0.5 block max-w-[200px] truncate text-[10px]",
+                    isMine ? "text-slate-300" : "text-slate-500"
+                  )}
+                >
+                  {message.url}
+                </span>
+              </span>
+            </button>
+          ) : (
+            message.text
+          )}
+
+          <span
+            className={cn(
+              "mt-0.5 block text-right text-[9px]",
+              isMine ? "text-slate-400" : "text-slate-400"
+            )}
+          >
+            {formatClockTime(message.sentAt)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!animate) return bubble;
+
+  return (
+    <motion.div
+      initial={{
+        opacity: 0,
+        scale: 0.6,
+        y: 12,
+        originX: isMine ? 1 : 0,
+        originY: 1,
+      }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 460, damping: 28, mass: 0.7 }}
+    >
+      {bubble}
+    </motion.div>
+  );
+}
+
+function FloatThread({ conversationId }: { conversationId: string }) {
+  const conversations = useChatStore((state) => state.conversations);
+  const contacts = useChatStore((state) => state.contacts);
+  const communities = useChatStore((state) => state.communities);
+  const messages = useChatStore(
+    (state) => state.messages[conversationId] ?? NO_MESSAGES
+  );
+  const typing = useChatStore((state) => state.typing);
+  const connections = useChatStore((state) => state.connections);
+  const live = useChatStore((state) => state.live);
+
+  const sendText = useChatStore((state) => state.sendText);
+  const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
+  const animations = useProfileStore((state) => state.animations);
+
+  const [draft, setDraft] = useState("");
+  const [showEmoji, setShowEmoji] = useState(false);
+  const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const lastTypingSent = useRef(0);
+
   const conversation = conversations.find(
     (item) => item.id === conversationId
   );
@@ -125,137 +258,177 @@ function FloatApp() {
     ? contacts.find((item) => item.id === conversation.contactId)
     : undefined;
 
-  const title = community
-    ? community.name
-    : contact
-      ? contactLabel(contact)
-      : "Tabcom";
-
-  return (
-    <FloatThread
-      title={title}
-      subtitle={live ? "Live · floating" : "Offline"}
-      conversationId={conversationId}
-    />
-  );
-}
-
-function FloatThread({
-  title,
-  subtitle,
-  conversationId,
-}: {
-  title: string;
-  subtitle: string;
-  conversationId: string | null;
-}) {
-  const messages = useChatStore((state) =>
-    conversationId ? (state.messages[conversationId] ?? NO_MESSAGES) : NO_MESSAGES
-  );
-  const sendText = useChatStore((state) => state.sendText);
-  const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
-
-  const [draft, setDraft] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
+  const isLiveContact = !!contact?.id.startsWith("u-");
+  const accepted =
+    !contact ||
+    !isLiveContact ||
+    (connections[contact.username] ?? "none") === "accepted";
+  const isTyping = contact ? typing.includes(contact.id) : false;
 
   useEffect(() => {
-    endRef.current?.scrollIntoView();
-  }, [messages.length]);
+    endRef.current?.scrollIntoView({
+      behavior: animations ? "smooth" : "auto",
+    });
+  }, [messages.length, isTyping, animations]);
+
+  if (!conversation || (!contact && !community)) return null;
+
+  const title = community ? community.name : contactLabel(contact!);
+  const subtitle = community
+    ? `${community.members.length} member${community.members.length === 1 ? "" : "s"}`
+    : isTyping
+      ? "typing…"
+      : contact!.presence;
 
   const submit = () => {
-    if (!draft.trim() || !conversationId) return;
+    if (!draft.trim()) return;
     sendText(conversationId, draft);
     setDraft("");
+    setShowEmoji(false);
   };
 
   return (
-    <div className="flex h-screen flex-col bg-white font-sans text-slate-900">
-      <div className="border-b border-slate-200 px-4 py-2.5">
-        <p className="truncate text-sm font-semibold">{title}</p>
-        <p className="text-[10px] uppercase tracking-wide text-blue-600">
-          {subtitle}
-        </p>
+    <div className="flex h-full flex-col bg-white font-sans text-slate-900">
+      {/* Identity header */}
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-slate-200 px-3.5 py-2.5">
+        {community ? (
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
+            {community.name.charAt(0).toUpperCase()}
+          </span>
+        ) : (
+          <div className="relative shrink-0">
+            <Avatar
+              name={contactLabel(contact!)}
+              color={contact!.color}
+              photo={contact!.photo}
+              size="sm"
+            />
+            <span
+              className={cn(
+                "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white",
+                presenceColors[contact!.presence]
+              )}
+            />
+          </div>
+        )}
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold leading-tight">
+            {title}
+          </p>
+          <p className="truncate text-[11px] text-slate-500">{subtitle}</p>
+        </div>
+
+        <span
+          className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+            live
+              ? "bg-emerald-50 text-emerald-600"
+              : "bg-slate-100 text-slate-400"
+          )}
+        >
+          {live ? "Live" : "Offline"}
+        </span>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
-        {!conversationId && (
-          <p className="mt-8 text-center text-xs text-slate-400">
-            No conversation yet — start one in the Tabcom panel.
-          </p>
+      {/* Messages */}
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
+        {messages.map((message) => (
+          <FloatBubble
+            key={message.id}
+            message={message}
+            animate={animations}
+            showAuthor={!!community}
+          />
+        ))}
+
+        {isTyping && (
+          <div className="flex justify-start">
+            <div className="rounded-2xl rounded-bl-md bg-slate-100 px-3.5 py-2.5">
+              <span className="flex gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
         )}
 
-        {messages.map((message) =>
-          message.kind === "system" ? (
-            <p
-              key={message.id}
-              className="mx-auto max-w-[90%] rounded-full bg-slate-50 px-3 py-1 text-center text-[11px] text-slate-500"
-            >
-              {message.text}
-            </p>
-          ) : (
-            <div
-              key={message.id}
-              className={cn(
-                "flex",
-                message.authorId === ME ? "justify-end" : "justify-start"
-              )}
-            >
-              <div
-                className={cn(
-                  "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-5",
-                  message.authorId === ME
-                    ? "rounded-br-md bg-slate-900 text-white"
-                    : "rounded-bl-md bg-slate-100"
-                )}
-              >
-                {message.authorName && message.authorId !== ME && (
-                  <span
-                    className="block text-[10px] font-semibold"
-                    style={{ color: message.authorColor }}
-                  >
-                    {message.authorName}
-                  </span>
-                )}
-                {message.kind === "link" ? `🔗 ${message.text}` : message.text}
-              </div>
-            </div>
-          )
-        )}
         <div ref={endRef} />
       </div>
 
-      <div className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
+      {/* Composer */}
+      <div className="relative flex shrink-0 items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
+        {showEmoji && (
+          <EmojiPicker
+            onPick={(emoji) => {
+              setDraft((value) => value + emoji);
+              inputRef.current?.focus();
+            }}
+          />
+        )}
+
         <button
           type="button"
-          onClick={() =>
-            conversationId && void shareCurrentTab(conversationId)
-          }
+          title="Emoji"
+          aria-label="Emoji"
+          onClick={() => setShowEmoji((value) => !value)}
+          className={cn(
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition",
+            showEmoji
+              ? "border-blue-300 bg-blue-50 text-blue-600"
+              : "border-slate-200 text-slate-500 hover:border-blue-300 hover:text-blue-600"
+          )}
+        >
+          <Smile size={15} />
+        </button>
+
+        <button
+          type="button"
           title="Share current tab"
           aria-label="Share current tab"
+          onClick={() => void shareCurrentTab(conversationId)}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:text-blue-600"
         >
           <LinkIcon size={15} />
         </button>
 
         <input
+          ref={inputRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+
+            if (
+              isLiveContact &&
+              accepted &&
+              contact &&
+              Date.now() - lastTypingSent.current > 1500
+            ) {
+              lastTypingSent.current = Date.now();
+              sendTyping(contact.username);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
               submit();
             }
           }}
-          placeholder="Message…"
-          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-[13px] outline-none focus:border-blue-500"
+          placeholder={
+            community
+              ? `Message ${community.name}…`
+              : `Message ${contactLabel(contact!).split(" ")[0]}…`
+          }
+          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-[13px] outline-none transition-colors focus:border-blue-500"
         />
 
         <button
           type="button"
           onClick={submit}
-          disabled={!draft.trim() || !conversationId}
+          disabled={!draft.trim()}
           aria-label="Send"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition disabled:bg-slate-300"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition hover:bg-slate-800 disabled:bg-slate-300"
         >
           <Send size={14} />
         </button>
