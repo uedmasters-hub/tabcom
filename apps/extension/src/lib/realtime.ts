@@ -35,6 +35,25 @@ export interface WireBoardComment {
   sentAt: number;
 }
 
+export interface WireBoardPin {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+  xPercent: number;
+  yPercent: number;
+}
+
+export interface WireBoardHighlight {
+  id: string;
+  author: string;
+  sentAt: number;
+  comment?: string;
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface WireBoardItem {
   id: string;
   url: string;
@@ -45,6 +64,8 @@ export interface WireBoardItem {
   addedBy: string;
   addedAt: number;
   comments: WireBoardComment[];
+  pins: WireBoardPin[];
+  highlights: WireBoardHighlight[];
   votes: string[];
   decided: boolean;
 }
@@ -290,6 +311,48 @@ export function decideBoardItem(
   itemId: string | null
 ): void {
   socket?.emit("board_decide", { communityId, itemId });
+}
+
+export interface BoardAnchorInput {
+  communityId: string;
+  url: string;
+  canonicalKey: string;
+  title: string;
+  image?: string;
+  siteName?: string;
+}
+
+export function addBoardPin(
+  input: BoardAnchorInput & { text: string; xPercent: number; yPercent: number }
+): void {
+  socket?.emit("board_pin_add", input);
+}
+
+export function removeBoardPin(
+  communityId: string,
+  itemId: string,
+  pinId: string
+): void {
+  socket?.emit("board_pin_remove", { communityId, itemId, pinId });
+}
+
+export function addBoardHighlight(
+  input: BoardAnchorInput & {
+    quote: string;
+    prefix: string;
+    suffix: string;
+    comment?: string;
+  }
+): void {
+  socket?.emit("board_highlight_add", input);
+}
+
+export function removeBoardHighlight(
+  communityId: string,
+  itemId: string,
+  highlightId: string
+): void {
+  socket?.emit("board_highlight_remove", { communityId, itemId, highlightId });
 }
 
 /** Ask to connect with someone. Consent gate: no chat until they accept. */

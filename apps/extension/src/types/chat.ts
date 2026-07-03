@@ -43,6 +43,25 @@ export interface BoardComment {
   sentAt: number;
 }
 
+export interface BoardPin {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+  xPercent: number;
+  yPercent: number;
+}
+
+export interface BoardHighlight {
+  id: string;
+  author: string;
+  sentAt: number;
+  comment?: string;
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
+
 export interface BoardItem {
   id: string;
   url: string;
@@ -53,6 +72,8 @@ export interface BoardItem {
   addedBy: string;
   addedAt: number;
   comments: BoardComment[];
+  pins: BoardPin[];
+  highlights: BoardHighlight[];
   votes: string[];
   decided: boolean;
 }

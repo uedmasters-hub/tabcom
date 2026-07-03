@@ -67,6 +67,30 @@ interface BoardComment {
   sentAt: number;
 }
 
+interface BoardPin {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: number;
+  /** Position as a percentage of full document width/height — resilient
+   *  to different viewport sizes, not pixel-exact by design. */
+  xPercent: number;
+  yPercent: number;
+}
+
+interface BoardHighlight {
+  id: string;
+  author: string;
+  sentAt: number;
+  comment?: string;
+  /** Text Quote Selector (Web Annotation-style): the exact selected text
+   *  plus surrounding context, re-found by search rather than DOM path —
+   *  survives markup changes that would break an element-path anchor. */
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
+
 interface BoardItem {
   id: string;
   url: string;
@@ -78,6 +102,8 @@ interface BoardItem {
   addedBy: string;
   addedAt: number;
   comments: BoardComment[];
+  pins: BoardPin[];
+  highlights: BoardHighlight[];
   votes: Set<string>; // usernames who voted this item up
   decided: boolean;
 }
@@ -110,9 +136,45 @@ function serializeBoardItem(item: BoardItem) {
     addedBy: item.addedBy,
     addedAt: item.addedAt,
     comments: item.comments,
+    pins: item.pins,
+    highlights: item.highlights,
     votes: [...item.votes],
     decided: item.decided,
   };
+}
+
+/** Find an existing item by canonicalKey, or create one on the fly —
+ *  pinning/highlighting a page implicitly adds it to the board. */
+function ensureBoardItem(
+  community: Community,
+  by: WireUser,
+  anchor: { url: string; canonicalKey: string; title: string; image?: string; siteName?: string }
+): BoardItem {
+  const existing = [...community.board.values()].find(
+    (item) => item.canonicalKey === anchor.canonicalKey
+  );
+  if (existing) return existing;
+
+  const item: BoardItem = {
+    id: crypto.randomUUID(),
+    url: String(anchor.url).slice(0, 2000),
+    canonicalKey: String(anchor.canonicalKey).slice(0, 300),
+    title: String(anchor.title ?? anchor.url).slice(0, 200),
+    image:
+      typeof anchor.image === "string" && anchor.image.startsWith("http")
+        ? anchor.image.slice(0, 1000)
+        : undefined,
+    siteName: anchor.siteName ? String(anchor.siteName).slice(0, 60) : undefined,
+    addedBy: by.username,
+    addedAt: Date.now(),
+    comments: [],
+    pins: [],
+    highlights: [],
+    votes: new Set(),
+    decided: false,
+  };
+  community.board.set(item.id, item);
+  return item;
 }
 
 function serializeCommunity(c: Community, forUsername?: string) {
@@ -626,38 +688,7 @@ io.on("connection", (socket) => {
       if (!me || !community || !url || !canonicalKey) return;
       if (!community.members.has(me.username)) return;
 
-      // De-dupe by canonical key: re-adding an existing listing just
-      // surfaces it, it doesn't fork into a duplicate item.
-      const existing = [...community.board.values()].find(
-        (item) => item.canonicalKey === canonicalKey
-      );
-      if (existing) {
-        for (const member of community.members) {
-          notify(member, "community_update", {
-            community: serializeCommunity(community),
-          });
-        }
-        return;
-      }
-
-      const item: BoardItem = {
-        id: crypto.randomUUID(),
-        url: String(url).slice(0, 2000),
-        canonicalKey: String(canonicalKey).slice(0, 300),
-        title: String(title ?? url).slice(0, 200),
-        image:
-          typeof image === "string" && image.startsWith("http")
-            ? image.slice(0, 1000)
-            : undefined,
-        siteName: siteName ? String(siteName).slice(0, 60) : undefined,
-        addedBy: me.username,
-        addedAt: Date.now(),
-        comments: [],
-        votes: new Set(),
-        decided: false,
-      };
-
-      community.board.set(item.id, item);
+      ensureBoardItem(community, me, { url, canonicalKey, title, image, siteName });
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -743,6 +774,142 @@ io.on("connection", (socket) => {
       // Toggle: voting again retracts the vote.
       if (item.votes.has(me.username)) item.votes.delete(me.username);
       else item.votes.add(me.username);
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_pin_add",
+    (input: {
+      communityId: string;
+      url: string;
+      canonicalKey: string;
+      title: string;
+      image?: string;
+      siteName?: string;
+      text: string;
+      xPercent: number;
+      yPercent: number;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(input?.communityId);
+      if (!me || !community || !input?.canonicalKey || !input?.text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = ensureBoardItem(community, me, input);
+
+      item.pins.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        text: String(input.text).trim().slice(0, 300),
+        sentAt: Date.now(),
+        xPercent: Math.max(0, Math.min(100, Number(input.xPercent) || 0)),
+        yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_pin_remove",
+    ({
+      communityId,
+      itemId,
+      pinId,
+    }: {
+      communityId: string;
+      itemId: string;
+      pinId: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      const item = community?.board.get(itemId);
+      if (!me || !community || !item) return;
+
+      const pin = item.pins.find((p) => p.id === pinId);
+      if (!pin) return;
+      if (community.admin !== me.username && pin.author !== me.username) return;
+
+      item.pins = item.pins.filter((p) => p.id !== pinId);
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_highlight_add",
+    (input: {
+      communityId: string;
+      url: string;
+      canonicalKey: string;
+      title: string;
+      image?: string;
+      siteName?: string;
+      quote: string;
+      prefix: string;
+      suffix: string;
+      comment?: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(input?.communityId);
+      if (!me || !community || !input?.canonicalKey || !input?.quote?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = ensureBoardItem(community, me, input);
+
+      item.highlights.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        sentAt: Date.now(),
+        comment: input.comment ? String(input.comment).trim().slice(0, 300) : undefined,
+        quote: String(input.quote).slice(0, 500),
+        prefix: String(input.prefix ?? "").slice(0, 60),
+        suffix: String(input.suffix ?? "").slice(0, 60),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_highlight_remove",
+    ({
+      communityId,
+      itemId,
+      highlightId,
+    }: {
+      communityId: string;
+      itemId: string;
+      highlightId: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      const item = community?.board.get(itemId);
+      if (!me || !community || !item) return;
+
+      const highlight = item.highlights.find((h) => h.id === highlightId);
+      if (!highlight) return;
+      if (community.admin !== me.username && highlight.author !== me.username) return;
+
+      item.highlights = item.highlights.filter((h) => h.id !== highlightId);
 
       for (const member of community.members) {
         notify(member, "community_update", {

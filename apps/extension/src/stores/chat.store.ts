@@ -207,7 +207,11 @@ function toCommunity(wire: WireCommunity): Community {
     admin: wire.admin,
     members: wire.members,
     pendingForMe: wire.pendingForMe,
-    board: wire.board ?? [],
+    board: (wire.board ?? []).map((item) => ({
+      ...item,
+      pins: item.pins ?? [],
+      highlights: item.highlights ?? [],
+    })),
     boardDecidedId: wire.boardDecidedId,
   };
 }

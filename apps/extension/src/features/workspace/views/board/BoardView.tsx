@@ -3,6 +3,9 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  MapPin,
+  MessageSquareText,
+  Pencil,
   Plus,
   Send,
   ThumbsUp,
@@ -24,6 +27,16 @@ import { formatRelativeTime } from "../../../../utils/time";
  * vote, comment, and let the admin conclude with a decision. This is
  * the "conclude" step most collaborative-browsing tools skip.
  */
+async function sendToActiveTab(message: Record<string, unknown>) {
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  try {
+    await browser.tabs.sendMessage(tab.id, message);
+  } catch {
+    // content script not present on this page (e.g. chrome://) — ignore
+  }
+}
+
 export default function BoardView({ community }: { community: Community }) {
   const username = useProfileStore((state) => state.username);
   const addCurrentTabToBoard = useChatStore(
@@ -37,12 +50,15 @@ export default function BoardView({ community }: { community: Community }) {
   if (community.board.length === 0) {
     return (
       <div className="flex flex-1 flex-col">
-        <BoardAddButton onAdd={() => void addCurrentTabToBoard(community.id)} />
+        <BoardToolbar
+          communityId={community.id}
+          onAdd={() => void addCurrentTabToBoard(community.id)}
+        />
         <EmptyState
           className="flex-1"
           icon={<ThumbsUp size={24} />}
           title="No items yet"
-          description="Browse to a listing, then tap 'Add current tab' to bring it here for everyone to vote and comment on."
+          description="Browse to a listing, then Add, Pin, or Highlight directly on the page — it shows up here for everyone."
         />
       </div>
     );
@@ -50,7 +66,10 @@ export default function BoardView({ community }: { community: Community }) {
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
-      <BoardAddButton onAdd={() => void addCurrentTabToBoard(community.id)} />
+      <BoardToolbar
+        communityId={community.id}
+        onAdd={() => void addCurrentTabToBoard(community.id)}
+      />
 
       {decided && (
         <div className="mx-4 mt-1 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
@@ -85,17 +104,50 @@ export default function BoardView({ community }: { community: Community }) {
   );
 }
 
-function BoardAddButton({ onAdd }: { onAdd: () => void }) {
+function BoardToolbar({
+  communityId,
+  onAdd,
+}: {
+  communityId: string;
+  onAdd: () => void;
+}) {
   return (
-    <div className="border-b border-slate-100 px-4 py-3">
+    <div className="flex gap-2 border-b border-slate-100 px-4 py-3">
       <Button
         size="md"
         variant="outline"
-        fullWidth
-        leftIcon={<Plus size={15} />}
+        className="flex-1"
+        leftIcon={<Plus size={14} />}
         onClick={onAdd}
       >
-        Add current tab to board
+        Add tab
+      </Button>
+
+      <Button
+        size="md"
+        variant="outline"
+        className="flex-1"
+        leftIcon={<MapPin size={14} />}
+        onClick={() =>
+          void sendToActiveTab({ type: "tabcom:enter-pin-mode", communityId })
+        }
+      >
+        Pin
+      </Button>
+
+      <Button
+        size="md"
+        variant="outline"
+        className="flex-1"
+        leftIcon={<Pencil size={14} />}
+        onClick={() =>
+          void sendToActiveTab({
+            type: "tabcom:enter-highlight-mode",
+            communityId,
+          })
+        }
+      >
+        Highlight
       </Button>
     </div>
   );
@@ -190,7 +242,22 @@ function BoardCard({
           onClick={() => setExpanded((value) => !value)}
           className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-50"
         >
-          {item.comments.length} comment{item.comments.length === 1 ? "" : "s"}
+          <MessageSquareText size={12} />
+          {item.comments.length}
+          {(item.pins.length > 0 || item.highlights.length > 0) && (
+            <span className="ml-1 flex items-center gap-1 text-slate-400">
+              {item.pins.length > 0 && (
+                <span className="flex items-center gap-0.5">
+                  <MapPin size={11} /> {item.pins.length}
+                </span>
+              )}
+              {item.highlights.length > 0 && (
+                <span className="flex items-center gap-0.5">
+                  <Pencil size={11} /> {item.highlights.length}
+                </span>
+              )}
+            </span>
+          )}
           {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </button>
 
@@ -221,6 +288,40 @@ function BoardCard({
 
       {expanded && (
         <div className="border-t border-slate-100 bg-slate-50/60 px-3.5 py-3">
+          {item.pins.length > 0 && (
+            <ul className="mb-2 space-y-1.5">
+              {item.pins.map((pin) => (
+                <li key={pin.id} className="flex items-start gap-1.5 text-xs leading-5">
+                  <MapPin size={12} className="mt-0.5 shrink-0 text-blue-500" />
+                  <span>
+                    <span className="font-semibold">@{pin.author}</span>{" "}
+                    <span className="text-slate-600">{pin.text}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {item.highlights.length > 0 && (
+            <ul className="mb-2 space-y-1.5">
+              {item.highlights.map((highlight) => (
+                <li key={highlight.id} className="flex items-start gap-1.5 text-xs leading-5">
+                  <Pencil size={12} className="mt-0.5 shrink-0 text-amber-500" />
+                  <span>
+                    <span className="font-semibold">@{highlight.author}</span>{" "}
+                    <span className="italic text-slate-500">
+                      "{highlight.quote.slice(0, 60)}
+                      {highlight.quote.length > 60 ? "…" : ""}"
+                    </span>
+                    {highlight.comment && (
+                      <span className="block text-slate-600">{highlight.comment}</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
           {item.comments.length > 0 && (
             <ul className="mb-2 space-y-2">
               {item.comments.map((comment) => (

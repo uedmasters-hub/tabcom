@@ -677,7 +677,134 @@ let itemId;
 
 west.disconnect(); xena.disconnect(); yara.disconnect();
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/24)`);
+
+// ---- Pin & Highlight tests ----
+const zed = await connect({ username: "zed", name: "Zed", color: "#2563EB", visibility: "public" });
+const amy = await connect({ username: "amy", name: "Amy", color: "#059669", visibility: "public" });
+const bob2 = await connect({ username: "bob2", name: "Bob2", color: "#7C3AED", visibility: "public" }); // non-member
+await sleep(200);
+
+{
+  const req = new Promise((r) => amy.once("connect_request", r));
+  zed.emit("connect_request", { to: "amy" });
+  await req;
+  const ok = new Promise((r) => zed.once("connect_update", r));
+  amy.emit("connect_response", { to: "zed", action: "accept" });
+  await ok;
+}
+
+let pinCommunityId;
+{
+  const created = new Promise((r) => zed.once("community_update", r));
+  zed.emit("community_create", { name: "Annotate Squad" });
+  const { community } = await created;
+  pinCommunityId = community.id;
+  const joined = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.members.some((m) => m.username === "amy")) { zed.off("community_update", h); r(); }
+    };
+    zed.on("community_update", h);
+  });
+  const invited = new Promise((r) => amy.once("community_invite", r));
+  zed.emit("community_invite", { communityId: pinCommunityId, username: "amy" });
+  await invited;
+  amy.emit("community_invite_response", { communityId: pinCommunityId, action: "accept" });
+  await joined;
+}
+
+// TEST 25: pin implicitly creates a board item, non-member excluded
+{
+  let leaked = false;
+  bob2.once("community_update", () => (leaked = true));
+
+  const pinned = new Promise((r) => {
+    const h = ({ community }) => {
+      if (community.board[0]?.pins.length === 1) { amy.off("community_update", h); r(community); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_pin_add", {
+    communityId: pinCommunityId,
+    url: "https://example.com/page",
+    canonicalKey: "example:page",
+    title: "Example Page",
+    text: "Look at this spot!",
+    xPercent: 42,
+    yPercent: 10,
+  });
+  const community = await pinned;
+  if (community.board.length !== 1) fail("pin did not implicitly create item");
+  if (community.board[0].pins[0].author !== "zed") fail("pin author wrong");
+
+  await sleep(300);
+  if (leaked) fail("pin update leaked to non-member");
+  pass("pin: implicitly creates board item, scoped to members only");
+}
+
+// TEST 26: highlight implicitly attaches to the SAME item via canonicalKey
+let pinItemId, pinId;
+{
+  const snap = await new Promise((r) => {
+    zed.emit("hello", { username: "zed", name: "Zed", color: "#2563EB", visibility: "public" });
+    zed.once("communities", r);
+  });
+  const c = snap.find((x) => x.id === pinCommunityId);
+  pinItemId = c.board[0].id;
+  pinId = c.board[0].pins[0].id;
+
+  const highlighted = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      if (item?.highlights.length === 1) { zed.off("community_update", h); r(item); }
+    };
+    zed.on("community_update", h);
+  });
+  amy.emit("board_highlight_add", {
+    communityId: pinCommunityId,
+    url: "https://example.com/page",
+    canonicalKey: "example:page", // same key -> same item, not a new one
+    title: "Example Page",
+    quote: "important sentence",
+    prefix: "...before text ",
+    suffix: " after text...",
+    comment: "this matters",
+  });
+  const item = await highlighted;
+  if (item.highlights[0].author !== "amy") fail("highlight author wrong");
+  pass("highlight: attaches to the same item via canonicalKey, no duplicate item created");
+}
+
+// TEST 27: pin/highlight removal restricted to admin or original author
+{
+  let stillThere = true;
+  const attempt = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      stillThere = item.pins.some((p) => p.id === pinId);
+      r();
+    };
+    zed.on("community_update", h);
+    setTimeout(r, 400);
+  });
+  amy.emit("board_pin_remove", { communityId: pinCommunityId, itemId: pinItemId, pinId }); // amy didn't author it, but IS admin? no, zed is admin
+  await attempt;
+  if (!stillThere) fail("non-admin, non-author removed someone else's pin");
+
+  const removed = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      if (!item.pins.some((p) => p.id === pinId)) { amy.off("community_update", h); r(); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_pin_remove", { communityId: pinCommunityId, itemId: pinItemId, pinId }); // zed is admin AND author
+  await removed;
+  pass("pin/highlight removal restricted to admin or original author");
+}
+
+zed.disconnect(); amy.disconnect(); bob2.disconnect();
+
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/27)`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);
