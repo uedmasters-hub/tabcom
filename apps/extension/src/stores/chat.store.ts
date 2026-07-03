@@ -5,6 +5,8 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { extensionStorage } from "../lib/extension-storage";
 import {
   blockUser,
+  hidePresenceFrom,
+  removeConnection,
   createCommunity as rtCreateCommunity,
   inviteToCommunity as rtInviteToCommunity,
   leaveCommunity as rtLeaveCommunity,
@@ -97,6 +99,11 @@ interface ChatState {
   /** Muted targets (contactId or communityId): no unread badges. */
   muted: string[];
 
+  /** Usernames in the latest live roster (currently connected). */
+  rosterUsernames: string[];
+  /** Contacts I appear offline to (presence mask, not blocking). */
+  hiddenFrom: string[];
+
   activeConversationId: string | null;
   typing: string[];
 
@@ -114,6 +121,12 @@ interface ChatState {
 
   toggleMute: (targetId: string) => void;
   clearHistory: (conversationId: string) => void;
+
+  // contact management
+  addContactByUsername: (username: string) => void;
+  renameContact: (contactId: string, alias: string) => void;
+  removeContact: (contactId: string) => void;
+  toggleHidePresence: (contact: Contact) => void;
 
   // connections
   connectionFor: (contact: Contact) => ConnectionStatus;
@@ -345,6 +358,8 @@ export const useChatStore = create<ChatState>()(
         communities: {},
         communityInvites: {},
         muted: [],
+        rosterUsernames: [],
+        hiddenFrom: [],
         activeConversationId: null,
         typing: [],
 
@@ -454,6 +469,94 @@ export const useChatStore = create<ChatState>()(
           set((state) => ({
             messages: { ...state.messages, [conversationId]: [] },
           })),
+
+        // ---- contact management --------------------------------------------
+
+        addContactByUsername: (rawUsername) => {
+          const username = rawUsername.trim().replace(/^@/, "").toLowerCase();
+          if (!username) return;
+
+          const contactId = `u-${username}`;
+          const existing = get().contacts.find((c) => c.id === contactId);
+
+          const contact: Contact = existing ?? {
+            id: contactId,
+            name: username,
+            username,
+            color: "#334155",
+            presence: "offline",
+          };
+
+          if (!existing) {
+            set((state) => ({ contacts: [contact, ...state.contacts] }));
+          }
+
+          get().requestConnect(contact);
+          get().startConversation(contactId);
+        },
+
+        renameContact: (contactId, alias) =>
+          set((state) => ({
+            contacts: state.contacts.map((contact) =>
+              contact.id === contactId
+                ? { ...contact, alias: alias.trim() || undefined }
+                : contact
+            ),
+          })),
+
+        removeContact: (contactId) => {
+          const contact = get().contacts.find((c) => c.id === contactId);
+          if (!contact) return;
+
+          if (contact.id.startsWith("u-")) {
+            removeConnection(contact.username);
+          }
+
+          set((state) => {
+            const conversation = state.conversations.find(
+              (item) => item.contactId === contactId
+            );
+            const messages = { ...state.messages };
+            if (conversation) delete messages[conversation.id];
+
+            const connections = { ...state.connections };
+            delete connections[contact.username];
+
+            return {
+              contacts: state.contacts.filter((c) => c.id !== contactId),
+              conversations: state.conversations.filter(
+                (item) => item.contactId !== contactId
+              ),
+              messages,
+              connections,
+              activeConversationId:
+                state.activeConversationId === conversation?.id
+                  ? null
+                  : state.activeConversationId,
+            };
+          });
+        },
+
+        toggleHidePresence: (contact) => {
+          if (!contact.id.startsWith("u-")) return;
+
+          const hidden = !get().hiddenFrom.includes(contact.id);
+          hidePresenceFrom(contact.username, hidden);
+
+          set((state) => ({
+            hiddenFrom: hidden
+              ? [...state.hiddenFrom, contact.id]
+              : state.hiddenFrom.filter((id) => id !== contact.id),
+          }));
+
+          systemNotice(
+            { contactId: contact.id },
+            hidden
+              ? `You now appear offline to @${contact.username}. Messages still send and arrive normally.`
+              : `You're visible to @${contact.username} again.`,
+            false
+          );
+        },
 
         // ---- connections --------------------------------------------------
 
@@ -587,6 +690,11 @@ export const useChatStore = create<ChatState>()(
         applyRoster: (users) =>
           set((state) => {
             const rosterUsernames = new Set(users.map((u) => u.username));
+            const aliasById = new Map(
+              state.contacts
+                .filter((c) => c.alias)
+                .map((c) => [c.id, c.alias!])
+            );
 
             const liveContacts: Contact[] = users.map((user) => ({
               id: `u-${user.username}`,
@@ -594,7 +702,8 @@ export const useChatStore = create<ChatState>()(
               username: user.username,
               color: user.color,
               photo: user.photo,
-              presence: "online",
+              presence: user.presence ?? "online",
+              alias: aliasById.get(`u-${user.username}`),
             }));
 
             const departed = state.contacts
@@ -612,7 +721,10 @@ export const useChatStore = create<ChatState>()(
               contact.id.startsWith("c-")
             );
 
-            return { contacts: [...liveContacts, ...departed, ...demo] };
+            return {
+              contacts: [...liveContacts, ...departed, ...demo],
+              rosterUsernames: [...rosterUsernames],
+            };
           }),
 
         receiveDm: (from, message) => {
@@ -829,6 +941,8 @@ export const useChatStore = create<ChatState>()(
             communities: {},
             communityInvites: {},
             muted: [],
+            rosterUsernames: [],
+            hiddenFrom: [],
             activeConversationId: null,
             typing: [],
           }),

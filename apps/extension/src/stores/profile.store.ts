@@ -34,6 +34,10 @@ interface ProfileState {
   photo?: string;
   /** iMessage-style message animations. */
   animations: boolean;
+  /** My presence status. */
+  presence: "online" | "away" | "busy" | "offline";
+  /** Floating picture-in-picture chat. */
+  pipEnabled: boolean;
 
   setHasHydrated: (value: boolean) => void;
   setVisibility: (visibility: ProfileVisibility) => void;
@@ -41,6 +45,8 @@ interface ProfileState {
   setAvatarColor: (color: string) => void;
   setPhoto: (photo?: string) => void;
   setAnimations: (animations: boolean) => void;
+  setPresence: (presence: "online" | "away" | "busy" | "offline") => void;
+  setPipEnabled: (pipEnabled: boolean) => void;
   completeProfile: () => void;
   resetProfile: () => void;
 }
@@ -53,6 +59,8 @@ const initialProfile = {
   avatarColor: AVATAR_COLORS[0]!.value,
   photo: undefined as string | undefined,
   animations: true,
+  presence: "online" as const,
+  pipEnabled: true,
 };
 
 export const useProfileStore = create<ProfileState>()(
@@ -74,6 +82,10 @@ export const useProfileStore = create<ProfileState>()(
 
       setAnimations: (animations) => set({ animations }),
 
+      setPresence: (presence) => set({ presence }),
+
+      setPipEnabled: (pipEnabled) => set({ pipEnabled }),
+
       completeProfile: () => set({ isComplete: true }),
 
       resetProfile: () => set({ ...initialProfile }),
@@ -89,6 +101,8 @@ export const useProfileStore = create<ProfileState>()(
         avatarColor: state.avatarColor,
         photo: state.photo,
         animations: state.animations,
+        presence: state.presence,
+        pipEnabled: state.pipEnabled,
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);

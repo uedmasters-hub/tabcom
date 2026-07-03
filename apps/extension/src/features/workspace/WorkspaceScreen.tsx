@@ -35,12 +35,20 @@ export default function WorkspaceScreen() {
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const visibility = useProfileStore((state) => state.visibility);
   const photo = useProfileStore((state) => state.photo);
+  const myPresence = useProfileStore((state) => state.presence);
 
   useEffect(() => {
     ensureSeeded();
 
     initRealtime(
-      { username, name: displayName, color: avatarColor, visibility, photo },
+      {
+        username,
+        name: displayName,
+        color: avatarColor,
+        visibility,
+        photo,
+        presence: myPresence,
+      },
       {
         onConnectionChange: (live) =>
           useChatStore.getState().setLiveStatus(live),

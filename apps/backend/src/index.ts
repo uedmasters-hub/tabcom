@@ -19,13 +19,22 @@ import { Server } from "socket.io";
 
 export type Visibility = "public" | "private";
 
+export type Presence = "online" | "away" | "busy" | "offline";
+
 export interface WireUser {
   username: string;
   name: string;
   color: string;
   visibility: Visibility;
+  presence: Presence;
   /** Optional small avatar photo (data URL, capped). */
   photo?: string;
+}
+
+function sanitizePresence(value: unknown): Presence {
+  return value === "away" || value === "busy" || value === "offline"
+    ? value
+    : "online";
 }
 
 export interface WireMessage {
@@ -78,6 +87,7 @@ function serializeCommunity(c: Community, forUsername?: string) {
 }
 const pairs = new Map<string, Pair>(); // pairKey -> connection state
 const blocks = new Set<string>(); // "blocker|blocked"
+const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked, messages still flow
 
 function sanitizeVisibility(value: unknown): Visibility {
   return value === "private" ? "private" : "public";
@@ -95,8 +105,19 @@ function publicRoster(): WireUser[] {
   return [...users.values()].filter((user) => user.visibility === "public");
 }
 
+/** Roster personalized per viewer: hidden presence masks to offline. */
+function rosterFor(viewer: string): WireUser[] {
+  return publicRoster().map((user) =>
+    presenceHidden.has(`${user.username}|${viewer}`)
+      ? { ...user, presence: "offline" as Presence }
+      : user
+  );
+}
+
 function broadcastRoster(): void {
-  io.emit("roster", publicRoster());
+  for (const [socketId, user] of users) {
+    io.to(socketId).emit("roster", rosterFor(user.username));
+  }
 }
 
 function publicSocketIdsFor(username: string): string[] {
@@ -164,6 +185,7 @@ io.on("connection", (socket) => {
       name: String(raw.name ?? raw.username).slice(0, 40),
       color: String(raw.color ?? "#2563EB").slice(0, 9),
       visibility: sanitizeVisibility(raw.visibility),
+      presence: sanitizePresence(raw.presence),
       photo:
         typeof raw.photo === "string" && raw.photo.startsWith("data:image/")
           ? raw.photo.slice(0, 60000)
@@ -189,6 +211,36 @@ io.on("connection", (socket) => {
     if (!user) return;
     user.visibility = sanitizeVisibility(raw);
     broadcastRoster();
+  });
+
+  socket.on("presence", (raw: unknown) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+    user.presence = sanitizePresence(raw);
+    broadcastRoster();
+  });
+
+  /** Mask presence (as offline) toward one viewer. Messages still flow. */
+  socket.on(
+    "presence_hide",
+    ({ username, hidden }: { username: string; hidden: boolean }) => {
+      const me = users.get(socket.id);
+      if (!me || !username) return;
+
+      const key = `${me.username}|${username}`;
+      if (hidden) presenceHidden.add(key);
+      else presenceHidden.delete(key);
+      broadcastRoster();
+    }
+  );
+
+  /** Silently remove an accepted/pending connection (no leak to the other side). */
+  socket.on("connection_remove", ({ username }: { username: string }) => {
+    const me = users.get(socket.id);
+    if (!me || !username) return;
+
+    pairs.delete(pairKey(me.username, username));
+    notify(me.username, "connect_update", { username, status: "none" });
   });
 
   // ---- Consent-based contact -------------------------------------------

@@ -7,6 +7,13 @@ export interface Contact {
   color: string;
   presence: Presence;
   photo?: string;
+  /** Local nickname — never leaves this device. */
+  alias?: string;
+}
+
+/** Display name honoring the local alias. */
+export function contactLabel(contact: Contact): string {
+  return contact.alias?.trim() || contact.name;
 }
 
 export type MessageKind = "text" | "link" | "system";

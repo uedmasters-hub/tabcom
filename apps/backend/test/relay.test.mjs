@@ -399,7 +399,82 @@ let communityId;
 
 gia.disconnect(); hana.disconnect(); ivan.disconnect();
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/17)`);
+
+// ---- Presence tests ----
+const pat = await connect({ username: "pat", name: "Pat", color: "#2563EB", visibility: "public" });
+const quinn = await connect({ username: "quinn", name: "Quinn", color: "#059669", visibility: "public" });
+const rio = await connect({ username: "rio", name: "Rio", color: "#7C3AED", visibility: "public" });
+await sleep(300);
+
+// TEST 17: presence changes broadcast (busy/away/offline)
+{
+  const seen = new Promise((r) => {
+    const handler = (roster) => {
+      const p = roster.find((u) => u.username === "pat");
+      if (p?.presence === "busy") { quinn.off("roster", handler); r(p); }
+    };
+    quinn.on("roster", handler);
+  });
+  pat.emit("presence", "busy");
+  await seen;
+  pass("presence: status changes broadcast to others");
+}
+
+// TEST 18: per-viewer presence masking — quinn sees offline, rio sees true status
+{
+  pat.emit("presence", "online");
+  await sleep(200);
+  const quinnSees = new Promise((r) => {
+    const h = (roster) => {
+      const p = roster.find((u) => u.username === "pat");
+      if (p) { quinn.off("roster", h); r(p.presence); }
+    };
+    quinn.on("roster", h);
+  });
+  const rioSees = new Promise((r) => {
+    const h = (roster) => {
+      const p = roster.find((u) => u.username === "pat");
+      if (p) { rio.off("roster", h); r(p.presence); }
+    };
+    rio.on("roster", h);
+  });
+  pat.emit("presence_hide", { username: "quinn", hidden: true });
+  const [q, ri] = await Promise.all([quinnSees, rioSees]);
+  if (q !== "offline") fail("masked viewer did not see offline: " + q);
+  if (ri !== "online") fail("unmasked viewer affected: " + ri);
+
+  // messages still flow to the hider (masking is not blocking)
+  const reqq = new Promise((r) => pat.once("connect_request", r));
+  quinn.emit("connect_request", { to: "pat" });
+  await reqq;
+  const okc = new Promise((r) => quinn.once("connect_update", r));
+  pat.emit("connect_response", { to: "quinn", action: "accept" });
+  await okc;
+  const dmOk = new Promise((r) => pat.once("dm", r));
+  quinn.emit("dm", { to: "pat", message: { id: "p1", kind: "text", text: "you there?", sentAt: Date.now() } });
+  await dmOk;
+  pass("presence masking: per-viewer offline, messages still delivered");
+}
+
+// TEST 19: connection_remove silently severs
+{
+  let quinnHeard = false;
+  quinn.once("connect_update", () => (quinnHeard = true));
+  const ack = new Promise((r) => pat.once("connect_update", r));
+  pat.emit("connection_remove", { username: "quinn" });
+  const upd = await ack;
+  await sleep(250);
+  if (upd.status !== "none") fail("remover not reset to none");
+  if (quinnHeard) fail("removal leaked to the other side");
+
+  const err = new Promise((r) => quinn.once("dm_error", r));
+  quinn.emit("dm", { to: "pat", message: { id: "p2", kind: "text", text: "hello?", sentAt: Date.now() } });
+  if ((await err).reason !== "not_connected") fail("connection not severed");
+  pass("remove contact: silent severance, messaging barred");
+}
+pat.disconnect(); quinn.disconnect(); rio.disconnect();
+
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/20)`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);

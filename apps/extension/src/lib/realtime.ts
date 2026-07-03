@@ -17,11 +17,14 @@ export const REALTIME_URL =
 
 export type Visibility = "public" | "private";
 
+export type WirePresence = "online" | "away" | "busy" | "offline";
+
 export interface WireUser {
   username: string;
   name: string;
   color: string;
   visibility: Visibility;
+  presence?: WirePresence;
   photo?: string;
 }
 
@@ -270,4 +273,19 @@ export function sendDm(toUsername: string, message: WireMessage): void {
 
 export function sendTyping(toUsername: string): void {
   socket?.emit("typing", { to: toUsername });
+}
+
+/** Set my presence status (online/away/busy/appear-offline). */
+export function updatePresence(presence: WirePresence): void {
+  socket?.emit("presence", presence);
+}
+
+/** Mask my presence (as offline) toward one user. Messages still flow. */
+export function hidePresenceFrom(username: string, hidden: boolean): void {
+  socket?.emit("presence_hide", { username, hidden });
+}
+
+/** Silently sever a connection (the other side is not notified). */
+export function removeConnection(username: string): void {
+  socket?.emit("connection_remove", { username });
 }

@@ -1,4 +1,4 @@
-import { Camera, Check, Globe, Lock, LogOut, Sparkles, Trash2 } from "lucide-react";
+import { Camera, Check, Globe, Lock, LogOut, PictureInPicture2, Sparkles, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 
 import {
@@ -68,11 +68,13 @@ export default function SettingsView() {
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const photo = useProfileStore((state) => state.photo);
   const animations = useProfileStore((state) => state.animations);
+  const pipEnabled = useProfileStore((state) => state.pipEnabled);
 
   const setIdentity = useProfileStore((state) => state.setIdentity);
   const setAvatarColor = useProfileStore((state) => state.setAvatarColor);
   const setPhoto = useProfileStore((state) => state.setPhoto);
   const setAnimations = useProfileStore((state) => state.setAnimations);
+  const setPipEnabled = useProfileStore((state) => state.setPipEnabled);
   const setVisibilityLocal = useProfileStore((state) => state.setVisibility);
   const resetProfile = useProfileStore((state) => state.resetProfile);
   const resetChat = useChatStore((state) => state.resetChat);
@@ -235,6 +237,34 @@ export default function SettingsView() {
             className={cn(
               "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
               animations ? "left-[22px]" : "left-0.5"
+            )}
+          />
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setPipEnabled(!pipEnabled)}
+        className="mt-3 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-300"
+      >
+        <PictureInPicture2 size={18} className="shrink-0 text-slate-500" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold">Floating chat (PiP)</span>
+          <span className="mt-0.5 block text-sm text-slate-500">
+            Pop a chat into an always-on-top window that stays visible when
+            the browser is minimized. Opening it sets you Online.
+          </span>
+        </span>
+        <span
+          className={cn(
+            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+            pipEnabled ? "bg-slate-900" : "bg-slate-200"
+          )}
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
+              pipEnabled ? "left-[22px]" : "left-0.5"
             )}
           />
         </span>

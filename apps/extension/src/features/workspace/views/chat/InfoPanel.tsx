@@ -1,6 +1,8 @@
 import {
   BellOff,
   Bell,
+  EyeOff,
+  Eye,
   ExternalLink,
   Flag,
   LogOut,
@@ -14,6 +16,7 @@ import { browser } from "wxt/browser";
 import { Avatar, Button, SectionLabel } from "../../../../components/ui";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
+import { contactLabel } from "../../../../types/chat";
 import type { Contact, Conversation } from "../../../../types/chat";
 
 /**
@@ -45,8 +48,11 @@ export default function InfoPanel({
     (state) => state.messages[conversation.id] ?? null
   );
   const muted = useChatStore((state) => state.muted);
+  const hiddenFrom = useChatStore((state) => state.hiddenFrom);
 
   const toggleMute = useChatStore((state) => state.toggleMute);
+  const toggleHidePresence = useChatStore((state) => state.toggleHidePresence);
+  const removeContact = useChatStore((state) => state.removeContact);
   const clearHistory = useChatStore((state) => state.clearHistory);
   const block = useChatStore((state) => state.block);
   const unblock = useChatStore((state) => state.unblock);
@@ -108,8 +114,11 @@ export default function InfoPanel({
               photo={contact.photo}
               size="xl"
             />
-            <h2 className="mt-3 text-lg font-bold">{contact.name}</h2>
-            <p className="text-sm text-slate-500">@{contact.username}</p>
+            <h2 className="mt-3 text-lg font-bold">{contactLabel(contact)}</h2>
+            <p className="text-sm text-slate-500">
+              @{contact.username}
+              {contact.alias && ` · ${contact.name}`}
+            </p>
             <p className="mt-1 text-xs capitalize text-slate-400">
               {contact.presence} ·{" "}
               {contact.id.startsWith("u-")
@@ -277,6 +286,37 @@ export default function InfoPanel({
               Block @{contact.username}
             </button>
           ))}
+
+        {contact?.id.startsWith("u-") && (
+          <button
+            type="button"
+            className={actionRow}
+            onClick={() => toggleHidePresence(contact)}
+          >
+            {hiddenFrom.includes(contact.id) ? (
+              <Eye size={17} className="text-slate-400" />
+            ) : (
+              <EyeOff size={17} className="text-slate-400" />
+            )}
+            {hiddenFrom.includes(contact.id)
+              ? `Show my presence to @${contact.username}`
+              : `Appear offline to @${contact.username}`}
+          </button>
+        )}
+
+        {contact?.id.startsWith("u-") && (
+          <button
+            type="button"
+            className={`${actionRow} text-red-600`}
+            onClick={() => {
+              removeContact(contact.id);
+              onClose();
+            }}
+          >
+            <Trash2 size={17} />
+            Remove contact
+          </button>
+        )}
 
         {contact?.id.startsWith("u-") && (
           <button
