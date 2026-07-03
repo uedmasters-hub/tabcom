@@ -1,0 +1,695 @@
+From 950a5394dddd9a30a7b0828fddd0019c53c88e75 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Thu, 2 Jul 2026 13:47:26 +0000
+Subject: [PATCH] feat(onboarding): validated identity form, avatar picker,
+ profile persistence
+
+- identity.schema.ts: zod schema (display name 2-40 chars; username 3-20,
+  lowercase/numbers/underscore, leading @ stripped via transform)
+- IdentityScreen: react-hook-form + zodResolver, inline errors, prefilled
+  from persisted draft
+- profile.store.ts: zustand persist over browser.storage.local via
+  StateStorage adapter; visibility, identity, avatarColor, isComplete
+- VisibilityScreen: persists public/private choice with selected state
+- AvatarScreen: initials preview + 8-color radio palette, Finish completes
+  profile and enters workspace
+- WorkspaceScreen: placeholder proving persistence (profile header,
+  visibility badge, sign out resets profile)
+- App.tsx: hydration gate (no welcome flash) + returning users skip
+  onboarding straight to workspace
+- Avatar UI component (sm/md/lg/xl) + getInitials util
+- gitignore .turbo/.output/.wxt (build artifacts were leaking into patches)
+---
+ .gitignore                                    |  5 ++
+ apps/extension/src/app/App.tsx                | 25 +++++-
+ apps/extension/src/components/ui/Avatar.tsx   | 40 +++++++++
+ apps/extension/src/components/ui/index.ts     |  1 +
+ .../src/features/onboarding/AvatarScreen.tsx  | 62 +++++++++++++-
+ .../features/onboarding/IdentityScreen.tsx    | 57 +++++++++++--
+ .../features/onboarding/VisibilityScreen.tsx  | 61 ++++++++++----
+ .../features/onboarding/identity.schema.ts    | 27 ++++++
+ .../features/workspace/WorkspaceScreen.tsx    | 77 +++++++++++++++++
+ .../extension/src/features/workspace/index.ts |  1 +
+ apps/extension/src/lib/extension-storage.ts   | 21 +++++
+ apps/extension/src/stores/profile.store.ts    | 84 +++++++++++++++++++
+ apps/extension/src/utils/initials.ts          | 12 +++
+ 13 files changed, 449 insertions(+), 24 deletions(-)
+ create mode 100644 apps/extension/src/components/ui/Avatar.tsx
+ create mode 100644 apps/extension/src/features/onboarding/identity.schema.ts
+ create mode 100644 apps/extension/src/features/workspace/WorkspaceScreen.tsx
+ create mode 100644 apps/extension/src/features/workspace/index.ts
+ create mode 100644 apps/extension/src/lib/extension-storage.ts
+ create mode 100644 apps/extension/src/stores/profile.store.ts
+ create mode 100644 apps/extension/src/utils/initials.ts
+
+diff --git a/.gitignore b/.gitignore
+index 3c3629e..09442f0 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1 +1,6 @@
+ node_modules
++.turbo
++.output
++.wxt
++dist
++.env
+diff --git a/apps/extension/src/app/App.tsx b/apps/extension/src/app/App.tsx
+index 3a1f710..24b3ed7 100644
+--- a/apps/extension/src/app/App.tsx
++++ b/apps/extension/src/app/App.tsx
+@@ -1,5 +1,8 @@
++import { useEffect } from "react";
++
+ import WelcomeScreen from "../features/welcome";
+ import SignInScreen from "../features/signin";
++import WorkspaceScreen from "../features/workspace";
+ 
+ import {
+   VisibilityScreen,
+@@ -8,9 +11,26 @@ import {
+ } from "../features/onboarding";
+ 
+ import { useAppStore } from "../stores/app.store";
++import { useProfileStore } from "../stores/profile.store";
+ 
+ export default function App() {
+   const screen = useAppStore((state) => state.screen);
++  const setScreen = useAppStore((state) => state.setScreen);
++
++  const hasHydrated = useProfileStore((state) => state.hasHydrated);
++  const isComplete = useProfileStore((state) => state.isComplete);
++
++  // Returning users skip onboarding once storage has hydrated.
++  useEffect(() => {
++    if (hasHydrated && isComplete) {
++      setScreen("workspace");
++    }
++  }, [hasHydrated, isComplete, setScreen]);
++
++  // Avoid a welcome-screen flash while browser.storage loads.
++  if (!hasHydrated) {
++    return null;
++  }
+ 
+   switch (screen) {
+     case "welcome":
+@@ -28,7 +48,10 @@ export default function App() {
+     case "avatar":
+       return <AvatarScreen />;
+ 
++    case "workspace":
++      return <WorkspaceScreen />;
++
+     default:
+       return <WelcomeScreen />;
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/apps/extension/src/components/ui/Avatar.tsx b/apps/extension/src/components/ui/Avatar.tsx
+new file mode 100644
+index 0000000..b8c0e8e
+--- /dev/null
++++ b/apps/extension/src/components/ui/Avatar.tsx
+@@ -0,0 +1,40 @@
++import { cn } from "../../lib/cn";
++import { getInitials } from "../../utils/initials";
++
++type AvatarSize = "sm" | "md" | "lg" | "xl";
++
++interface AvatarProps {
++  name: string;
++  color: string;
++  size?: AvatarSize;
++  className?: string;
++}
++
++const sizeClasses: Record<AvatarSize, string> = {
++  sm: "h-8 w-8 text-xs",
++  md: "h-10 w-10 text-sm",
++  lg: "h-14 w-14 text-lg",
++  xl: "h-24 w-24 text-3xl",
++};
++
++/** Initials avatar. Image support arrives with the backend. */
++export default function Avatar({
++  name,
++  color,
++  size = "md",
++  className,
++}: AvatarProps) {
++  return (
++    <span
++      aria-hidden
++      className={cn(
++        "inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white",
++        sizeClasses[size],
++        className
++      )}
++      style={{ backgroundColor: color }}
++    >
++      {getInitials(name)}
++    </span>
++  );
++}
+diff --git a/apps/extension/src/components/ui/index.ts b/apps/extension/src/components/ui/index.ts
+index 1e2694b..b69c016 100644
+--- a/apps/extension/src/components/ui/index.ts
++++ b/apps/extension/src/components/ui/index.ts
+@@ -1,3 +1,4 @@
++export { default as Avatar } from "./Avatar";
+ export { default as Button } from "./Button";
+ export { default as Input } from "./Input";
+ export { default as OptionCard } from "./OptionCard";
+diff --git a/apps/extension/src/features/onboarding/AvatarScreen.tsx b/apps/extension/src/features/onboarding/AvatarScreen.tsx
+index 2e8644c..655cb39 100644
+--- a/apps/extension/src/features/onboarding/AvatarScreen.tsx
++++ b/apps/extension/src/features/onboarding/AvatarScreen.tsx
+@@ -1,17 +1,32 @@
++import { Check } from "lucide-react";
++
+ import AppShell from "../../components/layout/AppShell";
++import ScreenFooter from "../../components/layout/ScreenFooter";
+ import ScreenHeader from "../../components/layout/ScreenHeader";
+-import { SectionLabel } from "../../components/ui";
++import { Avatar, Button, SectionLabel } from "../../components/ui";
++import { cn } from "../../lib/cn";
+ import { useAppStore } from "../../stores/app.store";
++import { AVATAR_COLORS, useProfileStore } from "../../stores/profile.store";
+ 
+ export default function AvatarScreen() {
+   const setScreen = useAppStore((state) => state.setScreen);
+ 
++  const displayName = useProfileStore((state) => state.displayName);
++  const avatarColor = useProfileStore((state) => state.avatarColor);
++  const setAvatarColor = useProfileStore((state) => state.setAvatarColor);
++  const completeProfile = useProfileStore((state) => state.completeProfile);
++
++  const finish = () => {
++    completeProfile();
++    setScreen("workspace");
++  };
++
+   return (
+     <AppShell>
+       <div className="flex h-full flex-col">
+         <ScreenHeader onBack={() => setScreen("identity")} />
+ 
+-        <section className="flex flex-1 flex-col justify-center px-6 pb-16">
++        <section className="flex flex-1 flex-col px-6">
+           <SectionLabel>Profile</SectionLabel>
+ 
+           <h1 className="mt-4 text-3xl font-bold tracking-tight">
+@@ -19,10 +34,49 @@ export default function AvatarScreen() {
+           </h1>
+ 
+           <p className="mt-4 text-sm leading-7 text-slate-500">
+-            Avatar selection lands in the next milestone (M2), together with
+-            form validation and profile persistence.
++            Pick a color for your initials. Photo upload arrives once
++            accounts sync to the backend.
+           </p>
++
++          <div className="mt-10 flex justify-center">
++            <Avatar name={displayName} color={avatarColor} size="xl" />
++          </div>
++
++          <div
++            role="radiogroup"
++            aria-label="Avatar color"
++            className="mt-10 grid grid-cols-4 justify-items-center gap-4"
++          >
++            {AVATAR_COLORS.map(({ id, value }) => {
++              const isSelected = value === avatarColor;
++
++              return (
++                <button
++                  key={id}
++                  type="button"
++                  role="radio"
++                  aria-checked={isSelected}
++                  aria-label={id}
++                  onClick={() => setAvatarColor(value)}
++                  className={cn(
++                    "flex h-12 w-12 items-center justify-center rounded-full transition-transform hover:scale-105",
++                    isSelected &&
++                      "ring-2 ring-slate-900 ring-offset-2"
++                  )}
++                  style={{ backgroundColor: value }}
++                >
++                  {isSelected && <Check size={18} className="text-white" />}
++                </button>
++              );
++            })}
++          </div>
+         </section>
++
++        <ScreenFooter>
++          <Button fullWidth onClick={finish}>
++            Finish setup
++          </Button>
++        </ScreenFooter>
+       </div>
+     </AppShell>
+   );
+diff --git a/apps/extension/src/features/onboarding/IdentityScreen.tsx b/apps/extension/src/features/onboarding/IdentityScreen.tsx
+index 8564c85..88ff36f 100644
+--- a/apps/extension/src/features/onboarding/IdentityScreen.tsx
++++ b/apps/extension/src/features/onboarding/IdentityScreen.tsx
+@@ -1,17 +1,49 @@
++import { zodResolver } from "@hookform/resolvers/zod";
+ import { ArrowRight } from "lucide-react";
++import { useForm } from "react-hook-form";
+ 
+ import AppShell from "../../components/layout/AppShell";
+ import ScreenFooter from "../../components/layout/ScreenFooter";
+ import ScreenHeader from "../../components/layout/ScreenHeader";
+ import { Button, Input, SectionLabel } from "../../components/ui";
+ import { useAppStore } from "../../stores/app.store";
++import { useProfileStore } from "../../stores/profile.store";
++import {
++  identitySchema,
++  type IdentityFormValues,
++  type IdentityValues,
++} from "./identity.schema";
+ 
+ export default function IdentityScreen() {
+   const setScreen = useAppStore((state) => state.setScreen);
++  const displayName = useProfileStore((state) => state.displayName);
++  const username = useProfileStore((state) => state.username);
++  const setIdentity = useProfileStore((state) => state.setIdentity);
++
++  const {
++    register,
++    handleSubmit,
++    formState: { errors, isSubmitting },
++  } = useForm<IdentityFormValues, unknown, IdentityValues>({
++    resolver: zodResolver(identitySchema),
++    defaultValues: {
++      displayName,
++      username: username ? `@${username}` : "",
++    },
++  });
++
++  const onSubmit = (values: IdentityValues) => {
++    setIdentity(values);
++    setScreen("avatar");
++  };
+ 
+   return (
+     <AppShell>
+-      <div className="flex h-full flex-col">
++      <form
++        className="flex h-full flex-col"
++        onSubmit={handleSubmit(onSubmit)}
++        noValidate
++      >
+         <ScreenHeader onBack={() => setScreen("visibility")} />
+ 
+         <section className="flex flex-1 flex-col px-6">
+@@ -26,21 +58,36 @@ export default function IdentityScreen() {
+           </p>
+ 
+           <div className="mt-10 space-y-5">
+-            <Input label="Display Name" placeholder="Ramesh Mandal" />
+-            <Input label="Username" placeholder="@ramesh" />
++            <Input
++              label="Display Name"
++              placeholder="Ramesh Mandal"
++              autoComplete="name"
++              error={errors.displayName?.message}
++              {...register("displayName")}
++            />
++
++            <Input
++              label="Username"
++              placeholder="@ramesh"
++              autoComplete="off"
++              hint="Lowercase letters, numbers and underscores."
++              error={errors.username?.message}
++              {...register("username")}
++            />
+           </div>
+         </section>
+ 
+         <ScreenFooter>
+           <Button
++            type="submit"
+             fullWidth
+-            onClick={() => setScreen("avatar")}
++            disabled={isSubmitting}
+             rightIcon={<ArrowRight size={18} />}
+           >
+             Continue
+           </Button>
+         </ScreenFooter>
+-      </div>
++      </form>
+     </AppShell>
+   );
+ }
+diff --git a/apps/extension/src/features/onboarding/VisibilityScreen.tsx b/apps/extension/src/features/onboarding/VisibilityScreen.tsx
+index fe292a3..0a6256c 100644
+--- a/apps/extension/src/features/onboarding/VisibilityScreen.tsx
++++ b/apps/extension/src/features/onboarding/VisibilityScreen.tsx
+@@ -1,12 +1,43 @@
+-import { Globe, Lock } from "lucide-react";
++import { Check, Globe, Lock } from "lucide-react";
+ 
+ import AppShell from "../../components/layout/AppShell";
+ import ScreenHeader from "../../components/layout/ScreenHeader";
+ import { OptionCard, SectionLabel } from "../../components/ui";
+ import { useAppStore } from "../../stores/app.store";
++import {
++  useProfileStore,
++  type ProfileVisibility,
++} from "../../stores/profile.store";
++
++const options: Array<{
++  id: ProfileVisibility;
++  title: string;
++  description: string;
++  icon: typeof Globe;
++}> = [
++  {
++    id: "public",
++    title: "Public Profile",
++    description: "Anyone can find and connect with you.",
++    icon: Globe,
++  },
++  {
++    id: "private",
++    title: "Private Profile",
++    description: "Only people you invite can connect.",
++    icon: Lock,
++  },
++];
+ 
+ export default function VisibilityScreen() {
+   const setScreen = useAppStore((state) => state.setScreen);
++  const visibility = useProfileStore((state) => state.visibility);
++  const setVisibility = useProfileStore((state) => state.setVisibility);
++
++  const choose = (id: ProfileVisibility) => {
++    setVisibility(id);
++    setScreen("identity");
++  };
+ 
+   return (
+     <AppShell>
+@@ -23,19 +54,21 @@ export default function VisibilityScreen() {
+           </p>
+ 
+           <div className="mt-10 flex flex-col gap-4">
+-            <OptionCard
+-              title="Public Profile"
+-              description="Anyone can find and connect with you."
+-              icon={<Globe size={18} />}
+-              onClick={() => setScreen("identity")}
+-            />
+-
+-            <OptionCard
+-              title="Private Profile"
+-              description="Only people you invite can connect."
+-              icon={<Lock size={18} />}
+-              onClick={() => setScreen("identity")}
+-            />
++            {options.map(({ id, title, description, icon: Icon }) => (
++              <OptionCard
++                key={id}
++                title={title}
++                description={description}
++                icon={<Icon size={18} />}
++                selected={visibility === id}
++                trailing={
++                  visibility === id ? (
++                    <Check size={18} className="text-blue-600" />
++                  ) : undefined
++                }
++                onClick={() => choose(id)}
++              />
++            ))}
+           </div>
+         </section>
+       </div>
+diff --git a/apps/extension/src/features/onboarding/identity.schema.ts b/apps/extension/src/features/onboarding/identity.schema.ts
+new file mode 100644
+index 0000000..11343f1
+--- /dev/null
++++ b/apps/extension/src/features/onboarding/identity.schema.ts
+@@ -0,0 +1,27 @@
++import { z } from "zod";
++
++export const identitySchema = z.object({
++  displayName: z
++    .string()
++    .trim()
++    .min(2, "Display name must be at least 2 characters")
++    .max(40, "Display name must be 40 characters or fewer"),
++
++  username: z
++    .string()
++    .trim()
++    .transform((value) => value.replace(/^@/, "").toLowerCase())
++    .pipe(
++      z
++        .string()
++        .min(3, "Username must be at least 3 characters")
++        .max(20, "Username must be 20 characters or fewer")
++        .regex(
++          /^[a-z0-9_]+$/,
++          "Only lowercase letters, numbers and underscores"
++        )
++    ),
++});
++
++export type IdentityFormValues = z.input<typeof identitySchema>;
++export type IdentityValues = z.output<typeof identitySchema>;
+diff --git a/apps/extension/src/features/workspace/WorkspaceScreen.tsx b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+new file mode 100644
+index 0000000..f504411
+--- /dev/null
++++ b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+@@ -0,0 +1,77 @@
++import { Inbox, LogOut } from "lucide-react";
++
++import AppShell from "../../components/layout/AppShell";
++import ScreenHeader from "../../components/layout/ScreenHeader";
++import { Avatar, Button, SectionLabel } from "../../components/ui";
++import { useAppStore } from "../../stores/app.store";
++import { useProfileStore } from "../../stores/profile.store";
++
++/**
++ * Placeholder workspace proving onboarding completion + persistence.
++ * The real shell (Inbox / Contacts / Communities / Settings) is M3.
++ */
++export default function WorkspaceScreen() {
++  const setScreen = useAppStore((state) => state.setScreen);
++
++  const displayName = useProfileStore((state) => state.displayName);
++  const username = useProfileStore((state) => state.username);
++  const visibility = useProfileStore((state) => state.visibility);
++  const avatarColor = useProfileStore((state) => state.avatarColor);
++  const resetProfile = useProfileStore((state) => state.resetProfile);
++
++  const signOut = () => {
++    resetProfile();
++    setScreen("welcome");
++  };
++
++  return (
++    <AppShell>
++      <div className="flex h-full flex-col">
++        <ScreenHeader>
++          <div className="flex items-center gap-3">
++            <Avatar name={displayName} color={avatarColor} size="md" />
++
++            <div>
++              <p className="text-sm font-semibold leading-tight">
++                {displayName}
++              </p>
++              <p className="text-xs text-slate-500">@{username}</p>
++            </div>
++          </div>
++
++          <span className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium capitalize text-slate-500">
++            {visibility}
++          </span>
++        </ScreenHeader>
++
++        <section className="flex flex-1 flex-col items-center justify-center px-6 text-center">
++          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
++            <Inbox size={24} />
++          </span>
++
++          <SectionLabel className="mt-6">Workspace</SectionLabel>
++
++          <h1 className="mt-3 text-2xl font-bold tracking-tight">
++            You're all set
++          </h1>
++
++          <p className="mt-3 max-w-xs text-sm leading-7 text-slate-500">
++            Your profile is saved locally and survives closing the panel.
++            Inbox, Contacts and Communities land in the next milestone.
++          </p>
++        </section>
++
++        <footer className="border-t border-slate-200 p-6">
++          <Button
++            variant="outline"
++            fullWidth
++            leftIcon={<LogOut size={16} />}
++            onClick={signOut}
++          >
++            Sign out
++          </Button>
++        </footer>
++      </div>
++    </AppShell>
++  );
++}
+diff --git a/apps/extension/src/features/workspace/index.ts b/apps/extension/src/features/workspace/index.ts
+new file mode 100644
+index 0000000..c9d57e2
+--- /dev/null
++++ b/apps/extension/src/features/workspace/index.ts
+@@ -0,0 +1 @@
++export { default } from "./WorkspaceScreen";
+diff --git a/apps/extension/src/lib/extension-storage.ts b/apps/extension/src/lib/extension-storage.ts
+new file mode 100644
+index 0000000..839e14c
+--- /dev/null
++++ b/apps/extension/src/lib/extension-storage.ts
+@@ -0,0 +1,21 @@
++import { browser } from "wxt/browser";
++import type { StateStorage } from "zustand/middleware";
++
++/**
++ * StateStorage adapter over browser.storage.local so zustand
++ * persist survives popup / side panel close and browser restarts.
++ */
++export const extensionStorage: StateStorage = {
++  getItem: async (name) => {
++    const result = await browser.storage.local.get(name);
++    return (result[name] as string | undefined) ?? null;
++  },
++
++  setItem: async (name, value) => {
++    await browser.storage.local.set({ [name]: value });
++  },
++
++  removeItem: async (name) => {
++    await browser.storage.local.remove(name);
++  },
++};
+diff --git a/apps/extension/src/stores/profile.store.ts b/apps/extension/src/stores/profile.store.ts
+new file mode 100644
+index 0000000..75fa8fe
+--- /dev/null
++++ b/apps/extension/src/stores/profile.store.ts
+@@ -0,0 +1,84 @@
++import { create } from "zustand";
++import { createJSONStorage, persist } from "zustand/middleware";
++
++import { extensionStorage } from "../lib/extension-storage";
++
++export type ProfileVisibility = "public" | "private";
++
++export interface AvatarColor {
++  id: string;
++  value: string;
++}
++
++export const AVATAR_COLORS: AvatarColor[] = [
++  { id: "blue", value: "#2563EB" },
++  { id: "indigo", value: "#4F46E5" },
++  { id: "violet", value: "#7C3AED" },
++  { id: "rose", value: "#E11D48" },
++  { id: "orange", value: "#EA580C" },
++  { id: "amber", value: "#D97706" },
++  { id: "emerald", value: "#059669" },
++  { id: "slate", value: "#334155" },
++];
++
++interface ProfileState {
++  /** true once persisted state has been read back from browser.storage */
++  hasHydrated: boolean;
++
++  isComplete: boolean;
++  visibility: ProfileVisibility;
++  displayName: string;
++  username: string;
++  avatarColor: string;
++
++  setHasHydrated: (value: boolean) => void;
++  setVisibility: (visibility: ProfileVisibility) => void;
++  setIdentity: (identity: { displayName: string; username: string }) => void;
++  setAvatarColor: (color: string) => void;
++  completeProfile: () => void;
++  resetProfile: () => void;
++}
++
++const initialProfile = {
++  isComplete: false,
++  visibility: "public" as ProfileVisibility,
++  displayName: "",
++  username: "",
++  avatarColor: AVATAR_COLORS[0]!.value,
++};
++
++export const useProfileStore = create<ProfileState>()(
++  persist(
++    (set) => ({
++      hasHydrated: false,
++      ...initialProfile,
++
++      setHasHydrated: (value) => set({ hasHydrated: value }),
++
++      setVisibility: (visibility) => set({ visibility }),
++
++      setIdentity: ({ displayName, username }) =>
++        set({ displayName, username }),
++
++      setAvatarColor: (avatarColor) => set({ avatarColor }),
++
++      completeProfile: () => set({ isComplete: true }),
++
++      resetProfile: () => set({ ...initialProfile }),
++    }),
++    {
++      name: "tabcom:profile",
++      storage: createJSONStorage(() => extensionStorage),
++      partialize: (state) => ({
++        isComplete: state.isComplete,
++        visibility: state.visibility,
++        displayName: state.displayName,
++        username: state.username,
++        avatarColor: state.avatarColor,
++      }),
++      onRehydrateStorage: () => (state) => {
++        state?.setHasHydrated(true);
++      },
++    }
++  )
++);
+diff --git a/apps/extension/src/utils/initials.ts b/apps/extension/src/utils/initials.ts
+new file mode 100644
+index 0000000..f05834a
+--- /dev/null
++++ b/apps/extension/src/utils/initials.ts
+@@ -0,0 +1,12 @@
++/** "Ramesh Mandal" -> "RM", "ramesh" -> "R", "" -> "?" */
++export function getInitials(name: string): string {
++  const parts = name.trim().split(/\s+/).filter(Boolean);
++
++  if (parts.length === 0) return "?";
++  if (parts.length === 1) return parts[0]!.charAt(0).toUpperCase();
++
++  return (
++    parts[0]!.charAt(0).toUpperCase() +
++    parts[parts.length - 1]!.charAt(0).toUpperCase()
++  );
++}
+-- 
+2.43.0
+

@@ -1,0 +1,1165 @@
+From f2c3460fb100b88018f246a85a9389265b5957e9 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Thu, 2 Jul 2026 19:00:21 +0000
+Subject: [PATCH] feat(consent): approval-gated messaging - request, accept,
+ deny, block, report
+
+Server (all enforced server-side, 13/13 tests):
+- connection registry: request -> pending -> accepted; mutual requests
+  auto-accept; deny clears and allows re-requesting
+- dm/typing gated on ACCEPTED connection (in addition to public
+  visibility); private overrides even accepted connections
+- block: mutual severance, invisible to the blocked party (their
+  requests are swallowed but acknowledged as normal pending); unblock
+  does NOT restore the connection - consent must be re-earned
+- report: minimal privacy-conscious log (no content exists to log),
+  auto-blocks
+- two-tier leak resistance: strangers get uniform not_connected;
+  connected-but-private and connected-but-offline are indistinguishable
+- connections snapshot sent on hello
+
+Extension:
+- ConsentPanel replaces the composer for every non-accepted state:
+  send request / waiting / accept-deny-block-report with explicit
+  privacy consent copy / declined + re-request / blocked + unblock
+- incoming requests appear as unread inbox conversations with a
+  system notice; accept/decline/block outcomes land as system notices
+- Communities rows show live status chips (Connect / Requested /
+  Respond / Blocked / message icon)
+- typing relayed only on accepted connections
+- dm_error not_connected handled
+---
+ apps/backend/src/index.ts                     | 232 ++++++++++++++++--
+ apps/backend/test/relay.test.mjs              | 177 +++++++++++--
+ .../features/workspace/WorkspaceScreen.tsx    |   9 +
+ .../workspace/views/CommunitiesView.tsx       |  33 ++-
+ .../workspace/views/chat/ChatView.tsx         |  16 +-
+ .../workspace/views/chat/ConsentPanel.tsx     | 130 ++++++++++
+ apps/extension/src/lib/realtime.ts            |  58 ++++-
+ apps/extension/src/stores/chat.store.ts       | 206 +++++++++++++++-
+ 8 files changed, 813 insertions(+), 48 deletions(-)
+ create mode 100644 apps/extension/src/features/workspace/views/chat/ConsentPanel.tsx
+
+diff --git a/apps/backend/src/index.ts b/apps/backend/src/index.ts
+index 02ac469..d4dc4fc 100644
+--- a/apps/backend/src/index.ts
++++ b/apps/backend/src/index.ts
+@@ -2,18 +2,19 @@ import { createServer } from "node:http";
+ import { Server } from "socket.io";
+ 
+ /**
+- * Tabcom realtime server — privacy-first relay.
++ * Tabcom realtime server — privacy-first relay with consent-based contact.
+  *
+  * Privacy model (enforced HERE, never trusted to clients):
+- *  - PUBLIC users appear in the community roster and can send/receive DMs.
+- *  - PRIVATE users are a complete end: excluded from every roster
+- *    broadcast, cannot receive DMs, cannot send DMs. The server rejects
+- *    both directions, so a modified client cannot bypass it.
+- *  - ZERO message retention: this server relays and forgets. No message
+- *    is ever written to memory beyond the relay call, disk, or logs.
+- *
+- * In-memory presence only. Auth + history (opt-in) arrive with the
+- * NestJS + PostgreSQL upgrade; this socket protocol is stable.
++ *  - PUBLIC users appear in the community roster; PRIVATE users are a
++ *    complete end (invisible, cannot send or receive anything).
++ *  - CONSENT BEFORE CONTACT: messages only flow between users whose
++ *    connection is ACCEPTED. Until then only a single connection
++ *    request can be delivered.
++ *  - BLOCK is invisible: a blocked requester sees exactly what any
++ *    requester sees. Report auto-blocks.
++ *  - ZERO message retention: messages are relayed and forgotten.
++ *    The connection registry is in-memory and session-scoped; it moves
++ *    to PostgreSQL (with user consent for retention) in the DB upgrade.
+  */
+ 
+ export type Visibility = "public" | "private";
+@@ -33,7 +34,11 @@ export interface WireMessage {
+   sentAt: number;
+ }
+ 
+-export type DmErrorReason = "sender_private" | "recipient_unavailable";
++type PairStatus = "pending" | "accepted";
++interface Pair {
++  status: PairStatus;
++  requester: string; // username that initiated
++}
+ 
+ const httpServer = createServer((_req, res) => {
+   res.writeHead(200, { "Content-Type": "application/json" });
+@@ -43,12 +48,21 @@ const httpServer = createServer((_req, res) => {
+ const io = new Server(httpServer, { cors: { origin: "*" } });
+ 
+ const users = new Map<string, WireUser>(); // socket.id -> user
++const pairs = new Map<string, Pair>(); // pairKey -> connection state
++const blocks = new Set<string>(); // "blocker|blocked"
+ 
+ function sanitizeVisibility(value: unknown): Visibility {
+   return value === "private" ? "private" : "public";
+ }
+ 
+-/** Only public users are ever broadcast. Private users do not exist here. */
++function pairKey(a: string, b: string): string {
++  return [a, b].sort().join("|");
++}
++
++function isBlockedEitherWay(a: string, b: string): boolean {
++  return blocks.has(`${a}|${b}`) || blocks.has(`${b}|${a}`);
++}
++
+ function publicRoster(): WireUser[] {
+   return [...users.values()].filter((user) => user.visibility === "public");
+ }
+@@ -67,50 +81,207 @@ function publicSocketIdsFor(username: string): string[] {
+   return ids;
+ }
+ 
++function allSocketIdsFor(username: string): string[] {
++  const ids: string[] = [];
++  for (const [id, user] of users) {
++    if (user.username === username) ids.push(id);
++  }
++  return ids;
++}
++
++/** Send this user their current connection snapshot. */
++function sendConnections(socketId: string, username: string): void {
++  const snapshot: Array<{ username: string; status: string }> = [];
++
++  for (const [key, pair] of pairs) {
++    const [a, b] = key.split("|") as [string, string];
++    if (a !== username && b !== username) continue;
++
++    const other = a === username ? b : a;
++    if (isBlockedEitherWay(username, other)) continue;
++
++    snapshot.push({
++      username: other,
++      status:
++        pair.status === "accepted"
++          ? "accepted"
++          : pair.requester === username
++            ? "pending_out"
++            : "pending_in",
++    });
++  }
++
++  for (const entry of blocks) {
++    const [blocker, blocked] = entry.split("|") as [string, string];
++    if (blocker === username) {
++      snapshot.push({ username: blocked, status: "blocked" });
++    }
++  }
++
++  io.to(socketId).emit("connections", snapshot);
++}
++
++function notify(username: string, event: string, payload: unknown): void {
++  for (const id of allSocketIdsFor(username)) {
++    io.to(id).emit(event, payload);
++  }
++}
++
+ io.on("connection", (socket) => {
+   socket.on("hello", (raw: Partial<WireUser>) => {
+     if (!raw?.username) return;
+ 
+-    users.set(socket.id, {
++    const user: WireUser = {
+       username: String(raw.username).slice(0, 20).toLowerCase(),
+       name: String(raw.name ?? raw.username).slice(0, 40),
+       color: String(raw.color ?? "#2563EB").slice(0, 9),
+       visibility: sanitizeVisibility(raw.visibility),
+-    });
++    };
+ 
++    users.set(socket.id, user);
+     broadcastRoster();
++    sendConnections(socket.id, user.username);
+   });
+ 
+   socket.on("visibility", (raw: unknown) => {
+     const user = users.get(socket.id);
+     if (!user) return;
+-
+     user.visibility = sanitizeVisibility(raw);
+     broadcastRoster();
+   });
+ 
++  // ---- Consent-based contact -------------------------------------------
++
++  socket.on("connect_request", ({ to }: { to: string }) => {
++    const from = users.get(socket.id);
++    if (!from || !to || to === from.username) return;
++    if (from.visibility === "private") return; // complete end
++
++    // Blocked pairs: acknowledge as pending to the requester (no leak),
++    // deliver nothing.
++    if (isBlockedEitherWay(from.username, to)) {
++      socket.emit("connect_update", { username: to, status: "pending_out" });
++      return;
++    }
++
++    const key = pairKey(from.username, to);
++    const existing = pairs.get(key);
++
++    if (existing?.status === "accepted") {
++      socket.emit("connect_update", { username: to, status: "accepted" });
++      return;
++    }
++
++    // Both requested each other -> auto-accept.
++    if (existing?.status === "pending" && existing.requester !== from.username) {
++      existing.status = "accepted";
++      notify(from.username, "connect_update", { username: to, status: "accepted" });
++      notify(to, "connect_update", { username: from.username, status: "accepted" });
++      return;
++    }
++
++    const targets = publicSocketIdsFor(to);
++    if (targets.length === 0) {
++      socket.emit("connect_error", { to, reason: "unavailable" });
++      return;
++    }
++
++    pairs.set(key, { status: "pending", requester: from.username });
++
++    socket.emit("connect_update", { username: to, status: "pending_out" });
++    for (const id of targets) {
++      io.to(id).emit("connect_request", { from });
++    }
++  });
++
++  socket.on(
++    "connect_response",
++    ({ to, action }: { to: string; action: "accept" | "deny" }) => {
++      const me = users.get(socket.id);
++      if (!me || !to) return;
++
++      const key = pairKey(me.username, to);
++      const pair = pairs.get(key);
++
++      // Only the recipient of a pending request may respond.
++      if (!pair || pair.status !== "pending" || pair.requester !== to) return;
++
++      if (action === "accept") {
++        pair.status = "accepted";
++        notify(me.username, "connect_update", { username: to, status: "accepted" });
++        notify(to, "connect_update", { username: me.username, status: "accepted" });
++      } else {
++        pairs.delete(key);
++        notify(me.username, "connect_update", { username: to, status: "none" });
++        notify(to, "connect_update", { username: me.username, status: "declined" });
++      }
++    }
++  );
++
++  socket.on("block", ({ username }: { username: string }) => {
++    const me = users.get(socket.id);
++    if (!me || !username) return;
++
++    blocks.add(`${me.username}|${username}`);
++    pairs.delete(pairKey(me.username, username));
++
++    // Only the blocker learns anything.
++    notify(me.username, "connect_update", { username, status: "blocked" });
++  });
++
++  socket.on("unblock", ({ username }: { username: string }) => {
++    const me = users.get(socket.id);
++    if (!me || !username) return;
++
++    blocks.delete(`${me.username}|${username}`);
++    notify(me.username, "connect_update", { username, status: "none" });
++  });
++
++  socket.on(
++    "report",
++    ({ username, reason }: { username: string; reason?: string }) => {
++      const me = users.get(socket.id);
++      if (!me || !username) return;
++
++      // Minimal, privacy-conscious log: who/whom/why, no message content
++      // (the server never has message content to attach).
++      console.log(
++        `[report] @${me.username} reported @${username}` +
++          (reason ? ` — ${String(reason).slice(0, 200)}` : "")
++      );
++
++      blocks.add(`${me.username}|${username}`);
++      pairs.delete(pairKey(me.username, username));
++      notify(me.username, "connect_update", { username, status: "blocked" });
++    }
++  );
++
++  // ---- Messaging (public + accepted only) ------------------------------
++
+   socket.on(
+     "dm",
+     ({ to, message }: { to: string; message: WireMessage }) => {
+       const from = users.get(socket.id);
+       if (!from || !to || !message) return;
+ 
+-      // Complete end while private: senders in private mode cannot message.
+       if (from.visibility === "private") {
+-        socket.emit("dm_error", {
+-          to,
+-          reason: "sender_private" satisfies DmErrorReason,
+-        });
++        socket.emit("dm_error", { to, reason: "sender_private" });
++        return;
++      }
++
++      // Consent gate: connection must be accepted and unblocked.
++      const pair = pairs.get(pairKey(from.username, to));
++      if (
++        pair?.status !== "accepted" ||
++        isBlockedEitherWay(from.username, to)
++      ) {
++        socket.emit("dm_error", { to, reason: "not_connected" });
+         return;
+       }
+ 
+-      // Private or offline recipients are indistinguishable — no presence leak.
+       const targets = publicSocketIdsFor(to);
+       if (targets.length === 0) {
+-        socket.emit("dm_error", {
+-          to,
+-          reason: "recipient_unavailable" satisfies DmErrorReason,
+-        });
++        socket.emit("dm_error", { to, reason: "recipient_unavailable" });
+         return;
+       }
+ 
+@@ -123,7 +294,12 @@ io.on("connection", (socket) => {
+   socket.on("typing", ({ to }: { to: string }) => {
+     const from = users.get(socket.id);
+     if (!from || !to) return;
+-    if (from.visibility === "private") return; // silently dropped
++    if (from.visibility === "private") return;
++
++    const pair = pairs.get(pairKey(from.username, to));
++    if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) {
++      return;
++    }
+ 
+     for (const id of publicSocketIdsFor(to)) {
+       io.to(id).emit("typing", { from: from.username });
+@@ -141,5 +317,7 @@ const PORT = Number(process.env.PORT ?? 3001);
+ 
+ httpServer.listen(PORT, () => {
+   console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
+-  console.log("[tabcom] privacy: zero message retention, server-enforced visibility");
++  console.log(
++    "[tabcom] privacy: zero message retention, server-enforced visibility, consent before contact"
++  );
+ });
+diff --git a/apps/backend/test/relay.test.mjs b/apps/backend/test/relay.test.mjs
+index cfcd1cd..0bcc78b 100644
+--- a/apps/backend/test/relay.test.mjs
++++ b/apps/backend/test/relay.test.mjs
+@@ -62,17 +62,58 @@ await sleep(400);
+   pass("discovery: public users listed, private user invisible");
+ }
+ 
+-// TEST 2: public <-> public DM relays
++// TEST 2a: DM before any connection is rejected (consent gate)
+ {
++  let leaked = false;
++  bob.once("dm", () => (leaked = true));
++  const error = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "bob", message: { id: "t2a", kind: "text", text: "premature", sentAt: Date.now() } });
++  const err = await error;
++  await sleep(200);
++  if (leaked) fail("dm delivered without an accepted connection");
++  if (err.reason !== "not_connected") fail("wrong pre-connection reason: " + err.reason);
++  pass("consent gate: no dm without an accepted connection");
++}
++
++// TEST 2b: request -> accept -> DM flows
++{
++  const requestArrives = new Promise((resolve) => bob.once("connect_request", resolve));
++  alice.emit("connect_request", { to: "bob" });
++  const { from } = await requestArrives;
++  if (from.username !== "alice") fail("request carried wrong sender");
++
++  const bothNotified = Promise.all([
++    new Promise((resolve) => alice.once("connect_update", resolve)),
++    new Promise((resolve) => bob.once("connect_update", resolve)),
++  ]);
++  bob.emit("connect_response", { to: "alice", action: "accept" });
++  const [aliceUpdate, bobUpdate] = await bothNotified;
++  if (aliceUpdate.status !== "accepted" || bobUpdate.status !== "accepted") fail("accept did not notify both sides");
++
+   const delivery = new Promise((resolve) => bob.once("dm", resolve));
+-  alice.emit("dm", { to: "bob", message: { id: "t2", kind: "text", text: "hi bob", sentAt: Date.now() } });
+-  const { from, message } = await delivery;
+-  if (from.username !== "alice" || message.text !== "hi bob") fail("public->public dm corrupted");
+-  pass("messaging: public -> public delivers");
++  alice.emit("dm", { to: "bob", message: { id: "t2b", kind: "text", text: "hi bob", sentAt: Date.now() } });
++  const { message } = await delivery;
++  if (message.text !== "hi bob") fail("post-accept dm corrupted");
++  pass("consent flow: request -> accept -> dm delivers");
+ }
+ 
+-// TEST 3: DM *to* a private user is rejected; nothing reaches them
++// TEST 3: a connected user who goes PRIVATE becomes unreachable
+ {
++  // mallory goes public long enough to connect with alice
++  mallory.emit("visibility", "public");
++  await sleep(200);
++
++  const req = new Promise((resolve) => mallory.once("connect_request", resolve));
++  alice.emit("connect_request", { to: "mallory" });
++  await req;
++  const accepted = new Promise((resolve) => alice.once("connect_update", resolve));
++  mallory.emit("connect_response", { to: "alice", action: "accept" });
++  await accepted;
++
++  // now mallory goes private — even the accepted connection cannot reach her
++  mallory.emit("visibility", "private");
++  await sleep(200);
++
+   let leaked = false;
+   mallory.once("dm", () => (leaked = true));
+   const error = new Promise((resolve) => alice.once("dm_error", resolve));
+@@ -81,7 +122,7 @@ await sleep(400);
+   await sleep(300);
+   if (leaked) fail("message reached a private user");
+   if (err.reason !== "recipient_unavailable") fail("wrong rejection reason: " + err.reason);
+-  pass("barrier in: dm TO private user rejected, nothing delivered");
++  pass("barrier in: private overrides even an accepted connection");
+ }
+ 
+ // TEST 4: DM *from* a private user is rejected (complete end)
+@@ -121,16 +162,124 @@ await sleep(400);
+   pass("live switching: appears on public, vanishes on private");
+ }
+ 
+-// TEST 7: offline and private recipients are indistinguishable (no presence leak)
++// TEST 7: no presence leaks at either tier
++{
++  // Tier 1: any unconnected target (stranger, offline, or nonexistent)
++  // is uniformly "not_connected".
++  const errGhost = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "ghost", message: { id: "t7a", kind: "text", text: "?", sentAt: Date.now() } });
++  if ((await errGhost).reason !== "not_connected") fail("nonexistent target leaked information");
++
++  // Tier 2: among CONNECTED users, private and fully-offline produce the
++  // identical reason (mallory is connected+private; now she disconnects).
++  const errPrivate = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "mallory", message: { id: "t7b", kind: "text", text: "?", sentAt: Date.now() } });
++  const privateReason = (await errPrivate).reason;
++
++  mallory.disconnect();
++  await sleep(300);
++
++  const errOffline = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "mallory", message: { id: "t7c", kind: "text", text: "?", sentAt: Date.now() } });
++  const offlineReason = (await errOffline).reason;
++
++  if (privateReason !== offlineReason) fail("private vs offline distinguishable: " + privateReason + " / " + offlineReason);
++  pass("no presence leak: stranger/private/offline reveal nothing");
++}
++
++
++// TEST 8: deny — requester informed, messaging still barred, re-request allowed
++{
++  const carol = await connect({ username: "carol", name: "Carol", color: "#D97706", visibility: "public" });
++  await sleep(200);
++
++  const req = new Promise((resolve) => carol.once("connect_request", resolve));
++  alice.emit("connect_request", { to: "carol" });
++  await req;
++
++  const declined = new Promise((resolve) => alice.once("connect_update", resolve));
++  carol.emit("connect_response", { to: "alice", action: "deny" });
++  const upd = await declined;
++  if (upd.status !== "declined") fail("deny did not report declined to requester");
++
++  const error = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "carol", message: { id: "t8", kind: "text", text: "still?", sentAt: Date.now() } });
++  const err = await error;
++  if (err.reason !== "not_connected") fail("messaging allowed after deny");
++
++  const req2 = new Promise((resolve) => carol.once("connect_request", resolve));
++  alice.emit("connect_request", { to: "carol" });
++  await req2;
++  pass("deny: requester informed, chat barred, re-request possible");
++  carol.disconnect();
++  await sleep(200);
++}
++
++// TEST 9: block is invisible — requests from a blocked user are swallowed
++{
++  const dave = await connect({ username: "dave", name: "Dave", color: "#334155", visibility: "public" });
++  await sleep(200);
++
++  bob.emit("block", { username: "dave" });
++  await sleep(200);
++
++  let reached = false;
++  bob.once("connect_request", () => (reached = true));
++
++  const ack = new Promise((resolve) => dave.once("connect_update", resolve));
++  dave.emit("connect_request", { to: "bob" });
++  const upd = await ack;
++  await sleep(300);
++
++  if (reached) fail("blocked user's request reached the blocker");
++  if (upd.status !== "pending_out") fail("blocked requester got a distinguishable response: " + upd.status);
++  pass("block: invisible — request swallowed, requester sees normal pending");
++  dave.disconnect();
++  await sleep(200);
++}
++
++// TEST 10: block severs an accepted connection (alice<->bob were connected)
+ {
+-  const errorOffline = new Promise((resolve) => alice.once("dm_error", resolve));
+-  alice.emit("dm", { to: "ghost", message: { id: "t7", kind: "text", text: "?", sentAt: Date.now() } });
+-  const err = await errorOffline;
+-  if (err.reason !== "recipient_unavailable") fail("offline reason differs from private reason");
+-  pass("no presence leak: offline and private are indistinguishable");
++  bob.emit("block", { username: "alice" });
++  await sleep(200);
++
++  const error = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "bob", message: { id: "t10", kind: "text", text: "hello?", sentAt: Date.now() } });
++  const err = await error;
++  if (err.reason !== "not_connected") fail("block did not sever the accepted connection");
++  pass("block: severs existing connection, dm rejected");
++}
++
++// TEST 11: unblock restores nothing automatically — consent must be re-earned
++{
++  bob.emit("unblock", { username: "alice" });
++  await sleep(200);
++
++  const error = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "bob", message: { id: "t11", kind: "text", text: "now?", sentAt: Date.now() } });
++  const err = await error;
++  if (err.reason !== "not_connected") fail("unblock silently restored the connection");
++  pass("unblock: connection must be re-requested, not auto-restored");
++}
++
++// TEST 12: report auto-blocks
++{
++  const eve = await connect({ username: "eve", name: "Eve", color: "#E11D48", visibility: "public" });
++  await sleep(200);
++
++  alice.emit("report", { username: "eve", reason: "spam" });
++  await sleep(200);
++
++  let reached = false;
++  alice.once("connect_request", () => (reached = true));
++  eve.emit("connect_request", { to: "alice" });
++  await sleep(300);
++  if (reached) fail("reported user could still reach the reporter");
++  pass("report: auto-blocks the reported user");
++  eve.disconnect();
+ }
+ 
+-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/7)`);
++console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/13)`);
+ alice.disconnect(); bob.disconnect(); mallory.disconnect();
+ server.kill();
+ process.exit(0);
+diff --git a/apps/extension/src/features/workspace/WorkspaceScreen.tsx b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+index ca29769..26d117a 100644
+--- a/apps/extension/src/features/workspace/WorkspaceScreen.tsx
++++ b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+@@ -57,6 +57,15 @@ export default function WorkspaceScreen() {
+ 
+         onDmError: (toUsername, reason) =>
+           useChatStore.getState().receiveDmError(toUsername, reason),
++
++        onConnections: (snapshot) =>
++          useChatStore.getState().receiveConnections(snapshot),
++
++        onConnectRequest: (from) =>
++          useChatStore.getState().receiveConnectRequest(from),
++
++        onConnectUpdate: (username, status) =>
++          useChatStore.getState().receiveConnectUpdate(username, status),
+       }
+     );
+     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
+diff --git a/apps/extension/src/features/workspace/views/CommunitiesView.tsx b/apps/extension/src/features/workspace/views/CommunitiesView.tsx
+index a35024a..4a5b5ca 100644
+--- a/apps/extension/src/features/workspace/views/CommunitiesView.tsx
++++ b/apps/extension/src/features/workspace/views/CommunitiesView.tsx
+@@ -17,6 +17,7 @@ export default function CommunitiesView() {
+   const live = useChatStore((state) => state.live);
+   const contacts = useChatStore((state) => state.contacts);
+   const startConversation = useChatStore((state) => state.startConversation);
++  const connections = useChatStore((state) => state.connections);
+   const setTab = useWorkspaceStore((state) => state.setTab);
+ 
+   const visibility = useProfileStore((state) => state.visibility);
+@@ -98,7 +99,37 @@ export default function CommunitiesView() {
+                 </span>
+               </span>
+ 
+-              <MessageSquare size={18} className="shrink-0 text-slate-400" />
++              {(() => {
++                const status = connections[contact.username] ?? "none";
++                if (status === "accepted")
++                  return (
++                    <MessageSquare
++                      size={18}
++                      className="shrink-0 text-slate-400"
++                    />
++                  );
++                const label =
++                  status === "pending_out"
++                    ? "Requested"
++                    : status === "pending_in"
++                      ? "Respond"
++                      : status === "blocked"
++                        ? "Blocked"
++                        : "Connect";
++                const tone =
++                  status === "pending_in"
++                    ? "border-blue-200 bg-blue-50 text-blue-600"
++                    : status === "blocked"
++                      ? "border-slate-200 text-slate-400"
++                      : "border-slate-200 text-slate-500";
++                return (
++                  <span
++                    className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${tone}`}
++                  >
++                    {label}
++                  </span>
++                );
++              })()}
+             </button>
+           </li>
+         ))}
+diff --git a/apps/extension/src/features/workspace/views/chat/ChatView.tsx b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+index 78868cc..679f53a 100644
+--- a/apps/extension/src/features/workspace/views/chat/ChatView.tsx
++++ b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+@@ -13,6 +13,7 @@ import { sendTyping } from "../../../../lib/realtime";
+ import { Avatar } from "../../../../components/ui";
+ import { cn } from "../../../../lib/cn";
+ import { ME, useChatStore } from "../../../../stores/chat.store";
++import ConsentPanel from "./ConsentPanel";
+ import { useProfileStore } from "../../../../stores/profile.store";
+ import type { Message } from "../../../../types/chat";
+ import { formatClockTime } from "../../../../utils/time";
+@@ -108,6 +109,7 @@ export default function ChatView({
+   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
+ 
+   const visibility = useProfileStore((state) => state.visibility);
++  const connections = useChatStore((state) => state.connections);
+ 
+   const [draft, setDraft] = useState("");
+   const bottomRef = useRef<HTMLDivElement>(null);
+@@ -128,6 +130,11 @@ export default function ChatView({
+ 
+   if (!conversation || !contact) return null;
+ 
++  const isLiveContact = contact.id.startsWith("u-");
++  const connection = isLiveContact
++    ? (connections[contact.username] ?? "none")
++    : "accepted";
++
+   const submit = () => {
+     sendText(conversationId, draft);
+     setDraft("");
+@@ -185,8 +192,10 @@ export default function ChatView({
+         <div ref={bottomRef} />
+       </div>
+ 
+-      {/* Composer — complete end while private (server enforces too) */}
+-      {visibility === "private" && contact.id.startsWith("u-") ? (
++      {/* Composer — consent gate, then privacy gate (server enforces both) */}
++      {isLiveContact && connection !== "accepted" ? (
++        <ConsentPanel contact={contact} status={connection} />
++      ) : visibility === "private" && contact.id.startsWith("u-") ? (
+         <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
+           <ShieldOff size={18} className="shrink-0 text-slate-400" />
+           <p className="text-xs leading-5 text-slate-500">
+@@ -212,7 +221,8 @@ export default function ChatView({
+             setDraft(event.target.value);
+ 
+             if (
+-              contact.id.startsWith("u-") &&
++              isLiveContact &&
++              connection === "accepted" &&
+               Date.now() - lastTypingSent.current > 1500
+             ) {
+               lastTypingSent.current = Date.now();
+diff --git a/apps/extension/src/features/workspace/views/chat/ConsentPanel.tsx b/apps/extension/src/features/workspace/views/chat/ConsentPanel.tsx
+new file mode 100644
+index 0000000..db416e8
+--- /dev/null
++++ b/apps/extension/src/features/workspace/views/chat/ConsentPanel.tsx
+@@ -0,0 +1,130 @@
++import { Check, Flag, ShieldBan, UserPlus, X } from "lucide-react";
++
++import { Button } from "../../../../components/ui";
++import { useChatStore } from "../../../../stores/chat.store";
++import type { Contact } from "../../../../types/chat";
++import type { ConnectionStatus } from "../../../../lib/realtime";
++
++/**
++ * Replaces the composer until a connection is ACCEPTED.
++ * Covers every state of the consent lifecycle. The server enforces all
++ * of this regardless — this panel is honest UX on top of that.
++ */
++export default function ConsentPanel({
++  contact,
++  status,
++}: {
++  contact: Contact;
++  status: ConnectionStatus;
++}) {
++  const requestConnect = useChatStore((state) => state.requestConnect);
++  const respondToRequest = useChatStore((state) => state.respondToRequest);
++  const block = useChatStore((state) => state.block);
++  const unblock = useChatStore((state) => state.unblock);
++  const report = useChatStore((state) => state.report);
++
++  if (status === "pending_in") {
++    return (
++      <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
++        <p className="text-sm font-semibold">
++          @{contact.username} wants to connect
++        </p>
++
++        <p className="mt-1.5 text-xs leading-5 text-slate-500">
++          By accepting, you agree to share your profile, presence and
++          messages with @{contact.username}. You can block or report them
++          at any time. Messages are never stored on Tabcom servers.
++        </p>
++
++        <div className="mt-3 flex gap-2">
++          <Button
++            size="md"
++            className="flex-1"
++            leftIcon={<Check size={15} />}
++            onClick={() => respondToRequest(contact, "accept")}
++          >
++            Accept
++          </Button>
++
++          <Button
++            size="md"
++            variant="outline"
++            className="flex-1"
++            leftIcon={<X size={15} />}
++            onClick={() => respondToRequest(contact, "deny")}
++          >
++            Deny
++          </Button>
++        </div>
++
++        <div className="mt-2 flex justify-center gap-5">
++          <button
++            type="button"
++            onClick={() => block(contact)}
++            className="flex items-center gap-1 text-xs font-medium text-slate-500 transition hover:text-red-600"
++          >
++            <ShieldBan size={13} /> Block
++          </button>
++
++          <button
++            type="button"
++            onClick={() => report(contact, "Reported from connection request")}
++            className="flex items-center gap-1 text-xs font-medium text-slate-500 transition hover:text-red-600"
++          >
++            <Flag size={13} /> Report
++          </button>
++        </div>
++      </div>
++    );
++  }
++
++  if (status === "pending_out") {
++    return (
++      <div className="border-t border-slate-200 bg-slate-50 px-6 py-4">
++        <p className="text-center text-xs leading-5 text-slate-500">
++          Request sent. You'll be able to chat once @{contact.username}
++          {" "}accepts.
++        </p>
++      </div>
++    );
++  }
++
++  if (status === "blocked") {
++    return (
++      <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3.5">
++        <p className="text-xs leading-5 text-slate-500">
++          You blocked @{contact.username}. Unblocking won't reconnect you —
++          a new request is required.
++        </p>
++
++        <Button size="md" variant="outline" onClick={() => unblock(contact)}>
++          Unblock
++        </Button>
++      </div>
++    );
++  }
++
++  // "none" or "declined"
++  return (
++    <div className="border-t border-slate-200 bg-slate-50 px-5 py-4">
++      {status === "declined" && (
++        <p className="mb-2 text-center text-xs text-slate-500">
++          Your previous request was declined.
++        </p>
++      )}
++
++      <Button
++        fullWidth
++        size="md"
++        leftIcon={<UserPlus size={15} />}
++        onClick={() => requestConnect(contact)}
++      >
++        Send connection request
++      </Button>
++
++      <p className="mt-2 text-center text-xs leading-5 text-slate-400">
++        Chatting starts only after @{contact.username} accepts.
++      </p>
++    </div>
++  );
++}
+diff --git a/apps/extension/src/lib/realtime.ts b/apps/extension/src/lib/realtime.ts
+index d56789b..116b3ec 100644
+--- a/apps/extension/src/lib/realtime.ts
++++ b/apps/extension/src/lib/realtime.ts
+@@ -32,7 +32,18 @@ export interface WireMessage {
+   sentAt: number;
+ }
+ 
+-export type DmErrorReason = "sender_private" | "recipient_unavailable";
++export type DmErrorReason =
++  | "sender_private"
++  | "recipient_unavailable"
++  | "not_connected";
++
++export type ConnectionStatus =
++  | "none"
++  | "pending_out"
++  | "pending_in"
++  | "accepted"
++  | "declined"
++  | "blocked";
+ 
+ export interface RealtimeHandlers {
+   onConnectionChange: (live: boolean) => void;
+@@ -40,6 +51,11 @@ export interface RealtimeHandlers {
+   onDm: (from: WireUser, message: WireMessage) => void;
+   onTyping: (fromUsername: string) => void;
+   onDmError: (toUsername: string, reason: DmErrorReason) => void;
++  onConnections: (
++    snapshot: Array<{ username: string; status: ConnectionStatus }>
++  ) => void;
++  onConnectRequest: (from: WireUser) => void;
++  onConnectUpdate: (username: string, status: ConnectionStatus) => void;
+ }
+ 
+ let socket: Socket | null = null;
+@@ -78,6 +94,46 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
+     ({ to, reason }: { to: string; reason: DmErrorReason }) =>
+       handlers.onDmError(to, reason)
+   );
++
++  socket.on(
++    "connections",
++    (snapshot: Array<{ username: string; status: ConnectionStatus }>) =>
++      handlers.onConnections(snapshot)
++  );
++
++  socket.on("connect_request", ({ from }: { from: WireUser }) =>
++    handlers.onConnectRequest(from)
++  );
++
++  socket.on(
++    "connect_update",
++    ({ username, status }: { username: string; status: ConnectionStatus }) =>
++      handlers.onConnectUpdate(username, status)
++  );
++}
++
++/** Ask to connect with someone. Consent gate: no chat until they accept. */
++export function sendConnectRequest(toUsername: string): void {
++  socket?.emit("connect_request", { to: toUsername });
++}
++
++export function respondToConnectRequest(
++  toUsername: string,
++  action: "accept" | "deny"
++): void {
++  socket?.emit("connect_response", { to: toUsername, action });
++}
++
++export function blockUser(username: string): void {
++  socket?.emit("block", { username });
++}
++
++export function unblockUser(username: string): void {
++  socket?.emit("unblock", { username });
++}
++
++export function reportUser(username: string, reason?: string): void {
++  socket?.emit("report", { username, reason });
+ }
+ 
+ export function disconnectRealtime(): void {
+diff --git a/apps/extension/src/stores/chat.store.ts b/apps/extension/src/stores/chat.store.ts
+index db4cd3f..5617224 100644
+--- a/apps/extension/src/stores/chat.store.ts
++++ b/apps/extension/src/stores/chat.store.ts
+@@ -4,7 +4,13 @@ import { createJSONStorage, persist } from "zustand/middleware";
+ 
+ import { extensionStorage } from "../lib/extension-storage";
+ import {
++  blockUser,
++  reportUser,
++  respondToConnectRequest,
++  sendConnectRequest,
+   sendDm,
++  unblockUser,
++  type ConnectionStatus,
+   type WireMessage,
+   type WireUser,
+ } from "../lib/realtime";
+@@ -81,9 +87,23 @@ interface ChatState {
+   receiveTyping: (fromUsername: string) => void;
+   receiveDmError: (
+     toUsername: string,
+-    reason: "sender_private" | "recipient_unavailable"
++    reason: "sender_private" | "recipient_unavailable" | "not_connected"
+   ) => void;
+ 
++  /** username -> connection status. Server snapshot is the authority. */
++  connections: Record<string, ConnectionStatus>;
++  connectionFor: (contact: Contact) => ConnectionStatus;
++  receiveConnections: (
++    snapshot: Array<{ username: string; status: ConnectionStatus }>
++  ) => void;
++  receiveConnectRequest: (from: WireUser) => void;
++  receiveConnectUpdate: (username: string, status: ConnectionStatus) => void;
++  requestConnect: (contact: Contact) => void;
++  respondToRequest: (contact: Contact, action: "accept" | "deny") => void;
++  block: (contact: Contact) => void;
++  unblock: (contact: Contact) => void;
++  report: (contact: Contact, reason?: string) => void;
++
+   openConversation: (conversationId: string) => void;
+   closeConversation: () => void;
+ 
+@@ -187,9 +207,52 @@ export const useChatStore = create<ChatState>()(
+         }
+       };
+ 
++      /** Append a local system notice to (or create) a contact's conversation. */
++      const systemNotice = (
++        contactId: string,
++        text: string,
++        unread: boolean
++      ) => {
++        set((state) => {
++          let conversation = state.conversations.find(
++            (item) => item.contactId === contactId
++          );
++
++          const conversations = conversation
++            ? state.conversations
++            : [
++                (conversation = {
++                  id: uid(),
++                  contactId,
++                  unread: 0,
++                  lastMessageAt: Date.now(),
++                }),
++                ...state.conversations,
++              ];
++
++          const notice: Message = {
++            id: uid(),
++            authorId: "system",
++            kind: "system",
++            text,
++            sentAt: Date.now(),
++          };
++
++          const isViewing = state.activeConversationId === conversation.id;
++
++          return appendMessage(
++            { messages: state.messages, conversations },
++            conversation.id,
++            notice,
++            unread && !isViewing
++          );
++        });
++      };
++
+       return {
+         hasHydrated: false,
+         live: false,
++        connections: {},
+         contacts: [],
+         conversations: [],
+         messages: {},
+@@ -307,7 +370,9 @@ export const useChatStore = create<ChatState>()(
+             text:
+               reason === "sender_private"
+                 ? "Not sent — you're in private mode. Switch to public in Settings to message people."
+-                : `Not delivered — @${toUsername} is unavailable (private or offline).`,
++                : reason === "not_connected"
++                  ? `Not sent — you're not connected with @${toUsername}.`
++                  : `Not delivered — @${toUsername} is unavailable (private or offline).`,
+             sentAt: Date.now(),
+           };
+ 
+@@ -316,6 +381,143 @@ export const useChatStore = create<ChatState>()(
+           );
+         },
+ 
++        connectionFor: (contact) => {
++          if (!contact.id.startsWith("u-")) return "accepted"; // demo contacts
++          return get().connections[contact.username] ?? "none";
++        },
++
++        receiveConnections: (snapshot) => {
++          const connections: Record<string, ConnectionStatus> = {};
++          for (const item of snapshot) connections[item.username] = item.status;
++          set({ connections });
++        },
++
++        receiveConnectRequest: (from) => {
++          const contactId = `u-${from.username}`;
++
++          set((state) => ({
++            connections: {
++              ...state.connections,
++              [from.username]: "pending_in",
++            },
++            contacts: state.contacts.some((c) => c.id === contactId)
++              ? state.contacts
++              : [
++                  {
++                    id: contactId,
++                    name: from.name,
++                    username: from.username,
++                    color: from.color,
++                    presence: "online" as const,
++                  },
++                  ...state.contacts,
++                ],
++          }));
++
++          systemNotice(
++            contactId,
++            `@${from.username} wants to connect. Review the request to accept, deny, block or report.`,
++            true
++          );
++        },
++
++        receiveConnectUpdate: (username, status) => {
++          set((state) => {
++            const connections = { ...state.connections };
++            if (status === "none") delete connections[username];
++            else connections[username] = status;
++            return { connections };
++          });
++
++          const contactId = `u-${username}`;
++          if (status === "accepted") {
++            systemNotice(
++              contactId,
++              `You're now connected with @${username}. Say hi!`,
++              true
++            );
++          } else if (status === "declined") {
++            systemNotice(
++              contactId,
++              `@${username} declined your request. You can send another one later.`,
++              false
++            );
++          }
++        },
++
++        requestConnect: (contact) => {
++          if (!contact.id.startsWith("u-")) return;
++          sendConnectRequest(contact.username);
++          set((state) => ({
++            connections: {
++              ...state.connections,
++              [contact.username]: "pending_out",
++            },
++          }));
++          systemNotice(
++            contact.id,
++            `Connection request sent to @${contact.username}. You can chat once they accept.`,
++            false
++          );
++        },
++
++        respondToRequest: (contact, action) => {
++          respondToConnectRequest(contact.username, action);
++          if (action === "deny") {
++            set((state) => {
++              const connections = { ...state.connections };
++              delete connections[contact.username];
++              return { connections };
++            });
++            systemNotice(contact.id, "Request denied.", false);
++          }
++          // accept confirmation arrives via connect_update from the server
++        },
++
++        block: (contact) => {
++          blockUser(contact.username);
++          set((state) => ({
++            connections: {
++              ...state.connections,
++              [contact.username]: "blocked",
++            },
++          }));
++          systemNotice(
++            contact.id,
++            `You blocked @${contact.username}. They can't contact you and won't know they're blocked.`,
++            false
++          );
++        },
++
++        unblock: (contact) => {
++          unblockUser(contact.username);
++          set((state) => {
++            const connections = { ...state.connections };
++            delete connections[contact.username];
++            return { connections };
++          });
++          systemNotice(
++            contact.id,
++            `You unblocked @${contact.username}. Connecting again requires a new request.`,
++            false
++          );
++        },
++
++        report: (contact, reason) => {
++          reportUser(contact.username, reason);
++          set((state) => ({
++            connections: {
++              ...state.connections,
++              [contact.username]: "blocked",
++            },
++          }));
++          systemNotice(
++            contact.id,
++            `You reported @${contact.username}. They've been blocked automatically.`,
++            false
++          );
++        },
++
+         receiveTyping: (fromUsername) => {
+           const contactId = `u-${fromUsername}`;
+ 
+-- 
+2.43.0
+

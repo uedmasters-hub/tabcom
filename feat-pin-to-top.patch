@@ -1,0 +1,226 @@
+From c94827e1add256eb8fcaec678b22f6f402696106 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Fri, 3 Jul 2026 03:48:41 +0000
+Subject: [PATCH] =?UTF-8?q?feat(float):=20pin-to-top=20=E2=80=94=20true=20?=
+ =?UTF-8?q?always-on-top=20via=20Document=20PiP=20handoff?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Document PiP is blocked in side panels but the float popup IS a tab
+context, so it can call documentPictureInPicture.requestWindow itself.
+
+- Pin button in the float header: hands the chat off to a genuine
+  always-on-top PiP window (floats above ALL apps), clones styles,
+  minimizes the owning popup (PiP dies with its opener, so it must
+  stay alive)
+- Unpin (button in either window, or closing the PiP) returns the chat
+  to the popup and restores/focuses it
+- placeholder screen in the popup while pinned explains the state
+- feature-detected: the pin button only appears where Document PiP
+  exists (e.g. hidden if Brave ships without it)
+---
+ apps/extension/entrypoints/pip/main.tsx | 152 +++++++++++++++++++++++-
+ 1 file changed, 149 insertions(+), 3 deletions(-)
+
+diff --git a/apps/extension/entrypoints/pip/main.tsx b/apps/extension/entrypoints/pip/main.tsx
+index 5130279..5e8a7ed 100644
+--- a/apps/extension/entrypoints/pip/main.tsx
++++ b/apps/extension/entrypoints/pip/main.tsx
+@@ -1,7 +1,15 @@
+ import { motion } from "framer-motion";
+-import { ExternalLink, Link as LinkIcon, Send, Smile } from "lucide-react";
++import {
++  ExternalLink,
++  Link as LinkIcon,
++  Pin,
++  PinOff,
++  Send,
++  Smile,
++} from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+ import ReactDOM from "react-dom/client";
++import { createPortal } from "react-dom";
+ import { browser } from "wxt/browser";
+ 
+ import "../../src/styles/tailwind.css";
+@@ -25,6 +33,38 @@ import { formatClockTime } from "../../src/utils/time";
+ 
+ const NO_MESSAGES: Message[] = [];
+ 
++interface DocumentPictureInPicture {
++  requestWindow(options?: {
++    width?: number;
++    height?: number;
++  }): Promise<Window>;
++}
++
++declare global {
++  interface Window {
++    documentPictureInPicture?: DocumentPictureInPicture;
++  }
++}
++
++/** Copy this document's styles into the always-on-top window. */
++function cloneStyles(target: Window): void {
++  for (const sheet of [...document.styleSheets]) {
++    try {
++      const css = [...sheet.cssRules].map((rule) => rule.cssText).join("");
++      const style = target.document.createElement("style");
++      style.textContent = css;
++      target.document.head.append(style);
++    } catch {
++      if (sheet.href) {
++        const link = target.document.createElement("link");
++        link.rel = "stylesheet";
++        link.href = sheet.href;
++        target.document.head.append(link);
++      }
++    }
++  }
++}
++
+ const presenceColors = {
+   online: "bg-emerald-500",
+   away: "bg-amber-400",
+@@ -115,6 +155,54 @@ function FloatApp() {
+ 
+   if (!hasHydrated || !profileHydrated) return null;
+ 
++  const [pinWindow, setPinWindow] = useState<Window | null>(null);
++  const popupWindowId = useRef<number | null>(null);
++  const pinSupported =
++    typeof window !== "undefined" && !!window.documentPictureInPicture;
++
++  const restorePopup = async () => {
++    const id = popupWindowId.current;
++    if (id != null) {
++      try {
++        await browser.windows.update(id, { state: "normal", focused: true });
++      } catch {
++        // popup already gone
++      }
++    }
++  };
++
++  const pinToTop = async () => {
++    if (!window.documentPictureInPicture || pinWindow) return;
++
++    const win = await window.documentPictureInPicture.requestWindow({
++      width: 340,
++      height: 500,
++    });
++
++    cloneStyles(win);
++    win.document.title = "Tabcom — Pinned chat";
++    win.document.body.style.margin = "0";
++    win.document.body.style.height = "100vh";
++    win.document.body.style.overflow = "hidden";
++
++    win.addEventListener("pagehide", () => {
++      setPinWindow(null);
++      void restorePopup();
++    });
++
++    setPinWindow(win);
++
++    // The PiP window dies with its opener, so keep this popup alive
++    // but tuck it away.
++    const current = await browser.windows.getCurrent();
++    popupWindowId.current = current.id ?? null;
++    if (current.id != null) {
++      void browser.windows.update(current.id, { state: "minimized" });
++    }
++  };
++
++  const unpin = () => pinWindow?.close();
++
+   if (!conversationId) {
+     return (
+       <div className="fixed inset-0 flex flex-col items-center justify-center bg-white px-8 text-center">
+@@ -126,7 +214,40 @@ function FloatApp() {
+     );
+   }
+ 
+-  return <FloatThread conversationId={conversationId} />;
++  const thread = (
++    <FloatThread
++      conversationId={conversationId}
++      pinSupported={pinSupported}
++      pinned={!!pinWindow}
++      onTogglePin={() => (pinWindow ? unpin() : void pinToTop())}
++    />
++  );
++
++  if (pinWindow) {
++    return (
++      <>
++        {createPortal(thread, pinWindow.document.body)}
++
++        <div className="fixed inset-0 flex flex-col items-center justify-center bg-white px-8 text-center">
++          <Pin size={22} className="text-blue-600" />
++          <p className="mt-3 text-sm font-semibold">Chat is pinned on top</p>
++          <p className="mt-1 text-xs leading-5 text-slate-500">
++            The conversation is floating above all your apps. Closing this
++            window closes the pin too.
++          </p>
++          <button
++            type="button"
++            onClick={unpin}
++            className="mt-4 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold transition hover:border-slate-300"
++          >
++            Bring it back here
++          </button>
++        </div>
++      </>
++    );
++  }
++
++  return thread;
+ }
+ 
+ function FloatBubble({
+@@ -227,7 +348,17 @@ function FloatBubble({
+   );
+ }
+ 
+-function FloatThread({ conversationId }: { conversationId: string }) {
++function FloatThread({
++  conversationId,
++  pinSupported,
++  pinned,
++  onTogglePin,
++}: {
++  conversationId: string;
++  pinSupported: boolean;
++  pinned: boolean;
++  onTogglePin: () => void;
++}) {
+   const conversations = useChatStore((state) => state.conversations);
+   const contacts = useChatStore((state) => state.contacts);
+   const communities = useChatStore((state) => state.communities);
+@@ -332,6 +463,21 @@ function FloatThread({ conversationId }: { conversationId: string }) {
+         >
+           {live ? "Live" : "Offline"}
+         </span>
++
++        {pinSupported && (
++          <button
++            type="button"
++            onClick={onTogglePin}
++            title={pinned ? "Unpin from top" : "Pin on top of all apps"}
++            aria-label={pinned ? "Unpin from top" : "Pin on top of all apps"}
++            className={cn(
++              "shrink-0 rounded-lg p-1.5 transition hover:bg-slate-100",
++              pinned ? "text-blue-600" : "text-slate-400 hover:text-slate-900"
++            )}
++          >
++            {pinned ? <PinOff size={15} /> : <Pin size={15} />}
++          </button>
++        )}
+       </div>
+ 
+       {/* Messages */}
+-- 
+2.43.0
+

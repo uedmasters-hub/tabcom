@@ -1,0 +1,757 @@
+From 69aeb9c8ef8e1a5b63639c467dd602b61a3e3089 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Fri, 3 Jul 2026 03:13:34 +0000
+Subject: [PATCH] fix(float): replace Document PiP with a dedicated floating
+ chat window
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Document Picture-in-Picture is scoped to tabs (one PiP window per tab,
+opened from the tab's main browsing context) and is not exposed to
+extension side panels — the float could never launch from the panel.
+
+New architecture:
+- pip.html entrypoint: standalone compact chat window opened via
+  browser.windows.create({type:'popup'}); stays visible when the main
+  browser window is minimized; owns its own socket with the same
+  identity, announcing presence 'online' (actively chatting); closing
+  it drops that socket and the panel's chosen status wins again
+- floating-chat.ts: open/close/toggle + window lifecycle tracking
+- server: roster deduped per username with presence priority
+  (online > busy > away > offline) — required now that one user can
+  hold multiple sockets (panel + float), also fixes the latent
+  duplicate-roster bug for any multi-window user
+- appendMessage dedupes by message id (both windows receive server
+  events; history is shared via persisted storage)
+- ChatView float button toggles the window; dead Document-PiP code
+  removed; Settings copy corrected (floating window, not always-on-top)
+---
+ apps/backend/src/index.ts                     |  20 +-
+ apps/extension/entrypoints/pip/index.html     |  12 +
+ apps/extension/entrypoints/pip/main.tsx       | 267 ++++++++++++++++++
+ .../features/workspace/views/SettingsView.tsx |   7 +-
+ .../workspace/views/chat/ChatView.tsx         | 137 +--------
+ .../workspace/views/chat/usePipWindow.ts      |  89 ------
+ apps/extension/src/lib/floating-chat.ts       |  64 +++++
+ apps/extension/src/stores/chat.store.ts       |   9 +-
+ 8 files changed, 387 insertions(+), 218 deletions(-)
+ create mode 100644 apps/extension/entrypoints/pip/index.html
+ create mode 100644 apps/extension/entrypoints/pip/main.tsx
+ delete mode 100644 apps/extension/src/features/workspace/views/chat/usePipWindow.ts
+ create mode 100644 apps/extension/src/lib/floating-chat.ts
+
+diff --git a/apps/backend/src/index.ts b/apps/backend/src/index.ts
+index 619d150..24d73ea 100644
+--- a/apps/backend/src/index.ts
++++ b/apps/backend/src/index.ts
+@@ -101,8 +101,26 @@ function isBlockedEitherWay(a: string, b: string): boolean {
+   return blocks.has(`${a}|${b}`) || blocks.has(`${b}|${a}`);
+ }
+ 
++const PRESENCE_PRIORITY: Presence[] = ["online", "busy", "away", "offline"];
++
++/** One entry per username (a user may hold several sockets, e.g. panel + float). */
+ function publicRoster(): WireUser[] {
+-  return [...users.values()].filter((user) => user.visibility === "public");
++  const byUsername = new Map<string, WireUser>();
++
++  for (const user of users.values()) {
++    if (user.visibility !== "public") continue;
++
++    const existing = byUsername.get(user.username);
++    if (
++      !existing ||
++      PRESENCE_PRIORITY.indexOf(user.presence) <
++        PRESENCE_PRIORITY.indexOf(existing.presence)
++    ) {
++      byUsername.set(user.username, user);
++    }
++  }
++
++  return [...byUsername.values()];
+ }
+ 
+ /** Roster personalized per viewer: hidden presence masks to offline. */
+diff --git a/apps/extension/entrypoints/pip/index.html b/apps/extension/entrypoints/pip/index.html
+new file mode 100644
+index 0000000..37e9d89
+--- /dev/null
++++ b/apps/extension/entrypoints/pip/index.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>Tabcom — Floating chat</title>
++  </head>
++  <body>
++    <div id="root"></div>
++    <script type="module" src="./main.tsx"></script>
++  </body>
++</html>
+diff --git a/apps/extension/entrypoints/pip/main.tsx b/apps/extension/entrypoints/pip/main.tsx
+new file mode 100644
+index 0000000..3527252
+--- /dev/null
++++ b/apps/extension/entrypoints/pip/main.tsx
+@@ -0,0 +1,267 @@
++import { useEffect, useRef, useState } from "react";
++import ReactDOM from "react-dom/client";
++import { Link as LinkIcon, Send } from "lucide-react";
++
++import "../../src/styles/tailwind.css";
++import "../../src/styles/globals.css";
++
++import { cn } from "../../src/lib/cn";
++import { initRealtime } from "../../src/lib/realtime";
++import { ME, useChatStore } from "../../src/stores/chat.store";
++import { useProfileStore } from "../../src/stores/profile.store";
++import { contactLabel } from "../../src/types/chat";
++import type { Message } from "../../src/types/chat";
++
++/**
++ * Standalone floating chat window (popup-type browser window).
++ *
++ * Runs its own socket with the same identity — the server dedupes the
++ * roster per username, and DMs are delivered to every socket, so the
++ * panel and the float stay in sync through the server. Local history is
++ * shared via the same persisted storage.
++ *
++ * Presence contract: this window announces "online" (you're actively
++ * chatting). When it closes, its socket drops and your panel's chosen
++ * status wins again.
++ */
++
++const NO_MESSAGES: Message[] = [];
++
++function requestedConversationId(): string | null {
++  return new URLSearchParams(window.location.search).get("conversation");
++}
++
++function FloatApp() {
++  const hasHydrated = useChatStore((state) => state.hasHydrated);
++  const profileHydrated = useProfileStore((state) => state.hasHydrated);
++
++  const username = useProfileStore((state) => state.username);
++  const displayName = useProfileStore((state) => state.displayName);
++  const avatarColor = useProfileStore((state) => state.avatarColor);
++  const photo = useProfileStore((state) => state.photo);
++
++  const contacts = useChatStore((state) => state.contacts);
++  const conversations = useChatStore((state) => state.conversations);
++  const communities = useChatStore((state) => state.communities);
++  const live = useChatStore((state) => state.live);
++
++  const [conversationId, setConversationId] = useState<string | null>(null);
++
++  // Connect this window's own socket once identity is available.
++  useEffect(() => {
++    if (!profileHydrated || !username) return;
++
++    initRealtime(
++      {
++        username,
++        name: displayName,
++        color: avatarColor,
++        visibility: "public",
++        presence: "online", // actively chatting while the float is up
++        photo,
++      },
++      {
++        onConnectionChange: (isLive) =>
++          useChatStore.getState().setLiveStatus(isLive),
++        onRoster: (users) =>
++          useChatStore
++            .getState()
++            .applyRoster(users.filter((user) => user.username !== username)),
++        onDm: (from, message) =>
++          useChatStore.getState().receiveDm(from, message),
++        onTyping: (from) => useChatStore.getState().receiveTyping(from),
++        onDmError: (to, reason) =>
++          useChatStore.getState().receiveDmError(to, reason),
++        onConnections: (snapshot) =>
++          useChatStore.getState().receiveConnections(snapshot),
++        onConnectRequest: (from) =>
++          useChatStore.getState().receiveConnectRequest(from),
++        onConnectUpdate: (user, status) =>
++          useChatStore.getState().receiveConnectUpdate(user, status),
++        onCommunities: (list) =>
++          useChatStore.getState().receiveCommunities(list),
++        onCommunityUpdate: (community) =>
++          useChatStore.getState().receiveCommunityUpdate(community),
++        onCommunityInvite: (community, from, attempt) =>
++          useChatStore
++            .getState()
++            .receiveCommunityInvite(community, from, attempt),
++        onCommunityDeclined: (payload) =>
++          useChatStore.getState().receiveCommunityDeclined(payload),
++        onCommunityLeft: (id) =>
++          useChatStore.getState().receiveCommunityLeft(id),
++        onCommunityMessage: (id, from, message) =>
++          useChatStore.getState().receiveCommunityMessage(id, from, message),
++        onCommunityError: (payload) =>
++          useChatStore.getState().receiveCommunityError(payload),
++      }
++    );
++  }, [profileHydrated, username, displayName, avatarColor, photo]);
++
++  // Resolve the conversation to show (query param, else most recent).
++  useEffect(() => {
++    if (!hasHydrated || conversationId) return;
++
++    const requested = requestedConversationId();
++    const found =
++      (requested &&
++        conversations.find((item) => item.id === requested)?.id) ||
++      conversations[0]?.id ||
++      null;
++
++    setConversationId(found);
++    if (found) useChatStore.getState().openConversation(found);
++  }, [hasHydrated, conversations, conversationId]);
++
++  if (!hasHydrated || !profileHydrated) return null;
++
++  const conversation = conversations.find(
++    (item) => item.id === conversationId
++  );
++  const community = conversation?.communityId
++    ? communities[conversation.communityId]
++    : undefined;
++  const contact = conversation?.contactId
++    ? contacts.find((item) => item.id === conversation.contactId)
++    : undefined;
++
++  const title = community
++    ? community.name
++    : contact
++      ? contactLabel(contact)
++      : "Tabcom";
++
++  return (
++    <FloatThread
++      title={title}
++      subtitle={live ? "Live · floating" : "Offline"}
++      conversationId={conversationId}
++    />
++  );
++}
++
++function FloatThread({
++  title,
++  subtitle,
++  conversationId,
++}: {
++  title: string;
++  subtitle: string;
++  conversationId: string | null;
++}) {
++  const messages = useChatStore((state) =>
++    conversationId ? (state.messages[conversationId] ?? NO_MESSAGES) : NO_MESSAGES
++  );
++  const sendText = useChatStore((state) => state.sendText);
++  const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
++
++  const [draft, setDraft] = useState("");
++  const endRef = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    endRef.current?.scrollIntoView();
++  }, [messages.length]);
++
++  const submit = () => {
++    if (!draft.trim() || !conversationId) return;
++    sendText(conversationId, draft);
++    setDraft("");
++  };
++
++  return (
++    <div className="flex h-screen flex-col bg-white font-sans text-slate-900">
++      <div className="border-b border-slate-200 px-4 py-2.5">
++        <p className="truncate text-sm font-semibold">{title}</p>
++        <p className="text-[10px] uppercase tracking-wide text-blue-600">
++          {subtitle}
++        </p>
++      </div>
++
++      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
++        {!conversationId && (
++          <p className="mt-8 text-center text-xs text-slate-400">
++            No conversation yet — start one in the Tabcom panel.
++          </p>
++        )}
++
++        {messages.map((message) =>
++          message.kind === "system" ? (
++            <p
++              key={message.id}
++              className="mx-auto max-w-[90%] rounded-full bg-slate-50 px-3 py-1 text-center text-[11px] text-slate-500"
++            >
++              {message.text}
++            </p>
++          ) : (
++            <div
++              key={message.id}
++              className={cn(
++                "flex",
++                message.authorId === ME ? "justify-end" : "justify-start"
++              )}
++            >
++              <div
++                className={cn(
++                  "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-5",
++                  message.authorId === ME
++                    ? "rounded-br-md bg-slate-900 text-white"
++                    : "rounded-bl-md bg-slate-100"
++                )}
++              >
++                {message.authorName && message.authorId !== ME && (
++                  <span
++                    className="block text-[10px] font-semibold"
++                    style={{ color: message.authorColor }}
++                  >
++                    {message.authorName}
++                  </span>
++                )}
++                {message.kind === "link" ? `🔗 ${message.text}` : message.text}
++              </div>
++            </div>
++          )
++        )}
++        <div ref={endRef} />
++      </div>
++
++      <div className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
++        <button
++          type="button"
++          onClick={() =>
++            conversationId && void shareCurrentTab(conversationId)
++          }
++          title="Share current tab"
++          aria-label="Share current tab"
++          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:border-blue-300 hover:text-blue-600"
++        >
++          <LinkIcon size={15} />
++        </button>
++
++        <input
++          value={draft}
++          onChange={(event) => setDraft(event.target.value)}
++          onKeyDown={(event) => {
++            if (event.key === "Enter") {
++              event.preventDefault();
++              submit();
++            }
++          }}
++          placeholder="Message…"
++          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-[13px] outline-none focus:border-blue-500"
++        />
++
++        <button
++          type="button"
++          onClick={submit}
++          disabled={!draft.trim() || !conversationId}
++          aria-label="Send"
++          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white transition disabled:bg-slate-300"
++        >
++          <Send size={14} />
++        </button>
++      </div>
++    </div>
++  );
++}
++
++ReactDOM.createRoot(document.getElementById("root")!).render(<FloatApp />);
+diff --git a/apps/extension/src/features/workspace/views/SettingsView.tsx b/apps/extension/src/features/workspace/views/SettingsView.tsx
+index 7fd7fd1..53bc187 100644
+--- a/apps/extension/src/features/workspace/views/SettingsView.tsx
++++ b/apps/extension/src/features/workspace/views/SettingsView.tsx
+@@ -249,10 +249,11 @@ export default function SettingsView() {
+       >
+         <PictureInPicture2 size={18} className="shrink-0 text-slate-500" />
+         <span className="min-w-0 flex-1">
+-          <span className="block font-semibold">Floating chat (PiP)</span>
++          <span className="block font-semibold">Floating chat</span>
+           <span className="mt-0.5 block text-sm text-slate-500">
+-            Pop a chat into an always-on-top window that stays visible when
+-            the browser is minimized. Opening it sets you Online.
++            Pop a chat into its own small window that keeps working when the
++            main browser window is minimized. While it's open you appear
++            Online.
+           </span>
+         </span>
+         <span
+diff --git a/apps/extension/src/features/workspace/views/chat/ChatView.tsx b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+index 11e5b2d..997e78d 100644
+--- a/apps/extension/src/features/workspace/views/chat/ChatView.tsx
++++ b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+@@ -10,7 +10,6 @@ import {
+   Smile,
+ } from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+-import { createPortal } from "react-dom";
+ import { browser } from "wxt/browser";
+ 
+ import { Avatar } from "../../../../components/ui";
+@@ -25,7 +24,10 @@ import { formatClockTime } from "../../../../utils/time";
+ import ConsentPanel from "./ConsentPanel";
+ import EmojiPicker from "./EmojiPicker";
+ import InfoPanel from "./InfoPanel";
+-import { usePipWindow } from "./usePipWindow";
++import {
++  isFloatOpen,
++  toggleFloatingChat,
++} from "../../../../lib/floating-chat";
+ 
+ const presenceColors = {
+   online: "bg-emerald-500",
+@@ -152,7 +154,7 @@ export default function ChatView({
+   const visibility = useProfileStore((state) => state.visibility);
+   const animations = useProfileStore((state) => state.animations);
+   const pipEnabled = useProfileStore((state) => state.pipEnabled);
+-  const { pipWindow, open: openPip, close: closePip, supported: pipSupported } = usePipWindow();
++  const [floating, setFloating] = useState(isFloatOpen());
+ 
+   const [draft, setDraft] = useState("");
+   const [showInfo, setShowInfo] = useState(false);
+@@ -256,15 +258,19 @@ export default function ChatView({
+           </span>
+         </button>
+ 
+-        {pipEnabled && pipSupported && (
++        {pipEnabled && (
+           <button
+             type="button"
+-            onClick={() => (pipWindow ? closePip() : void openPip())}
+-            title={pipWindow ? "Close floating chat" : "Float this chat"}
++            onClick={() => {
++              void toggleFloatingChat(conversationId).then(() =>
++                setFloating(isFloatOpen())
++              );
++            }}
++            title={floating ? "Close floating chat" : "Float this chat"}
+             aria-label="Float this chat"
+             className={cn(
+               "rounded-lg p-1.5 transition hover:bg-slate-100",
+-              pipWindow
++              floating
+                 ? "text-blue-600"
+                 : "text-slate-400 hover:text-slate-900"
+             )}
+@@ -414,123 +420,6 @@ export default function ChatView({
+         />
+       )}
+ 
+-      {/* Floating PiP chat — same thread, portal into the PiP document */}
+-      {pipWindow &&
+-        createPortal(
+-          <PipThread
+-            title={title}
+-            conversationId={conversationId}
+-            messages={messages}
+-            onSend={(text) => sendText(conversationId, text)}
+-            onShareTab={() => void shareCurrentTab(conversationId)}
+-          />,
+-          pipWindow.document.body
+-        )}
+-    </div>
+-  );
+-}
+-
+-function PipThread({
+-  title,
+-  conversationId,
+-  messages,
+-  onSend,
+-  onShareTab,
+-}: {
+-  title: string;
+-  conversationId: string;
+-  messages: Message[];
+-  onSend: (text: string) => void;
+-  onShareTab: () => void;
+-}) {
+-  const [draft, setDraft] = useState("");
+-  const endRef = useRef<HTMLDivElement>(null);
+-
+-  useEffect(() => {
+-    endRef.current?.scrollIntoView();
+-  }, [messages.length, conversationId]);
+-
+-  const submit = () => {
+-    if (!draft.trim()) return;
+-    onSend(draft);
+-    setDraft("");
+-  };
+-
+-  return (
+-    <div className="flex h-screen flex-col bg-white font-sans text-slate-900">
+-      <div className="border-b border-slate-200 px-4 py-2.5">
+-        <p className="text-sm font-semibold">{title}</p>
+-        <p className="text-[10px] uppercase tracking-wide text-blue-600">
+-          Tabcom · floating
+-        </p>
+-      </div>
+-
+-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
+-        {messages.map((message) =>
+-          message.kind === "system" ? (
+-            <p
+-              key={message.id}
+-              className="mx-auto max-w-[90%] rounded-full bg-slate-50 px-3 py-1 text-center text-[11px] text-slate-500"
+-            >
+-              {message.text}
+-            </p>
+-          ) : (
+-            <div
+-              key={message.id}
+-              className={cn(
+-                "flex",
+-                message.authorId === ME ? "justify-end" : "justify-start"
+-              )}
+-            >
+-              <div
+-                className={cn(
+-                  "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-5",
+-                  message.authorId === ME
+-                    ? "rounded-br-md bg-slate-900 text-white"
+-                    : "rounded-bl-md bg-slate-100"
+-                )}
+-              >
+-                {message.kind === "link" ? `🔗 ${message.text}` : message.text}
+-              </div>
+-            </div>
+-          )
+-        )}
+-        <div ref={endRef} />
+-      </div>
+-
+-      <div className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
+-        <button
+-          type="button"
+-          onClick={onShareTab}
+-          title="Share current tab"
+-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500"
+-        >
+-          <LinkIcon size={15} />
+-        </button>
+-
+-        <input
+-          value={draft}
+-          onChange={(event) => setDraft(event.target.value)}
+-          onKeyDown={(event) => {
+-            if (event.key === "Enter") {
+-              event.preventDefault();
+-              submit();
+-            }
+-          }}
+-          placeholder="Message…"
+-          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-[13px] outline-none focus:border-blue-500"
+-        />
+-
+-        <button
+-          type="button"
+-          onClick={submit}
+-          disabled={!draft.trim()}
+-          aria-label="Send"
+-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white disabled:bg-slate-300"
+-        >
+-          <Send size={14} />
+-        </button>
+-      </div>
+     </div>
+   );
+ }
+diff --git a/apps/extension/src/features/workspace/views/chat/usePipWindow.ts b/apps/extension/src/features/workspace/views/chat/usePipWindow.ts
+deleted file mode 100644
+index de3cec8..0000000
+--- a/apps/extension/src/features/workspace/views/chat/usePipWindow.ts
++++ /dev/null
+@@ -1,89 +0,0 @@
+-import { useCallback, useEffect, useState } from "react";
+-
+-import { updatePresence } from "../../../../lib/realtime";
+-import { useProfileStore } from "../../../../stores/profile.store";
+-
+-/**
+- * Document Picture-in-Picture (Chrome/Brave 116+).
+- *
+- * Opens a small always-on-top window that stays visible even when the
+- * browser is minimized (as long as the browser process is running).
+- * Styles are cloned from the panel so Tailwind works inside.
+- *
+- * Presence contract: while PiP is open you're actively chatting, so
+- * presence flips to Online; closing PiP restores your chosen status.
+- */
+-
+-interface DocumentPictureInPicture {
+-  requestWindow(options?: {
+-    width?: number;
+-    height?: number;
+-  }): Promise<Window>;
+-}
+-
+-declare global {
+-  interface Window {
+-    documentPictureInPicture?: DocumentPictureInPicture;
+-  }
+-}
+-
+-export function isPipSupported(): boolean {
+-  return typeof window !== "undefined" && !!window.documentPictureInPicture;
+-}
+-
+-function cloneStyles(target: Window): void {
+-  for (const sheet of [...document.styleSheets]) {
+-    try {
+-      const css = [...sheet.cssRules].map((rule) => rule.cssText).join("");
+-      const style = target.document.createElement("style");
+-      style.textContent = css;
+-      target.document.head.append(style);
+-    } catch {
+-      if (sheet.href) {
+-        const link = target.document.createElement("link");
+-        link.rel = "stylesheet";
+-        link.href = sheet.href;
+-        target.document.head.append(link);
+-      }
+-    }
+-  }
+-}
+-
+-export function usePipWindow() {
+-  const [pipWindow, setPipWindow] = useState<Window | null>(null);
+-
+-  const open = useCallback(async () => {
+-    if (!window.documentPictureInPicture || pipWindow) return;
+-
+-    const win = await window.documentPictureInPicture.requestWindow({
+-      width: 340,
+-      height: 480,
+-    });
+-
+-    cloneStyles(win);
+-    win.document.body.style.margin = "0";
+-    win.document.body.style.background = "#FFFFFF";
+-
+-    win.addEventListener("pagehide", () => {
+-      setPipWindow(null);
+-      // Restore the user's chosen presence when the float closes.
+-      updatePresence(useProfileStore.getState().presence);
+-    });
+-
+-    setPipWindow(win);
+-
+-    // Actively chatting -> present as online while the float is up.
+-    updatePresence("online");
+-  }, [pipWindow]);
+-
+-  const close = useCallback(() => {
+-    pipWindow?.close();
+-    setPipWindow(null);
+-    updatePresence(useProfileStore.getState().presence);
+-  }, [pipWindow]);
+-
+-  // Close the float if the panel unmounts.
+-  useEffect(() => () => pipWindow?.close(), [pipWindow]);
+-
+-  return { pipWindow, open, close, supported: isPipSupported() };
+-}
+diff --git a/apps/extension/src/lib/floating-chat.ts b/apps/extension/src/lib/floating-chat.ts
+new file mode 100644
+index 0000000..bf47dce
+--- /dev/null
++++ b/apps/extension/src/lib/floating-chat.ts
+@@ -0,0 +1,64 @@
++import { browser } from "wxt/browser";
++
++/**
++ * Floating chat window.
++ *
++ * Document Picture-in-Picture is unavailable in extension side panels
++ * (it's scoped to tabs), so the float is a dedicated popup-type browser
++ * window running its own compact chat page (pip.html). It stays visible
++ * when the main browser window is minimized and runs its own socket, so
++ * it keeps working independently of the panel.
++ */
++
++let floatWindowId: number | null = null;
++let listenerBound = false;
++
++function bindRemovalListener() {
++  if (listenerBound) return;
++  listenerBound = true;
++
++  browser.windows.onRemoved.addListener((windowId) => {
++    if (windowId === floatWindowId) floatWindowId = null;
++  });
++}
++
++export function isFloatOpen(): boolean {
++  return floatWindowId !== null;
++}
++
++export async function openFloatingChat(conversationId: string): Promise<void> {
++  bindRemovalListener();
++
++  if (floatWindowId !== null) {
++    await browser.windows.update(floatWindowId, { focused: true });
++    return;
++  }
++
++  const win = await browser.windows.create({
++    url: browser.runtime.getURL(
++      `/pip.html?conversation=${encodeURIComponent(conversationId)}` as "/pip.html"
++    ),
++    type: "popup",
++    width: 360,
++    height: 540,
++    focused: true,
++  });
++
++  floatWindowId = win?.id ?? null;
++}
++
++export async function closeFloatingChat(): Promise<void> {
++  if (floatWindowId === null) return;
++  const id = floatWindowId;
++  floatWindowId = null;
++  try {
++    await browser.windows.remove(id);
++  } catch {
++    // window already gone
++  }
++}
++
++export async function toggleFloatingChat(conversationId: string): Promise<void> {
++  if (floatWindowId !== null) await closeFloatingChat();
++  else await openFloatingChat(conversationId);
++}
+diff --git a/apps/extension/src/stores/chat.store.ts b/apps/extension/src/stores/chat.store.ts
+index 68d5b4f..6675c3e 100644
+--- a/apps/extension/src/stores/chat.store.ts
++++ b/apps/extension/src/stores/chat.store.ts
+@@ -203,10 +203,17 @@ function appendMessage(
+   message: Message,
+   incrementUnread: boolean
+ ) {
++  const thread = state.messages[conversationId] ?? [];
++
++  // Two windows (panel + float) each hold a socket; dedupe by id.
++  if (thread.some((existing) => existing.id === message.id)) {
++    return { messages: state.messages, conversations: state.conversations };
++  }
++
+   return {
+     messages: {
+       ...state.messages,
+-      [conversationId]: [...(state.messages[conversationId] ?? []), message],
++      [conversationId]: [...thread, message],
+     },
+     conversations: state.conversations
+       .map((conversation) =>
+-- 
+2.43.0
+

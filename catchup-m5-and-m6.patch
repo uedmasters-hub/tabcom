@@ -1,0 +1,2712 @@
+From 6139a300499ee1926b94bf76f8a04f23e7fb3b12 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Thu, 2 Jul 2026 14:29:23 +0000
+Subject: [PATCH 1/2] feat(realtime): Socket.IO server + live cross-browser
+ messaging
+
+Backend (apps/backend):
+- minimal Socket.IO relay: hello/roster (presence), dm routing by
+  username, typing relay; in-memory, protocol designed to survive the
+  NestJS+Postgres upgrade
+- tsx dev/start scripts, wired into turbo
+
+Extension:
+- lib/realtime.ts transport (connect, roster/dm/typing handlers, send);
+  stores import it, it imports no stores
+- chat.store: live flag, applyRoster (live contacts u-<username>,
+  departed users flip offline, demo contacts preserved), receiveDm
+  (ensures contact+conversation, unread when not viewing), receiveTyping
+  (3s auto-clear); outgoing messages route via deliver(): socket for
+  live contacts, canned replies for demo
+- WorkspaceScreen connects on mount with profile identity; graceful
+  fallback to demo mode when server unreachable
+- WorkspaceHeader: Live/Demo status pill + presence dot
+- ChatView: relays typing to live contacts (1.5s throttle)
+- Sign out disconnects the socket
+
+Verified: two-client integration test - roster, typing relay, text DM,
+link DM (share-tab shape), presence on disconnect. 5/5 checks pass.
+---
+ apps/backend/package.json                     |  21 +
+ apps/backend/src/index.ts                     | 103 ++++
+ apps/backend/tsconfig.json                    |   8 +
+ apps/extension/package.json                   |   1 +
+ .../features/workspace/WorkspaceScreen.tsx    |  30 +-
+ .../workspace/components/WorkspaceHeader.tsx  |  30 +-
+ .../features/workspace/views/SettingsView.tsx |   2 +
+ .../workspace/views/chat/ChatView.tsx         |  15 +-
+ apps/extension/src/lib/realtime.ts            |  77 +++
+ apps/extension/src/stores/chat.store.ts       | 166 +++++-
+ pnpm-lock.yaml                                | 560 +++++++++++++++++-
+ 11 files changed, 966 insertions(+), 47 deletions(-)
+ create mode 100644 apps/backend/package.json
+ create mode 100644 apps/backend/src/index.ts
+ create mode 100644 apps/backend/tsconfig.json
+ create mode 100644 apps/extension/src/lib/realtime.ts
+
+diff --git a/apps/backend/package.json b/apps/backend/package.json
+new file mode 100644
+index 0000000..fa6854c
+--- /dev/null
++++ b/apps/backend/package.json
+@@ -0,0 +1,21 @@
++{
++  "name": "@tabcom/backend",
++  "description": "Tabcom realtime server (Phase 2 foundation)",
++  "private": true,
++  "version": "0.0.0",
++  "type": "module",
++  "scripts": {
++    "dev": "tsx watch src/index.ts",
++    "start": "tsx src/index.ts",
++    "build": "tsc --noEmit",
++    "typecheck": "tsc --noEmit"
++  },
++  "dependencies": {
++    "socket.io": "^4.8.3"
++  },
++  "devDependencies": {
++    "@types/node": "^24.10.9",
++    "tsx": "^4.21.1",
++    "typescript": "^5.9.3"
++  }
++}
+diff --git a/apps/backend/src/index.ts b/apps/backend/src/index.ts
+new file mode 100644
+index 0000000..61eac81
+--- /dev/null
++++ b/apps/backend/src/index.ts
+@@ -0,0 +1,103 @@
++import { createServer } from "node:http";
++import { Server } from "socket.io";
++
++/**
++ * Tabcom realtime relay — minimal Phase 2 foundation.
++ *
++ * Responsibilities:
++ *  - presence roster (who is online, broadcast on every join/leave)
++ *  - direct message routing by username
++ *  - typing indicator relay
++ *
++ * In-memory only. Persistence, auth and history arrive with the full
++ * NestJS + PostgreSQL backend; the socket protocol stays the same.
++ */
++
++export interface WireUser {
++  username: string;
++  name: string;
++  color: string;
++}
++
++export interface WireMessage {
++  id: string;
++  kind: "text" | "link";
++  text: string;
++  url?: string;
++  sentAt: number;
++}
++
++const httpServer = createServer((_req, res) => {
++  res.writeHead(200, { "Content-Type": "application/json" });
++  res.end(JSON.stringify({ ok: true, service: "tabcom-realtime" }));
++});
++
++const io = new Server(httpServer, {
++  cors: { origin: "*" },
++});
++
++const users = new Map<string, WireUser>(); // socket.id -> user
++
++function roster(): WireUser[] {
++  return [...users.values()];
++}
++
++function socketIdsFor(username: string): string[] {
++  const ids: string[] = [];
++  for (const [id, user] of users) {
++    if (user.username === username) ids.push(id);
++  }
++  return ids;
++}
++
++io.on("connection", (socket) => {
++  socket.on("hello", (user: WireUser) => {
++    if (!user?.username) return;
++
++    users.set(socket.id, {
++      username: String(user.username).slice(0, 20),
++      name: String(user.name ?? user.username).slice(0, 40),
++      color: String(user.color ?? "#2563EB").slice(0, 9),
++    });
++
++    io.emit("roster", roster());
++    console.log(`[join] @${user.username} (${users.size} online)`);
++  });
++
++  socket.on(
++    "dm",
++    ({ to, message }: { to: string; message: WireMessage }) => {
++      const from = users.get(socket.id);
++      if (!from || !to || !message) return;
++
++      for (const id of socketIdsFor(to)) {
++        io.to(id).emit("dm", { from, message });
++      }
++    }
++  );
++
++  socket.on("typing", ({ to }: { to: string }) => {
++    const from = users.get(socket.id);
++    if (!from || !to) return;
++
++    for (const id of socketIdsFor(to)) {
++      io.to(id).emit("typing", { from: from.username });
++    }
++  });
++
++  socket.on("disconnect", () => {
++    const user = users.get(socket.id);
++    users.delete(socket.id);
++
++    if (user) {
++      io.emit("roster", roster());
++      console.log(`[leave] @${user.username} (${users.size} online)`);
++    }
++  });
++});
++
++const PORT = Number(process.env.PORT ?? 3001);
++
++httpServer.listen(PORT, () => {
++  console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
++});
+diff --git a/apps/backend/tsconfig.json b/apps/backend/tsconfig.json
+new file mode 100644
+index 0000000..71e0f10
+--- /dev/null
++++ b/apps/backend/tsconfig.json
+@@ -0,0 +1,8 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": {
++    "types": ["node"],
++    "lib": ["ES2022"]
++  },
++  "include": ["src"]
++}
+diff --git a/apps/extension/package.json b/apps/extension/package.json
+index ebfee26..133c8e4 100644
+--- a/apps/extension/package.json
++++ b/apps/extension/package.json
+@@ -24,6 +24,7 @@
+     "react-dom": "^19.2.4",
+     "react-hook-form": "^7.80.0",
+     "react-router-dom": "^7.18.1",
++    "socket.io-client": "^4.8.3",
+     "tailwind-merge": "^3.6.0",
+     "zod": "^4.4.3",
+     "zustand": "^5.0.14"
+diff --git a/apps/extension/src/features/workspace/WorkspaceScreen.tsx b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+index 73e9df4..6d6ce96 100644
+--- a/apps/extension/src/features/workspace/WorkspaceScreen.tsx
++++ b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+@@ -1,7 +1,9 @@
+ import { useEffect } from "react";
+ 
+ import AppShell from "../../components/layout/AppShell";
++import { initRealtime } from "../../lib/realtime";
+ import { useChatStore } from "../../stores/chat.store";
++import { useProfileStore } from "../../stores/profile.store";
+ import { useWorkspaceStore } from "../../stores/workspace.store";
+ 
+ import TabBar from "./components/TabBar";
+@@ -21,15 +23,39 @@ const titles = {
+ 
+ /**
+  * Workspace shell: header + active view + bottom tab navigation.
+- * Views are placeholders that fill in through Phase 2 and 3.
++ * Connects to the realtime server on mount; falls back to local demo
++ * mode when the server is unreachable.
+  */
+ export default function WorkspaceScreen() {
+   const tab = useWorkspaceStore((state) => state.tab);
+   const ensureSeeded = useChatStore((state) => state.ensureSeeded);
+ 
++  const username = useProfileStore((state) => state.username);
++  const displayName = useProfileStore((state) => state.displayName);
++  const avatarColor = useProfileStore((state) => state.avatarColor);
++
+   useEffect(() => {
+     ensureSeeded();
+-  }, [ensureSeeded]);
++
++    initRealtime(
++      { username, name: displayName, color: avatarColor },
++      {
++        onConnectionChange: (live) =>
++          useChatStore.getState().setLiveStatus(live),
++
++        onRoster: (users) =>
++          useChatStore
++            .getState()
++            .applyRoster(users.filter((user) => user.username !== username)),
++
++        onDm: (from, message) =>
++          useChatStore.getState().receiveDm(from, message),
++
++        onTyping: (fromUsername) =>
++          useChatStore.getState().receiveTyping(fromUsername),
++      }
++    );
++  }, [ensureSeeded, username, displayName, avatarColor]);
+ 
+   return (
+     <AppShell>
+diff --git a/apps/extension/src/features/workspace/components/WorkspaceHeader.tsx b/apps/extension/src/features/workspace/components/WorkspaceHeader.tsx
+index d1ed34c..3cfd67d 100644
+--- a/apps/extension/src/features/workspace/components/WorkspaceHeader.tsx
++++ b/apps/extension/src/features/workspace/components/WorkspaceHeader.tsx
+@@ -1,26 +1,46 @@
+ import { Avatar } from "../../../components/ui";
++import { useChatStore } from "../../../stores/chat.store";
+ import { useProfileStore } from "../../../stores/profile.store";
+ 
+ interface WorkspaceHeaderProps {
+   title: string;
+ }
+ 
+-/** Shared workspace top bar: current view title + profile with presence. */
++/** Shared workspace top bar: view title, connection status, profile. */
+ export default function WorkspaceHeader({ title }: WorkspaceHeaderProps) {
+   const displayName = useProfileStore((state) => state.displayName);
+   const avatarColor = useProfileStore((state) => state.avatarColor);
++  const live = useChatStore((state) => state.live);
+ 
+   return (
+     <header className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+-      <h1 className="text-lg font-bold tracking-tight">{title}</h1>
++      <div className="flex items-center gap-2.5">
++        <h1 className="text-lg font-bold tracking-tight">{title}</h1>
++
++        <span
++          title={
++            live
++              ? "Connected to realtime server"
++              : "Offline — local demo mode"
++          }
++          className={
++            live
++              ? "rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-600"
++              : "rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400"
++          }
++        >
++          {live ? "Live" : "Demo"}
++        </span>
++      </div>
+ 
+       <div className="relative">
+         <Avatar name={displayName} color={avatarColor} size="sm" />
+ 
+-        {/* Presence dot — static Online until realtime lands in Phase 2 */}
+         <span
+-          title="Online"
+-          className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500"
++          title={live ? "Online" : "Offline"}
++          className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white ${
++            live ? "bg-emerald-500" : "bg-slate-300"
++          }`}
+         />
+       </div>
+     </header>
+diff --git a/apps/extension/src/features/workspace/views/SettingsView.tsx b/apps/extension/src/features/workspace/views/SettingsView.tsx
+index 23771f9..07f0368 100644
+--- a/apps/extension/src/features/workspace/views/SettingsView.tsx
++++ b/apps/extension/src/features/workspace/views/SettingsView.tsx
+@@ -6,6 +6,7 @@ import {
+   OptionCard,
+   SectionLabel,
+ } from "../../../components/ui";
++import { disconnectRealtime } from "../../../lib/realtime";
+ import { useAppStore } from "../../../stores/app.store";
+ import { useChatStore } from "../../../stores/chat.store";
+ import {
+@@ -45,6 +46,7 @@ export default function SettingsView() {
+   const resetChat = useChatStore((state) => state.resetChat);
+ 
+   const signOut = () => {
++    disconnectRealtime();
+     resetChat();
+     resetProfile();
+     setScreen("welcome");
+diff --git a/apps/extension/src/features/workspace/views/chat/ChatView.tsx b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+index 8769870..188d43d 100644
+--- a/apps/extension/src/features/workspace/views/chat/ChatView.tsx
++++ b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+@@ -2,6 +2,8 @@ import { ArrowLeft, ExternalLink, Link as LinkIcon, Send } from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+ import { browser } from "wxt/browser";
+ 
++import { sendTyping } from "../../../../lib/realtime";
++
+ import { Avatar } from "../../../../components/ui";
+ import { cn } from "../../../../lib/cn";
+ import { ME, useChatStore } from "../../../../stores/chat.store";
+@@ -90,6 +92,7 @@ export default function ChatView({
+ 
+   const [draft, setDraft] = useState("");
+   const bottomRef = useRef<HTMLDivElement>(null);
++  const lastTypingSent = useRef(0);
+ 
+   const conversation = conversations.find(
+     (item) => item.id === conversationId
+@@ -177,7 +180,17 @@ export default function ChatView({
+ 
+         <input
+           value={draft}
+-          onChange={(event) => setDraft(event.target.value)}
++          onChange={(event) => {
++            setDraft(event.target.value);
++
++            if (
++              contact.id.startsWith("u-") &&
++              Date.now() - lastTypingSent.current > 1500
++            ) {
++              lastTypingSent.current = Date.now();
++              sendTyping(contact.username);
++            }
++          }}
+           onKeyDown={(event) => {
+             if (event.key === "Enter" && !event.shiftKey) {
+               event.preventDefault();
+diff --git a/apps/extension/src/lib/realtime.ts b/apps/extension/src/lib/realtime.ts
+new file mode 100644
+index 0000000..7885021
+--- /dev/null
++++ b/apps/extension/src/lib/realtime.ts
+@@ -0,0 +1,77 @@
++import { io, type Socket } from "socket.io-client";
++
++/**
++ * Realtime transport (Socket.IO).
++ *
++ * Dependency direction: stores/components import this module; this module
++ * never imports stores. Incoming events are delivered through handlers
++ * wired up by WorkspaceScreen.
++ */
++
++export const REALTIME_URL = "http://localhost:3001";
++
++export interface WireUser {
++  username: string;
++  name: string;
++  color: string;
++}
++
++export interface WireMessage {
++  id: string;
++  kind: "text" | "link";
++  text: string;
++  url?: string;
++  sentAt: number;
++}
++
++export interface RealtimeHandlers {
++  onConnectionChange: (live: boolean) => void;
++  onRoster: (users: WireUser[]) => void;
++  onDm: (from: WireUser, message: WireMessage) => void;
++  onTyping: (fromUsername: string) => void;
++}
++
++let socket: Socket | null = null;
++
++export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
++  if (socket) return;
++
++  socket = io(REALTIME_URL, {
++    reconnectionAttempts: 5,
++    reconnectionDelay: 2000,
++    timeout: 4000,
++  });
++
++  socket.on("connect", () => {
++    socket?.emit("hello", me);
++    handlers.onConnectionChange(true);
++  });
++
++  socket.on("disconnect", () => handlers.onConnectionChange(false));
++  socket.on("connect_error", () => handlers.onConnectionChange(false));
++
++  socket.on("roster", (users: WireUser[]) => handlers.onRoster(users));
++
++  socket.on(
++    "dm",
++    ({ from, message }: { from: WireUser; message: WireMessage }) =>
++      handlers.onDm(from, message)
++  );
++
++  socket.on("typing", ({ from }: { from: string }) =>
++    handlers.onTyping(from)
++  );
++}
++
++export function disconnectRealtime(): void {
++  socket?.disconnect();
++  socket = null;
++}
++
++export function sendDm(toUsername: string, message: WireMessage): void {
++  socket?.emit("dm", { to: toUsername, message });
++}
++
++export function sendTyping(toUsername: string): void {
++  socket?.emit("typing", { to: toUsername });
++}
+diff --git a/apps/extension/src/stores/chat.store.ts b/apps/extension/src/stores/chat.store.ts
+index e1ce9a0..dc0ab83 100644
+--- a/apps/extension/src/stores/chat.store.ts
++++ b/apps/extension/src/stores/chat.store.ts
+@@ -3,6 +3,11 @@ import { create } from "zustand";
+ import { createJSONStorage, persist } from "zustand/middleware";
+ 
+ import { extensionStorage } from "../lib/extension-storage";
++import {
++  sendDm,
++  type WireMessage,
++  type WireUser,
++} from "../lib/realtime";
+ import type { Contact, Conversation, Message } from "../types/chat";
+ 
+ /**
+@@ -55,18 +60,26 @@ function uid(): string {
+ interface ChatState {
+   hasHydrated: boolean;
+ 
++  /** Connected to the realtime server. */
++  live: boolean;
++
+   contacts: Contact[];
+   conversations: Conversation[];
+   messages: Record<string, Message[]>;
+ 
+   /** Conversation currently open in the Inbox tab (null = list view). */
+   activeConversationId: string | null;
+-  /** Contact ids currently "typing" (simulated). */
++  /** Contact ids currently "typing" (simulated or relayed). */
+   typing: string[];
+ 
+   setHasHydrated: (value: boolean) => void;
+   ensureSeeded: () => void;
+ 
++  setLiveStatus: (live: boolean) => void;
++  applyRoster: (users: WireUser[]) => void;
++  receiveDm: (from: WireUser, message: WireMessage) => void;
++  receiveTyping: (fromUsername: string) => void;
++
+   openConversation: (conversationId: string) => void;
+   closeConversation: () => void;
+ 
+@@ -145,8 +158,33 @@ export const useChatStore = create<ChatState>()(
+         );
+       };
+ 
++      /** Route an outgoing message: socket for live contacts, canned reply for demo. */
++      const deliver = (conversationId: string, message: Message) => {
++        const conversation = get().conversations.find(
++          (item) => item.id === conversationId
++        );
++        if (!conversation) return;
++
++        const contact = get().contacts.find(
++          (item) => item.id === conversation.contactId
++        );
++
++        if (contact?.id.startsWith("u-")) {
++          sendDm(contact.username, {
++            id: message.id,
++            kind: message.kind,
++            text: message.text,
++            url: message.url,
++            sentAt: message.sentAt,
++          });
++        } else {
++          scheduleReply(conversationId, conversation.contactId);
++        }
++      };
++
+       return {
+         hasHydrated: false,
++        live: false,
+         contacts: [],
+         conversations: [],
+         messages: {},
+@@ -155,6 +193,116 @@ export const useChatStore = create<ChatState>()(
+ 
+         setHasHydrated: (value) => set({ hasHydrated: value }),
+ 
++        setLiveStatus: (live) => set({ live }),
++
++        applyRoster: (users) =>
++          set((state) => {
++            const rosterUsernames = new Set(users.map((u) => u.username));
++
++            const liveContacts: Contact[] = users.map((user) => ({
++              id: `u-${user.username}`,
++              name: user.name,
++              username: user.username,
++              color: user.color,
++              presence: "online",
++            }));
++
++            // Live contacts who left stay visible (their history remains)
++            // but flip to offline. Demo contacts are untouched.
++            const departed = state.contacts
++              .filter(
++                (contact) =>
++                  contact.id.startsWith("u-") &&
++                  !rosterUsernames.has(contact.username)
++              )
++              .map((contact) => ({
++                ...contact,
++                presence: "offline" as const,
++              }));
++
++            const demo = state.contacts.filter((contact) =>
++              contact.id.startsWith("c-")
++            );
++
++            return { contacts: [...liveContacts, ...departed, ...demo] };
++          }),
++
++        receiveDm: (from, message) => {
++          const contactId = `u-${from.username}`;
++
++          set((state) => {
++            const contacts = state.contacts.some(
++              (contact) => contact.id === contactId
++            )
++              ? state.contacts
++              : [
++                  {
++                    id: contactId,
++                    name: from.name,
++                    username: from.username,
++                    color: from.color,
++                    presence: "online" as const,
++                  },
++                  ...state.contacts,
++                ];
++
++            let conversation = state.conversations.find(
++              (item) => item.contactId === contactId
++            );
++
++            const conversations = conversation
++              ? state.conversations
++              : [
++                  (conversation = {
++                    id: uid(),
++                    contactId,
++                    unread: 0,
++                    lastMessageAt: message.sentAt,
++                  }),
++                  ...state.conversations,
++                ];
++
++            const incoming: Message = {
++              id: message.id,
++              authorId: contactId,
++              kind: message.kind,
++              text: message.text,
++              url: message.url,
++              sentAt: message.sentAt,
++            };
++
++            const isViewing =
++              state.activeConversationId === conversation.id;
++
++            return {
++              contacts,
++              ...appendMessage(
++                { messages: state.messages, conversations },
++                conversation.id,
++                incoming,
++                !isViewing
++              ),
++              typing: state.typing.filter((id) => id !== contactId),
++            };
++          });
++        },
++
++        receiveTyping: (fromUsername) => {
++          const contactId = `u-${fromUsername}`;
++
++          set((state) => ({
++            typing: state.typing.includes(contactId)
++              ? state.typing
++              : [...state.typing, contactId],
++          }));
++
++          setTimeout(() => {
++            set((state) => ({
++              typing: state.typing.filter((id) => id !== contactId),
++            }));
++          }, 3000);
++        },
++
+         ensureSeeded: () => {
+           if (get().contacts.length > 0) return;
+ 
+@@ -238,13 +386,7 @@ export const useChatStore = create<ChatState>()(
+           };
+ 
+           set((state) => appendMessage(state, conversationId, message, false));
+-
+-          const conversation = get().conversations.find(
+-            (item) => item.id === conversationId
+-          );
+-          if (conversation) {
+-            scheduleReply(conversationId, conversation.contactId);
+-          }
++          deliver(conversationId, message);
+         },
+ 
+         shareCurrentTab: async (conversationId) => {
+@@ -265,13 +407,7 @@ export const useChatStore = create<ChatState>()(
+           };
+ 
+           set((state) => appendMessage(state, conversationId, message, false));
+-
+-          const conversation = get().conversations.find(
+-            (item) => item.id === conversationId
+-          );
+-          if (conversation) {
+-            scheduleReply(conversationId, conversation.contactId);
+-          }
++          deliver(conversationId, message);
+         },
+ 
+         totalUnread: () =>
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 96a00f3..49705ea 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -30,6 +30,22 @@ importers:
+         specifier: ^8.62.1
+         version: 8.62.1(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+ 
++  apps/backend:
++    dependencies:
++      socket.io:
++        specifier: ^4.8.3
++        version: 4.8.3
++    devDependencies:
++      '@types/node':
++        specifier: ^24.10.9
++        version: 24.13.2
++      tsx:
++        specifier: ^4.21.1
++        version: 4.22.4
++      typescript:
++        specifier: ^5.9.3
++        version: 5.9.3
++
+   apps/extension:
+     dependencies:
+       '@hookform/resolvers':
+@@ -59,6 +75,9 @@ importers:
+       react-router-dom:
+         specifier: ^7.18.1
+         version: 7.18.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
++      socket.io-client:
++        specifier: ^4.8.3
++        version: 4.8.3
+       tailwind-merge:
+         specifier: ^3.6.0
+         version: 3.6.0
+@@ -71,7 +90,7 @@ importers:
+     devDependencies:
+       '@tailwindcss/vite':
+         specifier: ^4.3.2
+-        version: 4.3.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))
++        version: 4.3.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))
+       '@types/react':
+         specifier: ^19.2.14
+         version: 19.2.17
+@@ -80,7 +99,7 @@ importers:
+         version: 19.2.3(@types/react@19.2.17)
+       '@wxt-dev/module-react':
+         specifier: ^1.1.5
+-        version: 1.2.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))(wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4))
++        version: 1.2.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))(wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)(tsx@4.22.4))
+       autoprefixer:
+         specifier: ^10.5.2
+         version: 10.5.2(postcss@8.5.16)
+@@ -95,7 +114,7 @@ importers:
+         version: 5.9.3
+       wxt:
+         specifier: ^0.20.27
+-        version: 0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)
++        version: 0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)(tsx@4.22.4)
+ 
+ packages:
+ 
+@@ -165,156 +184,312 @@ packages:
+     cpu: [ppc64]
+     os: [aix]
+ 
++  '@esbuild/aix-ppc64@0.28.1':
++    resolution: {integrity: sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==}
++    engines: {node: '>=18'}
++    cpu: [ppc64]
++    os: [aix]
++
+   '@esbuild/android-arm64@0.27.7':
+     resolution: {integrity: sha512-62dPZHpIXzvChfvfLJow3q5dDtiNMkwiRzPylSCfriLvZeq0a1bWChrGx/BbUbPwOrsWKMn8idSllklzBy+dgQ==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [android]
+ 
++  '@esbuild/android-arm64@0.28.1':
++    resolution: {integrity: sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [android]
++
+   '@esbuild/android-arm@0.27.7':
+     resolution: {integrity: sha512-jbPXvB4Yj2yBV7HUfE2KHe4GJX51QplCN1pGbYjvsyCZbQmies29EoJbkEc+vYuU5o45AfQn37vZlyXy4YJ8RQ==}
+     engines: {node: '>=18'}
+     cpu: [arm]
+     os: [android]
+ 
++  '@esbuild/android-arm@0.28.1':
++    resolution: {integrity: sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==}
++    engines: {node: '>=18'}
++    cpu: [arm]
++    os: [android]
++
+   '@esbuild/android-x64@0.27.7':
+     resolution: {integrity: sha512-x5VpMODneVDb70PYV2VQOmIUUiBtY3D3mPBG8NxVk5CogneYhkR7MmM3yR/uMdITLrC1ml/NV1rj4bMJuy9MCg==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [android]
+ 
++  '@esbuild/android-x64@0.28.1':
++    resolution: {integrity: sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [android]
++
+   '@esbuild/darwin-arm64@0.27.7':
+     resolution: {integrity: sha512-5lckdqeuBPlKUwvoCXIgI2D9/ABmPq3Rdp7IfL70393YgaASt7tbju3Ac+ePVi3KDH6N2RqePfHnXkaDtY9fkw==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [darwin]
+ 
++  '@esbuild/darwin-arm64@0.28.1':
++    resolution: {integrity: sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [darwin]
++
+   '@esbuild/darwin-x64@0.27.7':
+     resolution: {integrity: sha512-rYnXrKcXuT7Z+WL5K980jVFdvVKhCHhUwid+dDYQpH+qu+TefcomiMAJpIiC2EM3Rjtq0sO3StMV/+3w3MyyqQ==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [darwin]
+ 
++  '@esbuild/darwin-x64@0.28.1':
++    resolution: {integrity: sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [darwin]
++
+   '@esbuild/freebsd-arm64@0.27.7':
+     resolution: {integrity: sha512-B48PqeCsEgOtzME2GbNM2roU29AMTuOIN91dsMO30t+Ydis3z/3Ngoj5hhnsOSSwNzS+6JppqWsuhTp6E82l2w==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [freebsd]
+ 
++  '@esbuild/freebsd-arm64@0.28.1':
++    resolution: {integrity: sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [freebsd]
++
+   '@esbuild/freebsd-x64@0.27.7':
+     resolution: {integrity: sha512-jOBDK5XEjA4m5IJK3bpAQF9/Lelu/Z9ZcdhTRLf4cajlB+8VEhFFRjWgfy3M1O4rO2GQ/b2dLwCUGpiF/eATNQ==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [freebsd]
+ 
++  '@esbuild/freebsd-x64@0.28.1':
++    resolution: {integrity: sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [freebsd]
++
+   '@esbuild/linux-arm64@0.27.7':
+     resolution: {integrity: sha512-RZPHBoxXuNnPQO9rvjh5jdkRmVizktkT7TCDkDmQ0W2SwHInKCAV95GRuvdSvA7w4VMwfCjUiPwDi0ZO6Nfe9A==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [linux]
+ 
++  '@esbuild/linux-arm64@0.28.1':
++    resolution: {integrity: sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [linux]
++
+   '@esbuild/linux-arm@0.27.7':
+     resolution: {integrity: sha512-RkT/YXYBTSULo3+af8Ib0ykH8u2MBh57o7q/DAs3lTJlyVQkgQvlrPTnjIzzRPQyavxtPtfg0EopvDyIt0j1rA==}
+     engines: {node: '>=18'}
+     cpu: [arm]
+     os: [linux]
+ 
++  '@esbuild/linux-arm@0.28.1':
++    resolution: {integrity: sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==}
++    engines: {node: '>=18'}
++    cpu: [arm]
++    os: [linux]
++
+   '@esbuild/linux-ia32@0.27.7':
+     resolution: {integrity: sha512-GA48aKNkyQDbd3KtkplYWT102C5sn/EZTY4XROkxONgruHPU72l+gW+FfF8tf2cFjeHaRbWpOYa/uRBz/Xq1Pg==}
+     engines: {node: '>=18'}
+     cpu: [ia32]
+     os: [linux]
+ 
++  '@esbuild/linux-ia32@0.28.1':
++    resolution: {integrity: sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==}
++    engines: {node: '>=18'}
++    cpu: [ia32]
++    os: [linux]
++
+   '@esbuild/linux-loong64@0.27.7':
+     resolution: {integrity: sha512-a4POruNM2oWsD4WKvBSEKGIiWQF8fZOAsycHOt6JBpZ+JN2n2JH9WAv56SOyu9X5IqAjqSIPTaJkqN8F7XOQ5Q==}
+     engines: {node: '>=18'}
+     cpu: [loong64]
+     os: [linux]
+ 
++  '@esbuild/linux-loong64@0.28.1':
++    resolution: {integrity: sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==}
++    engines: {node: '>=18'}
++    cpu: [loong64]
++    os: [linux]
++
+   '@esbuild/linux-mips64el@0.27.7':
+     resolution: {integrity: sha512-KabT5I6StirGfIz0FMgl1I+R1H73Gp0ofL9A3nG3i/cYFJzKHhouBV5VWK1CSgKvVaG4q1RNpCTR2LuTVB3fIw==}
+     engines: {node: '>=18'}
+     cpu: [mips64el]
+     os: [linux]
+ 
++  '@esbuild/linux-mips64el@0.28.1':
++    resolution: {integrity: sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==}
++    engines: {node: '>=18'}
++    cpu: [mips64el]
++    os: [linux]
++
+   '@esbuild/linux-ppc64@0.27.7':
+     resolution: {integrity: sha512-gRsL4x6wsGHGRqhtI+ifpN/vpOFTQtnbsupUF5R5YTAg+y/lKelYR1hXbnBdzDjGbMYjVJLJTd2OFmMewAgwlQ==}
+     engines: {node: '>=18'}
+     cpu: [ppc64]
+     os: [linux]
+ 
++  '@esbuild/linux-ppc64@0.28.1':
++    resolution: {integrity: sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==}
++    engines: {node: '>=18'}
++    cpu: [ppc64]
++    os: [linux]
++
+   '@esbuild/linux-riscv64@0.27.7':
+     resolution: {integrity: sha512-hL25LbxO1QOngGzu2U5xeXtxXcW+/GvMN3ejANqXkxZ/opySAZMrc+9LY/WyjAan41unrR3YrmtTsUpwT66InQ==}
+     engines: {node: '>=18'}
+     cpu: [riscv64]
+     os: [linux]
+ 
++  '@esbuild/linux-riscv64@0.28.1':
++    resolution: {integrity: sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==}
++    engines: {node: '>=18'}
++    cpu: [riscv64]
++    os: [linux]
++
+   '@esbuild/linux-s390x@0.27.7':
+     resolution: {integrity: sha512-2k8go8Ycu1Kb46vEelhu1vqEP+UeRVj2zY1pSuPdgvbd5ykAw82Lrro28vXUrRmzEsUV0NzCf54yARIK8r0fdw==}
+     engines: {node: '>=18'}
+     cpu: [s390x]
+     os: [linux]
+ 
++  '@esbuild/linux-s390x@0.28.1':
++    resolution: {integrity: sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==}
++    engines: {node: '>=18'}
++    cpu: [s390x]
++    os: [linux]
++
+   '@esbuild/linux-x64@0.27.7':
+     resolution: {integrity: sha512-hzznmADPt+OmsYzw1EE33ccA+HPdIqiCRq7cQeL1Jlq2gb1+OyWBkMCrYGBJ+sxVzve2ZJEVeePbLM2iEIZSxA==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [linux]
+ 
++  '@esbuild/linux-x64@0.28.1':
++    resolution: {integrity: sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [linux]
++
+   '@esbuild/netbsd-arm64@0.27.7':
+     resolution: {integrity: sha512-b6pqtrQdigZBwZxAn1UpazEisvwaIDvdbMbmrly7cDTMFnw/+3lVxxCTGOrkPVnsYIosJJXAsILG9XcQS+Yu6w==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [netbsd]
+ 
++  '@esbuild/netbsd-arm64@0.28.1':
++    resolution: {integrity: sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [netbsd]
++
+   '@esbuild/netbsd-x64@0.27.7':
+     resolution: {integrity: sha512-OfatkLojr6U+WN5EDYuoQhtM+1xco+/6FSzJJnuWiUw5eVcicbyK3dq5EeV/QHT1uy6GoDhGbFpprUiHUYggrw==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [netbsd]
+ 
++  '@esbuild/netbsd-x64@0.28.1':
++    resolution: {integrity: sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [netbsd]
++
+   '@esbuild/openbsd-arm64@0.27.7':
+     resolution: {integrity: sha512-AFuojMQTxAz75Fo8idVcqoQWEHIXFRbOc1TrVcFSgCZtQfSdc1RXgB3tjOn/krRHENUB4j00bfGjyl2mJrU37A==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [openbsd]
+ 
++  '@esbuild/openbsd-arm64@0.28.1':
++    resolution: {integrity: sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [openbsd]
++
+   '@esbuild/openbsd-x64@0.27.7':
+     resolution: {integrity: sha512-+A1NJmfM8WNDv5CLVQYJ5PshuRm/4cI6WMZRg1by1GwPIQPCTs1GLEUHwiiQGT5zDdyLiRM/l1G0Pv54gvtKIg==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [openbsd]
+ 
++  '@esbuild/openbsd-x64@0.28.1':
++    resolution: {integrity: sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [openbsd]
++
+   '@esbuild/openharmony-arm64@0.27.7':
+     resolution: {integrity: sha512-+KrvYb/C8zA9CU/g0sR6w2RBw7IGc5J2BPnc3dYc5VJxHCSF1yNMxTV5LQ7GuKteQXZtspjFbiuW5/dOj7H4Yw==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [openharmony]
+ 
++  '@esbuild/openharmony-arm64@0.28.1':
++    resolution: {integrity: sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [openharmony]
++
+   '@esbuild/sunos-x64@0.27.7':
+     resolution: {integrity: sha512-ikktIhFBzQNt/QDyOL580ti9+5mL/YZeUPKU2ivGtGjdTYoqz6jObj6nOMfhASpS4GU4Q/Clh1QtxWAvcYKamA==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [sunos]
+ 
++  '@esbuild/sunos-x64@0.28.1':
++    resolution: {integrity: sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [sunos]
++
+   '@esbuild/win32-arm64@0.27.7':
+     resolution: {integrity: sha512-7yRhbHvPqSpRUV7Q20VuDwbjW5kIMwTHpptuUzV+AA46kiPze5Z7qgt6CLCK3pWFrHeNfDd1VKgyP4O+ng17CA==}
+     engines: {node: '>=18'}
+     cpu: [arm64]
+     os: [win32]
+ 
++  '@esbuild/win32-arm64@0.28.1':
++    resolution: {integrity: sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==}
++    engines: {node: '>=18'}
++    cpu: [arm64]
++    os: [win32]
++
+   '@esbuild/win32-ia32@0.27.7':
+     resolution: {integrity: sha512-SmwKXe6VHIyZYbBLJrhOoCJRB/Z1tckzmgTLfFYOfpMAx63BJEaL9ExI8x7v0oAO3Zh6D/Oi1gVxEYr5oUCFhw==}
+     engines: {node: '>=18'}
+     cpu: [ia32]
+     os: [win32]
+ 
++  '@esbuild/win32-ia32@0.28.1':
++    resolution: {integrity: sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==}
++    engines: {node: '>=18'}
++    cpu: [ia32]
++    os: [win32]
++
+   '@esbuild/win32-x64@0.27.7':
+     resolution: {integrity: sha512-56hiAJPhwQ1R4i+21FVF7V8kSD5zZTdHcVuRFMW0hn753vVfQN8xlx4uOPT4xoGH0Z/oVATuR82AiqSTDIpaHg==}
+     engines: {node: '>=18'}
+     cpu: [x64]
+     os: [win32]
+ 
++  '@esbuild/win32-x64@0.28.1':
++    resolution: {integrity: sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==}
++    engines: {node: '>=18'}
++    cpu: [x64]
++    os: [win32]
++
+   '@eslint-community/eslint-utils@4.9.1':
+     resolution: {integrity: sha512-phrYmNiYppR7znFEdqgfWHXR6NCkZEK7hwWDHZUjit/2/U0r6XvkDl0SYnoM51Hq7FhCGdLDT6zxCCOY1hexsQ==}
+     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
+@@ -508,6 +683,9 @@ packages:
+   '@rolldown/pluginutils@1.0.1':
+     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+ 
++  '@socket.io/component-emitter@3.1.2':
++    resolution: {integrity: sha512-9BCxFwvbGg/RsZK9tjXd8s4UcwR0MWeFQ1XEKIQVVvAGJyINdrqKMcTRyLoK8Rse1GjzLV9cwjWV1olXRWEXVA==}
++
+   '@standard-schema/utils@0.3.0':
+     resolution: {integrity: sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g==}
+ 
+@@ -642,6 +820,9 @@ packages:
+   '@tybys/wasm-util@0.10.3':
+     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
+ 
++  '@types/cors@2.8.19':
++    resolution: {integrity: sha512-mFNylyeyqN93lfe/9CSxOGREz8cpzAhH+E93xJ4xWQf62V8sQ/24reV2nyzUWM6H6Xji+GGHpkbLe7pVoUEskg==}
++
+   '@types/esrecurse@4.3.1':
+     resolution: {integrity: sha512-xJBAbDifo5hpffDBuHl0Y8ywswbiAp/Wi7Y/GtAgSlZyIABppyurxVueOPE8LUQOxdlgi6Zqce7uoEpqNTeiUw==}
+ 
+@@ -663,6 +844,9 @@ packages:
+   '@types/minimatch@3.0.5':
+     resolution: {integrity: sha512-Klz949h02Gz2uZCMGwDUSDS1YBlTdDDgbWHi+81l29tQALUtvz4rAYi5uoVhE5Lagoq6DeqAUlbrHvW/mXDgdQ==}
+ 
++  '@types/node@24.13.2':
++    resolution: {integrity: sha512-fRa09kZTgu8o71KFcDjUFuc7F+dEbZYZmkI0mg5YBTRs0yMKjYHsq/c0urDKeDb+D5qVgXOdFcuu+DZPKOITwA==}
++
+   '@types/node@26.1.0':
+     resolution: {integrity: sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==}
+ 
+@@ -677,6 +861,9 @@ packages:
+   '@types/webextension-polyfill@0.12.5':
+     resolution: {integrity: sha512-uKSAv6LgcVdINmxXMKBuVIcg/2m5JZugoZO8x20g7j2bXJkPIl/lVGQcDlbV+aXAiTyXT2RA5U5mI4IGCDMQeg==}
+ 
++  '@types/ws@8.18.1':
++    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
++
+   '@typescript-eslint/eslint-plugin@8.62.1':
+     resolution: {integrity: sha512-4EQM77WgVNxj7OkL/5b/D/xZsw00G577+UriYTC7JF5opcF3T2AuoeY7ueLaZgSVjSgCS6yOAJB5bRGLPSJUzA==}
+     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+@@ -773,6 +960,10 @@ packages:
+   '@wxt-dev/storage@1.2.8':
+     resolution: {integrity: sha512-GWCFKgF5+d7eslOxUDFC70ypA9njupmJb1nQM8uZoX0J3sWT2BO5xJLzb1sYahWAfID9p2BMtnUBN1lkWxPsbQ==}
+ 
++  accepts@1.3.8:
++    resolution: {integrity: sha512-PYAthTa2m2VKxuvSD3DPC/Gy+U+sOA1LAuT8mkmRuvw+NACSaeXEQ+NHcVF7rONl6qcaxV3Uuemwawk+7+SJLw==}
++    engines: {node: '>= 0.6'}
++
+   acorn-jsx@5.3.2:
+     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
+     peerDependencies:
+@@ -848,6 +1039,10 @@ packages:
+     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
+     engines: {node: 18 || 20 || >=22}
+ 
++  base64id@2.0.0:
++    resolution: {integrity: sha512-lGe34o6EHj9y3Kts9R4ZYs/Gr+6N7MCaMlIFA3F1R2O5/m7K06AxfSeO5530PEERE6/WyEg3lsuyw4GHlPZHog==}
++    engines: {node: ^4.5.0 || >= 5.9}
++
+   baseline-browser-mapping@2.10.40:
+     resolution: {integrity: sha512-BSSLZ9/Cjjv7Gtj5B68ZzXcXUg8iOf3fme+FCuh8rC/Go+Kmh8cox7M3A8dolou16s64QjLPOSdngh7GxXvkSw==}
+     engines: {node: '>=6.0.0'}
+@@ -987,6 +1182,10 @@ packages:
+     resolution: {integrity: sha512-5IKcdX0nnYavi6G7TtOhwkYzyjfJlatbjMjuLSfE2kYT5pMDOilZ4OvMhi637CcDICTmz3wARPoyhqyX1Y+XvA==}
+     engines: {node: ^14.18.0 || >=16.10.0}
+ 
++  cookie@0.7.2:
++    resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
++    engines: {node: '>= 0.6'}
++
+   cookie@1.1.1:
+     resolution: {integrity: sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==}
+     engines: {node: '>=18'}
+@@ -994,6 +1193,10 @@ packages:
+   core-util-is@1.0.3:
+     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
+ 
++  cors@2.8.6:
++    resolution: {integrity: sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw==}
++    engines: {node: '>= 0.10'}
++
+   cross-spawn@7.0.6:
+     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
+     engines: {node: '>= 8'}
+@@ -1110,6 +1313,17 @@ packages:
+   emoji-regex@8.0.0:
+     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
+ 
++  engine.io-client@6.6.6:
++    resolution: {integrity: sha512-iY6QdftLQ9pyiPoX082bpf/u1UewnOaJrtJIF9T0++QB34lZrj0uP+Q/bj8AlUsAxqhnkTV2BS8SBZSxOmoV5Q==}
++
++  engine.io-parser@5.2.3:
++    resolution: {integrity: sha512-HqD3yTBfnBxIrbnM1DoD6Pcq8NECnh8d4As1Qgh0z5Gg3jRRIqijury0CL3ghu/edArpUYiYqQiDUQBIs4np3Q==}
++    engines: {node: '>=10.0.0'}
++
++  engine.io@6.6.9:
++    resolution: {integrity: sha512-clKkw4C7nJ22mGgoVcCg6V/W/TxdNyIOTr89k2ONZu81qqkddPFDF0LXcbAwhzPD8DjkiRCjzuiO6Y+fkpD4vg==}
++    engines: {node: '>=10.2.0'}
++
+   enhanced-resolve@5.21.6:
+     resolution: {integrity: sha512-aNnGCvbJ/RIyWo1IuhNdVjnNF+EjH9wpzpNHt+ci/m9He9LJvUN8wrCcXjp9cWsGNAuvSpVFTx/vraAFQ8qGjQ==}
+     engines: {node: '>=10.13.0'}
+@@ -1140,6 +1354,11 @@ packages:
+     engines: {node: '>=18'}
+     hasBin: true
+ 
++  esbuild@0.28.1:
++    resolution: {integrity: sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==}
++    engines: {node: '>=18'}
++    hasBin: true
++
+   escalade@3.2.0:
+     resolution: {integrity: sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==}
+     engines: {node: '>=6'}
+@@ -1682,6 +1901,14 @@ packages:
+   marky@1.3.0:
+     resolution: {integrity: sha512-ocnPZQLNpvbedwTy9kNrQEsknEfgvcLMvOtz3sFeWApDq1MXH1TqkCIx58xlpESsfwQOnuBO9beyQuNGzVvuhQ==}
+ 
++  mime-db@1.52.0:
++    resolution: {integrity: sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==}
++    engines: {node: '>= 0.6'}
++
++  mime-types@2.1.35:
++    resolution: {integrity: sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==}
++    engines: {node: '>= 0.6'}
++
+   mimic-function@5.0.1:
+     resolution: {integrity: sha512-VP79XUPxV2CigYP3jWwAUFSku2aKqBH7uTAapFWCBqutsbmDo96KY5o8uh6U+/YSIn5OxJnXp73beVkpqMIGhA==}
+     engines: {node: '>=18'}
+@@ -1727,6 +1954,10 @@ packages:
+   natural-compare@1.4.0:
+     resolution: {integrity: sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw==}
+ 
++  negotiator@0.6.3:
++    resolution: {integrity: sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg==}
++    engines: {node: '>= 0.6'}
++
+   node-fetch-native@1.6.7:
+     resolution: {integrity: sha512-g9yhqoedzIUm0nTnTqAQvueMPVOuIY16bqgAJJC8XOOubYFNwz6IER9qs0Gq2Xd0+CecCKFjtdDTMA4u4xG06Q==}
+ 
+@@ -1753,6 +1984,10 @@ packages:
+     engines: {node: '>=18'}
+     hasBin: true
+ 
++  object-assign@4.1.1:
++    resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
++    engines: {node: '>=0.10.0'}
++
+   obug@2.1.3:
+     resolution: {integrity: sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg==}
+     engines: {node: '>=12.20.0'}
+@@ -2045,6 +2280,21 @@ packages:
+     resolution: {integrity: sha512-stxByr12oeeOyY2BlviTNQlYV5xOj47GirPr4yA1hE9JCtxfQN0+tVbkxwCtYDQWhEKWFHsEK48ORg5jrouCAg==}
+     engines: {node: '>=20'}
+ 
++  socket.io-adapter@2.5.8:
++    resolution: {integrity: sha512-6Oy52pbg+kvdCVvjcN+FnY7BvxZ7cIHNScbvztT/It5d0vbwoJoVZmF2gjJmnV0/4WlXRfG15zc45ySk9Ah8bw==}
++
++  socket.io-client@4.8.3:
++    resolution: {integrity: sha512-uP0bpjWrjQmUt5DTHq9RuoCBdFJF10cdX9X+a368j/Ft0wmaVgxlrjvK3kjvgCODOMMOz9lcaRzxmso0bTWZ/g==}
++    engines: {node: '>=10.0.0'}
++
++  socket.io-parser@4.2.6:
++    resolution: {integrity: sha512-asJqbVBDsBCJx0pTqw3WfesSY0iRX+2xzWEWzrpcH7L6fLzrhyF8WPI8UaeM4YCuDfpwA/cgsdugMsmtz8EJeg==}
++    engines: {node: '>=10.0.0'}
++
++  socket.io@4.8.3:
++    resolution: {integrity: sha512-2Dd78bqzzjE6KPkD5fHZmDAKRNe3J15q+YHDrIsy9WEkqttc7GY+kT9OBLSMaPbQaEd0x1BjcmtMtXkfpc+T5A==}
++    engines: {node: '>=10.2.0'}
++
+   sonic-boom@4.2.1:
+     resolution: {integrity: sha512-w6AxtubXa2wTXAUsZMMWERrsIRAdrK0Sc+FUytWvYAhBJLyuI4llrMIC1DtlNSdI99EI86KZum2MMq3EAZlF9Q==}
+ 
+@@ -2154,6 +2404,11 @@ packages:
+   tslib@2.8.1:
+     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
+ 
++  tsx@4.22.4:
++    resolution: {integrity: sha512-X8EX+XV4QR5xCsrgxaED954zTDfY8KqlDtskKEL0cHhyS/P8b4IFOvGDQpsC9Q1XnLq915wEfwwY/zzskCtmhg==}
++    engines: {node: '>=18.0.0'}
++    hasBin: true
++
+   turbo@2.10.2:
+     resolution: {integrity: sha512-wTExrNrRjB8qzIcg+ZLm0A3GFNLDsWNwdS/RBXB0FPrBDyzk3i96Yx+TxWZC7a0k1SIreFB8ciUbxjmEqTH8IQ==}
+     hasBin: true
+@@ -2196,6 +2451,9 @@ packages:
+   uhyphen@0.2.0:
+     resolution: {integrity: sha512-qz3o9CHXmJJPGBdqzab7qAYuW8kQGKNEuoHFYrBwV6hWIMcpAmxDLXojcHfFr9US1Pe6zUswEIJIbLI610fuqA==}
+ 
++  undici-types@7.18.2:
++    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
++
+   undici-types@8.3.0:
+     resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
+ 
+@@ -2273,6 +2531,10 @@ packages:
+     deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
+     hasBin: true
+ 
++  vary@1.1.2:
++    resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
++    engines: {node: '>= 0.8'}
++
+   vite-node@6.0.0:
+     resolution: {integrity: sha512-oj4PVrT+pDh6GYf5wfUXkcZyekYS8kKPfLPXVl8qe324Ec6l4K2DUKNadRbZ3LQl0qGcDz+PyOo7ZAh00Y+JjQ==}
+     engines: {node: ^20.19.0 || >=22.12.0}
+@@ -2370,6 +2632,18 @@ packages:
+     resolution: {integrity: sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww==}
+     engines: {node: '>=18'}
+ 
++  ws@8.21.0:
++    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
++    engines: {node: '>=10.0.0'}
++    peerDependencies:
++      bufferutil: ^4.0.1
++      utf-8-validate: '>=5.0.2'
++    peerDependenciesMeta:
++      bufferutil:
++        optional: true
++      utf-8-validate:
++        optional: true
++
+   wsl-utils@0.3.1:
+     resolution: {integrity: sha512-g/eziiSUNBSsdDJtCLB8bdYEUMj4jR7AGeUo96p/3dTafgjHhpF4RiCFPiRILwjQoDXx5MqkBr4fwWtR3Ky4Wg==}
+     engines: {node: '>=20'}
+@@ -2396,6 +2670,10 @@ packages:
+     resolution: {integrity: sha512-fDlsI/kFEx7gLvbecc0/ohLG50fugQp8ryHzMTuW9vSa1GJ0XYWKnhsUx7oie3G98+r56aTQIUB4kht42R3JvA==}
+     engines: {node: '>=4.0'}
+ 
++  xmlhttprequest-ssl@2.1.2:
++    resolution: {integrity: sha512-TEU+nJVUUnA4CYJFLvK5X9AOeH4KvDvhIfm0vV1GaQRtchnG0hgK5p8hw/xjv8cunWYCsiPCSDzObPyhEwq3KQ==}
++    engines: {node: '>=0.4.0'}
++
+   y18n@5.0.8:
+     resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
+     engines: {node: '>=10'}
+@@ -2506,81 +2784,159 @@ snapshots:
+   '@esbuild/aix-ppc64@0.27.7':
+     optional: true
+ 
++  '@esbuild/aix-ppc64@0.28.1':
++    optional: true
++
+   '@esbuild/android-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/android-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/android-arm@0.27.7':
+     optional: true
+ 
++  '@esbuild/android-arm@0.28.1':
++    optional: true
++
+   '@esbuild/android-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/android-x64@0.28.1':
++    optional: true
++
+   '@esbuild/darwin-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/darwin-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/darwin-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/darwin-x64@0.28.1':
++    optional: true
++
+   '@esbuild/freebsd-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/freebsd-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/freebsd-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/freebsd-x64@0.28.1':
++    optional: true
++
+   '@esbuild/linux-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/linux-arm@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-arm@0.28.1':
++    optional: true
++
+   '@esbuild/linux-ia32@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-ia32@0.28.1':
++    optional: true
++
+   '@esbuild/linux-loong64@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-loong64@0.28.1':
++    optional: true
++
+   '@esbuild/linux-mips64el@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-mips64el@0.28.1':
++    optional: true
++
+   '@esbuild/linux-ppc64@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-ppc64@0.28.1':
++    optional: true
++
+   '@esbuild/linux-riscv64@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-riscv64@0.28.1':
++    optional: true
++
+   '@esbuild/linux-s390x@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-s390x@0.28.1':
++    optional: true
++
+   '@esbuild/linux-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/linux-x64@0.28.1':
++    optional: true
++
+   '@esbuild/netbsd-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/netbsd-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/netbsd-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/netbsd-x64@0.28.1':
++    optional: true
++
+   '@esbuild/openbsd-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/openbsd-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/openbsd-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/openbsd-x64@0.28.1':
++    optional: true
++
+   '@esbuild/openharmony-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/openharmony-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/sunos-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/sunos-x64@0.28.1':
++    optional: true
++
+   '@esbuild/win32-arm64@0.27.7':
+     optional: true
+ 
++  '@esbuild/win32-arm64@0.28.1':
++    optional: true
++
+   '@esbuild/win32-ia32@0.27.7':
+     optional: true
+ 
++  '@esbuild/win32-ia32@0.28.1':
++    optional: true
++
+   '@esbuild/win32-x64@0.27.7':
+     optional: true
+ 
++  '@esbuild/win32-x64@0.28.1':
++    optional: true
++
+   '@eslint-community/eslint-utils@4.9.1(eslint@10.6.0(jiti@2.7.0))':
+     dependencies:
+       eslint: 10.6.0(jiti@2.7.0)
+@@ -2727,6 +3083,8 @@ snapshots:
+ 
+   '@rolldown/pluginutils@1.0.1': {}
+ 
++  '@socket.io/component-emitter@3.1.2': {}
++
+   '@standard-schema/utils@0.3.0': {}
+ 
+   '@tailwindcss/node@4.3.2':
+@@ -2790,12 +3148,12 @@ snapshots:
+       '@tailwindcss/oxide-win32-arm64-msvc': 4.3.2
+       '@tailwindcss/oxide-win32-x64-msvc': 4.3.2
+ 
+-  '@tailwindcss/vite@4.3.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))':
++  '@tailwindcss/vite@4.3.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))':
+     dependencies:
+       '@tailwindcss/node': 4.3.2
+       '@tailwindcss/oxide': 4.3.2
+       tailwindcss: 4.3.2
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
+ 
+   '@tanstack/query-core@5.101.2': {}
+ 
+@@ -2827,6 +3185,10 @@ snapshots:
+       tslib: 2.8.1
+     optional: true
+ 
++  '@types/cors@2.8.19':
++    dependencies:
++      '@types/node': 24.13.2
++
+   '@types/esrecurse@4.3.1': {}
+ 
+   '@types/estree@1.0.9': {}
+@@ -2843,9 +3205,14 @@ snapshots:
+ 
+   '@types/minimatch@3.0.5': {}
+ 
++  '@types/node@24.13.2':
++    dependencies:
++      undici-types: 7.18.2
++
+   '@types/node@26.1.0':
+     dependencies:
+       undici-types: 8.3.0
++    optional: true
+ 
+   '@types/react-dom@19.2.3(@types/react@19.2.17)':
+     dependencies:
+@@ -2857,6 +3224,10 @@ snapshots:
+ 
+   '@types/webextension-polyfill@0.12.5': {}
+ 
++  '@types/ws@8.18.1':
++    dependencies:
++      '@types/node': 24.13.2
++
+   '@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)':
+     dependencies:
+       '@eslint-community/regexpp': 4.12.2
+@@ -2948,10 +3319,10 @@ snapshots:
+       '@typescript-eslint/types': 8.62.1
+       eslint-visitor-keys: 5.0.1
+ 
+-  '@vitejs/plugin-react@6.0.3(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))':
++  '@vitejs/plugin-react@6.0.3(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))':
+     dependencies:
+       '@rolldown/pluginutils': 1.0.1
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
+ 
+   '@webext-core/fake-browser@1.5.2':
+     dependencies:
+@@ -2974,11 +3345,11 @@ snapshots:
+       '@types/filesystem': 0.0.36
+       '@types/har-format': 1.2.16
+ 
+-  '@wxt-dev/module-react@1.2.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))(wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4))':
++  '@wxt-dev/module-react@1.2.2(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))(wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)(tsx@4.22.4))':
+     dependencies:
+-      '@vitejs/plugin-react': 6.0.3(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
+-      wxt: 0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)
++      '@vitejs/plugin-react': 6.0.3(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
++      wxt: 0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)(tsx@4.22.4)
+     transitivePeerDependencies:
+       - '@rolldown/plugin-babel'
+       - babel-plugin-react-compiler
+@@ -2989,6 +3360,11 @@ snapshots:
+       async-mutex: 0.5.0
+       dequal: 2.0.3
+ 
++  accepts@1.3.8:
++    dependencies:
++      mime-types: 2.1.35
++      negotiator: 0.6.3
++
+   acorn-jsx@5.3.2(acorn@8.17.0):
+     dependencies:
+       acorn: 8.17.0
+@@ -3052,6 +3428,8 @@ snapshots:
+ 
+   balanced-match@4.0.4: {}
+ 
++  base64id@2.0.0: {}
++
+   baseline-browser-mapping@2.10.40: {}
+ 
+   bluebird@3.7.2: {}
+@@ -3127,7 +3505,7 @@ snapshots:
+ 
+   chrome-launcher@1.2.0:
+     dependencies:
+-      '@types/node': 26.1.0
++      '@types/node': 24.13.2
+       escape-string-regexp: 4.0.0
+       is-wsl: 2.2.0
+       lighthouse-logger: 2.0.2
+@@ -3196,10 +3574,17 @@ snapshots:
+ 
+   consola@3.4.2: {}
+ 
++  cookie@0.7.2: {}
++
+   cookie@1.1.1: {}
+ 
+   core-util-is@1.0.3: {}
+ 
++  cors@2.8.6:
++    dependencies:
++      object-assign: 4.1.1
++      vary: 1.1.2
++
+   cross-spawn@7.0.6:
+     dependencies:
+       path-key: 3.1.1
+@@ -3293,6 +3678,37 @@ snapshots:
+ 
+   emoji-regex@8.0.0: {}
+ 
++  engine.io-client@6.6.6:
++    dependencies:
++      '@socket.io/component-emitter': 3.1.2
++      debug: 4.4.3
++      engine.io-parser: 5.2.3
++      ws: 8.21.0
++      xmlhttprequest-ssl: 2.1.2
++    transitivePeerDependencies:
++      - bufferutil
++      - supports-color
++      - utf-8-validate
++
++  engine.io-parser@5.2.3: {}
++
++  engine.io@6.6.9:
++    dependencies:
++      '@types/cors': 2.8.19
++      '@types/node': 24.13.2
++      '@types/ws': 8.18.1
++      accepts: 1.3.8
++      base64id: 2.0.0
++      cookie: 0.7.2
++      cors: 2.8.6
++      debug: 4.4.3
++      engine.io-parser: 5.2.3
++      ws: 8.21.0
++    transitivePeerDependencies:
++      - bufferutil
++      - supports-color
++      - utf-8-validate
++
+   enhanced-resolve@5.21.6:
+     dependencies:
+       graceful-fs: 4.2.11
+@@ -3341,6 +3757,35 @@ snapshots:
+       '@esbuild/win32-ia32': 0.27.7
+       '@esbuild/win32-x64': 0.27.7
+ 
++  esbuild@0.28.1:
++    optionalDependencies:
++      '@esbuild/aix-ppc64': 0.28.1
++      '@esbuild/android-arm': 0.28.1
++      '@esbuild/android-arm64': 0.28.1
++      '@esbuild/android-x64': 0.28.1
++      '@esbuild/darwin-arm64': 0.28.1
++      '@esbuild/darwin-x64': 0.28.1
++      '@esbuild/freebsd-arm64': 0.28.1
++      '@esbuild/freebsd-x64': 0.28.1
++      '@esbuild/linux-arm': 0.28.1
++      '@esbuild/linux-arm64': 0.28.1
++      '@esbuild/linux-ia32': 0.28.1
++      '@esbuild/linux-loong64': 0.28.1
++      '@esbuild/linux-mips64el': 0.28.1
++      '@esbuild/linux-ppc64': 0.28.1
++      '@esbuild/linux-riscv64': 0.28.1
++      '@esbuild/linux-s390x': 0.28.1
++      '@esbuild/linux-x64': 0.28.1
++      '@esbuild/netbsd-arm64': 0.28.1
++      '@esbuild/netbsd-x64': 0.28.1
++      '@esbuild/openbsd-arm64': 0.28.1
++      '@esbuild/openbsd-x64': 0.28.1
++      '@esbuild/openharmony-arm64': 0.28.1
++      '@esbuild/sunos-x64': 0.28.1
++      '@esbuild/win32-arm64': 0.28.1
++      '@esbuild/win32-ia32': 0.28.1
++      '@esbuild/win32-x64': 0.28.1
++
+   escalade@3.2.0: {}
+ 
+   escape-goat@4.0.0: {}
+@@ -3818,6 +4263,12 @@ snapshots:
+ 
+   marky@1.3.0: {}
+ 
++  mime-db@1.52.0: {}
++
++  mime-types@2.1.35:
++    dependencies:
++      mime-db: 1.52.0
++
+   mimic-function@5.0.1: {}
+ 
+   minimatch@10.2.5:
+@@ -3862,6 +4313,8 @@ snapshots:
+ 
+   natural-compare@1.4.0: {}
+ 
++  negotiator@0.6.3: {}
++
+   node-fetch-native@1.6.7: {}
+ 
+   node-forge@1.4.0: {}
+@@ -3889,6 +4342,8 @@ snapshots:
+       pathe: 2.0.3
+       tinyexec: 1.2.4
+ 
++  object-assign@4.1.1: {}
++
+   obug@2.1.3: {}
+ 
+   ofetch@1.5.1:
+@@ -4191,6 +4646,47 @@ snapshots:
+       ansi-styles: 6.2.3
+       is-fullwidth-code-point: 5.1.0
+ 
++  socket.io-adapter@2.5.8:
++    dependencies:
++      debug: 4.4.3
++      ws: 8.21.0
++    transitivePeerDependencies:
++      - bufferutil
++      - supports-color
++      - utf-8-validate
++
++  socket.io-client@4.8.3:
++    dependencies:
++      '@socket.io/component-emitter': 3.1.2
++      debug: 4.4.3
++      engine.io-client: 6.6.6
++      socket.io-parser: 4.2.6
++    transitivePeerDependencies:
++      - bufferutil
++      - supports-color
++      - utf-8-validate
++
++  socket.io-parser@4.2.6:
++    dependencies:
++      '@socket.io/component-emitter': 3.1.2
++      debug: 4.4.3
++    transitivePeerDependencies:
++      - supports-color
++
++  socket.io@4.8.3:
++    dependencies:
++      accepts: 1.3.8
++      base64id: 2.0.0
++      cors: 2.8.6
++      debug: 4.4.3
++      engine.io: 6.6.9
++      socket.io-adapter: 2.5.8
++      socket.io-parser: 4.2.6
++    transitivePeerDependencies:
++      - bufferutil
++      - supports-color
++      - utf-8-validate
++
+   sonic-boom@4.2.1:
+     dependencies:
+       atomic-sleep: 1.0.0
+@@ -4289,6 +4785,12 @@ snapshots:
+ 
+   tslib@2.8.1: {}
+ 
++  tsx@4.22.4:
++    dependencies:
++      esbuild: 0.28.1
++    optionalDependencies:
++      fsevents: 2.3.3
++
+   turbo@2.10.2:
+     optionalDependencies:
+       '@turbo/darwin-64': 2.10.2
+@@ -4327,9 +4829,12 @@ snapshots:
+ 
+   uhyphen@0.2.0: {}
+ 
+-  undici-types@8.3.0: {}
++  undici-types@7.18.2: {}
++
++  undici-types@8.3.0:
++    optional: true
+ 
+-  unimport@6.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)):
++  unimport@6.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)):
+     dependencies:
+       acorn: 8.17.0
+       escape-string-regexp: 5.0.0
+@@ -4343,7 +4848,7 @@ snapshots:
+       scule: 1.3.0
+       strip-literal: 3.1.0
+       tinyglobby: 0.2.17
+-      unplugin: 3.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))
++      unplugin: 3.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))
+       unplugin-utils: 0.3.2
+     optionalDependencies:
+       rolldown: 1.1.4
+@@ -4364,7 +4869,7 @@ snapshots:
+       pathe: 2.0.3
+       picomatch: 4.0.4
+ 
+-  unplugin@3.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)):
++  unplugin@3.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)):
+     dependencies:
+       '@jridgewell/remapping': 2.3.5
+       picomatch: 4.0.4
+@@ -4372,7 +4877,7 @@ snapshots:
+     optionalDependencies:
+       esbuild: 0.27.7
+       rolldown: 1.1.4
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
+ 
+   update-browserslist-db@1.2.3(browserslist@4.28.4):
+     dependencies:
+@@ -4401,13 +4906,15 @@ snapshots:
+ 
+   uuid@8.3.2: {}
+ 
+-  vite-node@6.0.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0):
++  vary@1.1.2: {}
++
++  vite-node@6.0.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4):
+     dependencies:
+       cac: 7.0.0
+       es-module-lexer: 2.3.0
+       obug: 2.1.3
+       pathe: 2.0.3
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
+     transitivePeerDependencies:
+       - '@types/node'
+       - '@vitejs/devtools'
+@@ -4422,7 +4929,7 @@ snapshots:
+       - tsx
+       - yaml
+ 
+-  vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0):
++  vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4):
+     dependencies:
+       lightningcss: 1.32.0
+       picomatch: 4.0.4
+@@ -4434,6 +4941,7 @@ snapshots:
+       esbuild: 0.27.7
+       fsevents: 2.3.3
+       jiti: 2.7.0
++      tsx: 4.22.4
+ 
+   watchpack@2.4.4:
+     dependencies:
+@@ -4506,12 +5014,14 @@ snapshots:
+       string-width: 7.2.0
+       strip-ansi: 7.2.0
+ 
++  ws@8.21.0: {}
++
+   wsl-utils@0.3.1:
+     dependencies:
+       is-wsl: 3.1.1
+       powershell-utils: 0.1.0
+ 
+-  wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4):
++  wxt@0.20.27(@types/node@26.1.0)(eslint@10.6.0(jiti@2.7.0))(jiti@2.7.0)(rolldown@1.1.4)(tsx@4.22.4):
+     dependencies:
+       '@1natsu/wait-element': 4.2.0
+       '@aklinker1/rollup-plugin-visualizer': 5.12.0
+@@ -4551,9 +5061,9 @@ snapshots:
+       publish-browser-extension: 4.0.5
+       scule: 1.3.0
+       tinyglobby: 0.2.17
+-      unimport: 6.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0))
+-      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
+-      vite-node: 6.0.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)
++      unimport: 6.3.0(esbuild@0.27.7)(rolldown@1.1.4)(vite@8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4))
++      vite: 8.1.3(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
++      vite-node: 6.0.0(@types/node@26.1.0)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.22.4)
+       web-ext-run: 0.2.4
+     optionalDependencies:
+       eslint: 10.6.0(jiti@2.7.0)
+@@ -4589,6 +5099,8 @@ snapshots:
+ 
+   xmlbuilder@11.0.1: {}
+ 
++  xmlhttprequest-ssl@2.1.2: {}
++
+   y18n@5.0.8: {}
+ 
+   yargs-parser@21.1.1: {}
+-- 
+2.43.0
+
+
+From d425952c23ba19507349d2e3aa3c8aa1bca1fbd1 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Thu, 2 Jul 2026 18:25:02 +0000
+Subject: [PATCH 2/2] feat(privacy): server-enforced visibility, community
+ discovery, complete-end private mode
+
+Server:
+- visibility carried in hello + live 'visibility' event; roster
+  broadcasts contain PUBLIC users only - private users never leave
+  the server
+- dm rejected when sender is private (sender_private) or recipient is
+  private/offline (recipient_unavailable); the two recipient cases are
+  indistinguishable to prevent presence leaks
+- typing from private users silently dropped
+- zero message retention: pure relay, nothing stored or logged
+- committed test suite (pnpm --filter @tabcom/backend test): 7 privacy
+  tests covering discovery, both barriers, typing, live switching,
+  and presence-leak resistance
+
+Extension:
+- CommunitiesView = live discovery directory of public online users;
+  private mode shows a complete-end explainer with one-tap Go Public
+- Settings visibility toggle pushes to server, takes effect instantly
+- ChatView: composer replaced by privacy notice while private (server
+  enforces regardless); system notices rendered as centered chips
+- dm_error -> local system message ('not delivered / you're private')
+- 'system' message kind (local-only, never relayed)
+- WXT_REALTIME_URL env support for LAN / cross-device testing
+---
+ .env.example                                  |  11 +-
+ apps/backend/package.json                     |   6 +-
+ apps/backend/src/index.ts                     |  98 +++++++++----
+ apps/backend/test/relay.test.mjs              | 136 ++++++++++++++++++
+ .../features/workspace/WorkspaceScreen.tsx    |   9 +-
+ .../workspace/views/CommunitiesView.tsx       | 110 +++++++++++++-
+ .../features/workspace/views/SettingsView.tsx |  12 +-
+ .../workspace/views/chat/ChatView.tsx         |  33 ++++-
+ .../workspace/views/chat/ConversationList.tsx |   4 +-
+ apps/extension/src/lib/realtime.ts            |  24 +++-
+ apps/extension/src/stores/chat.store.ts       |  29 ++++
+ apps/extension/src/types/chat.ts              |   2 +-
+ pnpm-lock.yaml                                |   3 +
+ 13 files changed, 428 insertions(+), 49 deletions(-)
+ create mode 100644 apps/backend/test/relay.test.mjs
+
+diff --git a/.env.example b/.env.example
+index 25b9c89..35409e6 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,5 +1,10 @@
+ # Tabcom environment variables
+-# Copy to .env and fill in values as backend services come online.
++# Copy to .env and fill in values.
+ 
+-# TABCOM_API_URL=http://localhost:3000
+-# TABCOM_WS_URL=ws://localhost:3000
++# Realtime server URL the extension connects to.
++# Use your machine's LAN IP (e.g. http://192.168.1.5:3001) to test
++# across devices on the same network.
++WXT_REALTIME_URL=http://localhost:3001
++
++# Backend port
++# PORT=3001
+diff --git a/apps/backend/package.json b/apps/backend/package.json
+index fa6854c..0cacc4f 100644
+--- a/apps/backend/package.json
++++ b/apps/backend/package.json
+@@ -8,14 +8,16 @@
+     "dev": "tsx watch src/index.ts",
+     "start": "tsx src/index.ts",
+     "build": "tsc --noEmit",
+-    "typecheck": "tsc --noEmit"
++    "typecheck": "tsc --noEmit",
++    "test": "node test/relay.test.mjs"
+   },
+   "dependencies": {
+     "socket.io": "^4.8.3"
+   },
+   "devDependencies": {
+     "@types/node": "^24.10.9",
++    "socket.io-client": "^4.8.3",
+     "tsx": "^4.21.1",
+     "typescript": "^5.9.3"
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/apps/backend/src/index.ts b/apps/backend/src/index.ts
+index 61eac81..02ac469 100644
+--- a/apps/backend/src/index.ts
++++ b/apps/backend/src/index.ts
+@@ -2,21 +2,27 @@ import { createServer } from "node:http";
+ import { Server } from "socket.io";
+ 
+ /**
+- * Tabcom realtime relay — minimal Phase 2 foundation.
++ * Tabcom realtime server — privacy-first relay.
+  *
+- * Responsibilities:
+- *  - presence roster (who is online, broadcast on every join/leave)
+- *  - direct message routing by username
+- *  - typing indicator relay
++ * Privacy model (enforced HERE, never trusted to clients):
++ *  - PUBLIC users appear in the community roster and can send/receive DMs.
++ *  - PRIVATE users are a complete end: excluded from every roster
++ *    broadcast, cannot receive DMs, cannot send DMs. The server rejects
++ *    both directions, so a modified client cannot bypass it.
++ *  - ZERO message retention: this server relays and forgets. No message
++ *    is ever written to memory beyond the relay call, disk, or logs.
+  *
+- * In-memory only. Persistence, auth and history arrive with the full
+- * NestJS + PostgreSQL backend; the socket protocol stays the same.
++ * In-memory presence only. Auth + history (opt-in) arrive with the
++ * NestJS + PostgreSQL upgrade; this socket protocol is stable.
+  */
+ 
++export type Visibility = "public" | "private";
++
+ export interface WireUser {
+   username: string;
+   name: string;
+   color: string;
++  visibility: Visibility;
+ }
+ 
+ export interface WireMessage {
+@@ -27,41 +33,60 @@ export interface WireMessage {
+   sentAt: number;
+ }
+ 
++export type DmErrorReason = "sender_private" | "recipient_unavailable";
++
+ const httpServer = createServer((_req, res) => {
+   res.writeHead(200, { "Content-Type": "application/json" });
+   res.end(JSON.stringify({ ok: true, service: "tabcom-realtime" }));
+ });
+ 
+-const io = new Server(httpServer, {
+-  cors: { origin: "*" },
+-});
++const io = new Server(httpServer, { cors: { origin: "*" } });
+ 
+ const users = new Map<string, WireUser>(); // socket.id -> user
+ 
+-function roster(): WireUser[] {
+-  return [...users.values()];
++function sanitizeVisibility(value: unknown): Visibility {
++  return value === "private" ? "private" : "public";
++}
++
++/** Only public users are ever broadcast. Private users do not exist here. */
++function publicRoster(): WireUser[] {
++  return [...users.values()].filter((user) => user.visibility === "public");
+ }
+ 
+-function socketIdsFor(username: string): string[] {
++function broadcastRoster(): void {
++  io.emit("roster", publicRoster());
++}
++
++function publicSocketIdsFor(username: string): string[] {
+   const ids: string[] = [];
+   for (const [id, user] of users) {
+-    if (user.username === username) ids.push(id);
++    if (user.username === username && user.visibility === "public") {
++      ids.push(id);
++    }
+   }
+   return ids;
+ }
+ 
+ io.on("connection", (socket) => {
+-  socket.on("hello", (user: WireUser) => {
+-    if (!user?.username) return;
++  socket.on("hello", (raw: Partial<WireUser>) => {
++    if (!raw?.username) return;
+ 
+     users.set(socket.id, {
+-      username: String(user.username).slice(0, 20),
+-      name: String(user.name ?? user.username).slice(0, 40),
+-      color: String(user.color ?? "#2563EB").slice(0, 9),
++      username: String(raw.username).slice(0, 20).toLowerCase(),
++      name: String(raw.name ?? raw.username).slice(0, 40),
++      color: String(raw.color ?? "#2563EB").slice(0, 9),
++      visibility: sanitizeVisibility(raw.visibility),
+     });
+ 
+-    io.emit("roster", roster());
+-    console.log(`[join] @${user.username} (${users.size} online)`);
++    broadcastRoster();
++  });
++
++  socket.on("visibility", (raw: unknown) => {
++    const user = users.get(socket.id);
++    if (!user) return;
++
++    user.visibility = sanitizeVisibility(raw);
++    broadcastRoster();
+   });
+ 
+   socket.on(
+@@ -70,7 +95,26 @@ io.on("connection", (socket) => {
+       const from = users.get(socket.id);
+       if (!from || !to || !message) return;
+ 
+-      for (const id of socketIdsFor(to)) {
++      // Complete end while private: senders in private mode cannot message.
++      if (from.visibility === "private") {
++        socket.emit("dm_error", {
++          to,
++          reason: "sender_private" satisfies DmErrorReason,
++        });
++        return;
++      }
++
++      // Private or offline recipients are indistinguishable — no presence leak.
++      const targets = publicSocketIdsFor(to);
++      if (targets.length === 0) {
++        socket.emit("dm_error", {
++          to,
++          reason: "recipient_unavailable" satisfies DmErrorReason,
++        });
++        return;
++      }
++
++      for (const id of targets) {
+         io.to(id).emit("dm", { from, message });
+       }
+     }
+@@ -79,8 +123,9 @@ io.on("connection", (socket) => {
+   socket.on("typing", ({ to }: { to: string }) => {
+     const from = users.get(socket.id);
+     if (!from || !to) return;
++    if (from.visibility === "private") return; // silently dropped
+ 
+-    for (const id of socketIdsFor(to)) {
++    for (const id of publicSocketIdsFor(to)) {
+       io.to(id).emit("typing", { from: from.username });
+     }
+   });
+@@ -88,11 +133,7 @@ io.on("connection", (socket) => {
+   socket.on("disconnect", () => {
+     const user = users.get(socket.id);
+     users.delete(socket.id);
+-
+-    if (user) {
+-      io.emit("roster", roster());
+-      console.log(`[leave] @${user.username} (${users.size} online)`);
+-    }
++    if (user) broadcastRoster();
+   });
+ });
+ 
+@@ -100,4 +141,5 @@ const PORT = Number(process.env.PORT ?? 3001);
+ 
+ httpServer.listen(PORT, () => {
+   console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
++  console.log("[tabcom] privacy: zero message retention, server-enforced visibility");
+ });
+diff --git a/apps/backend/test/relay.test.mjs b/apps/backend/test/relay.test.mjs
+new file mode 100644
+index 0000000..cfcd1cd
+--- /dev/null
++++ b/apps/backend/test/relay.test.mjs
+@@ -0,0 +1,136 @@
++/**
++ * Privacy-rule integration tests for the realtime server.
++ * Spawns the server on a test port, connects simulated browsers,
++ * asserts every visibility guarantee. Run: pnpm test
++ */
++import { spawn } from "node:child_process";
++import { io } from "socket.io-client";
++
++const PORT = 3199;
++const URL = `http://localhost:${PORT}`;
++
++const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
++  env: { ...process.env, PORT: String(PORT) },
++  stdio: "pipe",
++});
++
++const passed = [];
++const fail = (msg) => {
++  console.error("✗ FAIL:", msg);
++  server.kill();
++  process.exit(1);
++};
++const pass = (msg) => {
++  passed.push(msg);
++  console.log("✓", msg);
++};
++
++await new Promise((resolve) => {
++  server.stdout.on("data", (chunk) => {
++    if (String(chunk).includes("listening")) resolve();
++  });
++});
++
++const connect = (user) =>
++  new Promise((resolve) => {
++    const socket = io(URL);
++    socket.on("connect", () => {
++      socket.emit("hello", user);
++      resolve(socket);
++    });
++  });
++
++const nextRoster = (socket) =>
++  new Promise((resolve) => socket.once("roster", resolve));
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++
++// alice (public), bob (public), mallory (PRIVATE)
++const alice = await connect({ username: "alice", name: "Alice", color: "#2563EB", visibility: "public" });
++const bob = await connect({ username: "bob", name: "Bob", color: "#059669", visibility: "public" });
++const mallory = await connect({ username: "mallory", name: "Mallory", color: "#DC2626", visibility: "private" });
++await sleep(400);
++
++// TEST 1: private user never appears in the roster
++{
++  const rosterPromise = nextRoster(alice);
++  mallory.emit("visibility", "private"); // triggers rebroadcast
++  const roster = await rosterPromise;
++  const names = roster.map((u) => u.username).sort();
++  if (names.includes("mallory")) fail("private user leaked into roster");
++  if (!names.includes("alice") || !names.includes("bob")) fail("public users missing from roster");
++  pass("discovery: public users listed, private user invisible");
++}
++
++// TEST 2: public <-> public DM relays
++{
++  const delivery = new Promise((resolve) => bob.once("dm", resolve));
++  alice.emit("dm", { to: "bob", message: { id: "t2", kind: "text", text: "hi bob", sentAt: Date.now() } });
++  const { from, message } = await delivery;
++  if (from.username !== "alice" || message.text !== "hi bob") fail("public->public dm corrupted");
++  pass("messaging: public -> public delivers");
++}
++
++// TEST 3: DM *to* a private user is rejected; nothing reaches them
++{
++  let leaked = false;
++  mallory.once("dm", () => (leaked = true));
++  const error = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "mallory", message: { id: "t3", kind: "text", text: "psst", sentAt: Date.now() } });
++  const err = await error;
++  await sleep(300);
++  if (leaked) fail("message reached a private user");
++  if (err.reason !== "recipient_unavailable") fail("wrong rejection reason: " + err.reason);
++  pass("barrier in: dm TO private user rejected, nothing delivered");
++}
++
++// TEST 4: DM *from* a private user is rejected (complete end)
++{
++  let leaked = false;
++  alice.once("dm", () => (leaked = true));
++  const error = new Promise((resolve) => mallory.once("dm_error", resolve));
++  mallory.emit("dm", { to: "alice", message: { id: "t4", kind: "text", text: "sneaky", sentAt: Date.now() } });
++  const err = await error;
++  await sleep(300);
++  if (leaked) fail("private user was able to send");
++  if (err.reason !== "sender_private") fail("wrong rejection reason: " + err.reason);
++  pass("barrier out: dm FROM private user rejected (complete end)");
++}
++
++// TEST 5: typing from private user is silently dropped
++{
++  let leaked = false;
++  alice.once("typing", () => (leaked = true));
++  mallory.emit("typing", { to: "alice" });
++  await sleep(300);
++  if (leaked) fail("typing leaked from private user");
++  pass("typing from private user dropped");
++}
++
++// TEST 6: going public appears live; going private vanishes live
++{
++  const appear = nextRoster(alice);
++  mallory.emit("visibility", "public");
++  const rosterAfterPublic = await appear;
++  if (!rosterAfterPublic.some((u) => u.username === "mallory")) fail("user did not appear after going public");
++
++  const vanish = nextRoster(alice);
++  mallory.emit("visibility", "private");
++  const rosterAfterPrivate = await vanish;
++  if (rosterAfterPrivate.some((u) => u.username === "mallory")) fail("user did not vanish after going private");
++  pass("live switching: appears on public, vanishes on private");
++}
++
++// TEST 7: offline and private recipients are indistinguishable (no presence leak)
++{
++  const errorOffline = new Promise((resolve) => alice.once("dm_error", resolve));
++  alice.emit("dm", { to: "ghost", message: { id: "t7", kind: "text", text: "?", sentAt: Date.now() } });
++  const err = await errorOffline;
++  if (err.reason !== "recipient_unavailable") fail("offline reason differs from private reason");
++  pass("no presence leak: offline and private are indistinguishable");
++}
++
++console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/7)`);
++alice.disconnect(); bob.disconnect(); mallory.disconnect();
++server.kill();
++process.exit(0);
+diff --git a/apps/extension/src/features/workspace/WorkspaceScreen.tsx b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+index 6d6ce96..ca29769 100644
+--- a/apps/extension/src/features/workspace/WorkspaceScreen.tsx
++++ b/apps/extension/src/features/workspace/WorkspaceScreen.tsx
+@@ -33,12 +33,13 @@ export default function WorkspaceScreen() {
+   const username = useProfileStore((state) => state.username);
+   const displayName = useProfileStore((state) => state.displayName);
+   const avatarColor = useProfileStore((state) => state.avatarColor);
++  const visibility = useProfileStore((state) => state.visibility);
+ 
+   useEffect(() => {
+     ensureSeeded();
+ 
+     initRealtime(
+-      { username, name: displayName, color: avatarColor },
++      { username, name: displayName, color: avatarColor, visibility },
+       {
+         onConnectionChange: (live) =>
+           useChatStore.getState().setLiveStatus(live),
+@@ -53,9 +54,13 @@ export default function WorkspaceScreen() {
+ 
+         onTyping: (fromUsername) =>
+           useChatStore.getState().receiveTyping(fromUsername),
++
++        onDmError: (toUsername, reason) =>
++          useChatStore.getState().receiveDmError(toUsername, reason),
+       }
+     );
+-  }, [ensureSeeded, username, displayName, avatarColor]);
++    // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
++  }, []);
+ 
+   return (
+     <AppShell>
+diff --git a/apps/extension/src/features/workspace/views/CommunitiesView.tsx b/apps/extension/src/features/workspace/views/CommunitiesView.tsx
+index 9cf5b36..a35024a 100644
+--- a/apps/extension/src/features/workspace/views/CommunitiesView.tsx
++++ b/apps/extension/src/features/workspace/views/CommunitiesView.tsx
+@@ -1,12 +1,108 @@
+-import { Globe } from "lucide-react";
+-import { EmptyState } from "../../../components/ui";
++import { Globe, MessageSquare, ShieldOff, Wifi } from "lucide-react";
+ 
++import { Avatar, Button, EmptyState } from "../../../components/ui";
++import { updateVisibility } from "../../../lib/realtime";
++import { useChatStore } from "../../../stores/chat.store";
++import { useProfileStore } from "../../../stores/profile.store";
++import { useWorkspaceStore } from "../../../stores/workspace.store";
++
++/**
++ * Community — live discovery directory.
++ *
++ * Shows every PUBLIC user currently online (the server never sends
++ * private users). If you are in private mode, discovery and messaging
++ * are a complete end, so this surface explains that instead.
++ */
+ export default function CommunitiesView() {
++  const live = useChatStore((state) => state.live);
++  const contacts = useChatStore((state) => state.contacts);
++  const startConversation = useChatStore((state) => state.startConversation);
++  const setTab = useWorkspaceStore((state) => state.setTab);
++
++  const visibility = useProfileStore((state) => state.visibility);
++  const setVisibilityLocal = useProfileStore((state) => state.setVisibility);
++
++  const goPublic = () => {
++    setVisibilityLocal("public");
++    updateVisibility("public");
++  };
++
++  // Live, online people only — the discovery surface.
++  const people = contacts.filter(
++    (contact) => contact.id.startsWith("u-") && contact.presence === "online"
++  );
++
++  if (!live) {
++    return (
++      <EmptyState
++        icon={<Wifi size={24} />}
++        title="Offline — demo mode"
++        description="Start the Tabcom realtime server and reopen the panel to discover people. Run: pnpm --filter @tabcom/backend dev"
++      />
++    );
++  }
++
++  if (visibility === "private") {
++    return (
++      <EmptyState
++        icon={<ShieldOff size={24} />}
++        title="You're in private mode"
++        description="Private is a complete end: you don't appear here, you can't be messaged, and you can't message anyone. Go public to join the community."
++        action={
++          <Button size="md" onClick={goPublic}>
++            Switch to public
++          </Button>
++        }
++      />
++    );
++  }
++
++  if (people.length === 0) {
++    return (
++      <EmptyState
++        icon={<Globe size={24} />}
++        title="No one else is online"
++        description="You're visible to the community. People who sign in on public will appear here instantly — try another browser."
++      />
++    );
++  }
++
++  const message = (contactId: string) => {
++    startConversation(contactId);
++    setTab("inbox");
++  };
++
+   return (
+-    <EmptyState
+-      icon={<Globe size={24} />}
+-      title="No communities yet"
+-      description="Join or create communities to collaborate with groups around shared topics and workspaces."
+-    />
++    <div className="flex flex-1 flex-col overflow-y-auto">
++      <p className="border-b border-slate-100 px-6 py-3 text-xs font-medium uppercase tracking-wide text-slate-400">
++        Online now — {people.length}
++      </p>
++
++      <ul>
++        {people.map((contact) => (
++          <li key={contact.id}>
++            <button
++              type="button"
++              onClick={() => message(contact.id)}
++              className="flex w-full items-center gap-3 border-b border-slate-100 px-6 py-4 text-left transition hover:bg-slate-50"
++            >
++              <div className="relative">
++                <Avatar name={contact.name} color={contact.color} size="md" />
++                <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />
++              </div>
++
++              <span className="min-w-0 flex-1">
++                <span className="block font-medium">{contact.name}</span>
++                <span className="block text-sm text-slate-500">
++                  @{contact.username}
++                </span>
++              </span>
++
++              <MessageSquare size={18} className="shrink-0 text-slate-400" />
++            </button>
++          </li>
++        ))}
++      </ul>
++    </div>
+   );
+ }
+diff --git a/apps/extension/src/features/workspace/views/SettingsView.tsx b/apps/extension/src/features/workspace/views/SettingsView.tsx
+index 07f0368..c1d2f38 100644
+--- a/apps/extension/src/features/workspace/views/SettingsView.tsx
++++ b/apps/extension/src/features/workspace/views/SettingsView.tsx
+@@ -6,7 +6,10 @@ import {
+   OptionCard,
+   SectionLabel,
+ } from "../../../components/ui";
+-import { disconnectRealtime } from "../../../lib/realtime";
++import {
++  disconnectRealtime,
++  updateVisibility,
++} from "../../../lib/realtime";
+ import { useAppStore } from "../../../stores/app.store";
+ import { useChatStore } from "../../../stores/chat.store";
+ import {
+@@ -41,7 +44,12 @@ export default function SettingsView() {
+   const username = useProfileStore((state) => state.username);
+   const visibility = useProfileStore((state) => state.visibility);
+   const avatarColor = useProfileStore((state) => state.avatarColor);
+-  const setVisibility = useProfileStore((state) => state.setVisibility);
++  const setVisibilityLocal = useProfileStore((state) => state.setVisibility);
++
++  const setVisibility = (value: ProfileVisibility) => {
++    setVisibilityLocal(value);
++    updateVisibility(value); // server-enforced, takes effect immediately
++  };
+   const resetProfile = useProfileStore((state) => state.resetProfile);
+   const resetChat = useChatStore((state) => state.resetChat);
+ 
+diff --git a/apps/extension/src/features/workspace/views/chat/ChatView.tsx b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+index 188d43d..78868cc 100644
+--- a/apps/extension/src/features/workspace/views/chat/ChatView.tsx
++++ b/apps/extension/src/features/workspace/views/chat/ChatView.tsx
+@@ -1,4 +1,10 @@
+-import { ArrowLeft, ExternalLink, Link as LinkIcon, Send } from "lucide-react";
++import {
++  ArrowLeft,
++  ExternalLink,
++  Link as LinkIcon,
++  Send,
++  ShieldOff,
++} from "lucide-react";
+ import { useEffect, useRef, useState } from "react";
+ import { browser } from "wxt/browser";
+ 
+@@ -7,6 +13,7 @@ import { sendTyping } from "../../../../lib/realtime";
+ import { Avatar } from "../../../../components/ui";
+ import { cn } from "../../../../lib/cn";
+ import { ME, useChatStore } from "../../../../stores/chat.store";
++import { useProfileStore } from "../../../../stores/profile.store";
+ import type { Message } from "../../../../types/chat";
+ import { formatClockTime } from "../../../../utils/time";
+ 
+@@ -26,6 +33,16 @@ const NO_MESSAGES: Message[] = [];
+ function MessageBubble({ message }: { message: Message }) {
+   const isMine = message.authorId === ME;
+ 
++  if (message.kind === "system") {
++    return (
++      <div className="flex justify-center">
++        <p className="max-w-[85%] rounded-full bg-slate-50 px-4 py-1.5 text-center text-xs text-slate-500">
++          {message.text}
++        </p>
++      </div>
++    );
++  }
++
+   return (
+     <div className={cn("flex", isMine ? "justify-end" : "justify-start")}>
+       <div
+@@ -90,6 +107,8 @@ export default function ChatView({
+   const sendText = useChatStore((state) => state.sendText);
+   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
+ 
++  const visibility = useProfileStore((state) => state.visibility);
++
+   const [draft, setDraft] = useState("");
+   const bottomRef = useRef<HTMLDivElement>(null);
+   const lastTypingSent = useRef(0);
+@@ -166,7 +185,16 @@ export default function ChatView({
+         <div ref={bottomRef} />
+       </div>
+ 
+-      {/* Composer */}
++      {/* Composer — complete end while private (server enforces too) */}
++      {visibility === "private" && contact.id.startsWith("u-") ? (
++        <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
++          <ShieldOff size={18} className="shrink-0 text-slate-400" />
++          <p className="text-xs leading-5 text-slate-500">
++            You're in private mode — messaging is paused. Switch to public
++            in Settings to send and receive.
++          </p>
++        </div>
++      ) : (
+       <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-3">
+         <button
+           type="button"
+@@ -211,6 +239,7 @@ export default function ChatView({
+           <Send size={16} />
+         </button>
+       </div>
++      )}
+     </div>
+   );
+ }
+diff --git a/apps/extension/src/features/workspace/views/chat/ConversationList.tsx b/apps/extension/src/features/workspace/views/chat/ConversationList.tsx
+index 5249acd..e1e61af 100644
+--- a/apps/extension/src/features/workspace/views/chat/ConversationList.tsx
++++ b/apps/extension/src/features/workspace/views/chat/ConversationList.tsx
+@@ -67,7 +67,9 @@ export default function ConversationList() {
+                     {last
+                       ? last.kind === "link"
+                         ? `🔗 ${last.text}`
+-                        : last.text
++                        : last.kind === "system"
++                          ? `⚠︎ ${last.text}`
++                          : last.text
+                       : "Say hi 👋"}
+                   </span>
+ 
+diff --git a/apps/extension/src/lib/realtime.ts b/apps/extension/src/lib/realtime.ts
+index 7885021..d56789b 100644
+--- a/apps/extension/src/lib/realtime.ts
++++ b/apps/extension/src/lib/realtime.ts
+@@ -6,14 +6,22 @@ import { io, type Socket } from "socket.io-client";
+  * Dependency direction: stores/components import this module; this module
+  * never imports stores. Incoming events are delivered through handlers
+  * wired up by WorkspaceScreen.
++ *
++ * Privacy note: visibility is enforced server-side. Client-side gating
++ * here and in the UI is UX only — the server is the authority.
+  */
+ 
+-export const REALTIME_URL = "http://localhost:3001";
++export const REALTIME_URL =
++  (import.meta.env.WXT_REALTIME_URL as string | undefined) ??
++  "http://localhost:3001";
++
++export type Visibility = "public" | "private";
+ 
+ export interface WireUser {
+   username: string;
+   name: string;
+   color: string;
++  visibility: Visibility;
+ }
+ 
+ export interface WireMessage {
+@@ -24,11 +32,14 @@ export interface WireMessage {
+   sentAt: number;
+ }
+ 
++export type DmErrorReason = "sender_private" | "recipient_unavailable";
++
+ export interface RealtimeHandlers {
+   onConnectionChange: (live: boolean) => void;
+   onRoster: (users: WireUser[]) => void;
+   onDm: (from: WireUser, message: WireMessage) => void;
+   onTyping: (fromUsername: string) => void;
++  onDmError: (toUsername: string, reason: DmErrorReason) => void;
+ }
+ 
+ let socket: Socket | null = null;
+@@ -61,6 +72,12 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
+   socket.on("typing", ({ from }: { from: string }) =>
+     handlers.onTyping(from)
+   );
++
++  socket.on(
++    "dm_error",
++    ({ to, reason }: { to: string; reason: DmErrorReason }) =>
++      handlers.onDmError(to, reason)
++  );
+ }
+ 
+ export function disconnectRealtime(): void {
+@@ -68,6 +85,11 @@ export function disconnectRealtime(): void {
+   socket = null;
+ }
+ 
++/** Push a visibility change to the server (takes effect immediately). */
++export function updateVisibility(visibility: Visibility): void {
++  socket?.emit("visibility", visibility);
++}
++
+ export function sendDm(toUsername: string, message: WireMessage): void {
+   socket?.emit("dm", { to: toUsername, message });
+ }
+diff --git a/apps/extension/src/stores/chat.store.ts b/apps/extension/src/stores/chat.store.ts
+index dc0ab83..db4cd3f 100644
+--- a/apps/extension/src/stores/chat.store.ts
++++ b/apps/extension/src/stores/chat.store.ts
+@@ -79,6 +79,10 @@ interface ChatState {
+   applyRoster: (users: WireUser[]) => void;
+   receiveDm: (from: WireUser, message: WireMessage) => void;
+   receiveTyping: (fromUsername: string) => void;
++  receiveDmError: (
++    toUsername: string,
++    reason: "sender_private" | "recipient_unavailable"
++  ) => void;
+ 
+   openConversation: (conversationId: string) => void;
+   closeConversation: () => void;
+@@ -160,6 +164,7 @@ export const useChatStore = create<ChatState>()(
+ 
+       /** Route an outgoing message: socket for live contacts, canned reply for demo. */
+       const deliver = (conversationId: string, message: Message) => {
++        if (message.kind === "system") return; // local notices never leave the device
+         const conversation = get().conversations.find(
+           (item) => item.id === conversationId
+         );
+@@ -287,6 +292,30 @@ export const useChatStore = create<ChatState>()(
+           });
+         },
+ 
++        receiveDmError: (toUsername, reason) => {
++          const contactId = `u-${toUsername}`;
++
++          const conversation = get().conversations.find(
++            (item) => item.contactId === contactId
++          );
++          if (!conversation) return;
++
++          const notice: Message = {
++            id: uid(),
++            authorId: "system",
++            kind: "system",
++            text:
++              reason === "sender_private"
++                ? "Not sent — you're in private mode. Switch to public in Settings to message people."
++                : `Not delivered — @${toUsername} is unavailable (private or offline).`,
++            sentAt: Date.now(),
++          };
++
++          set((state) =>
++            appendMessage(state, conversation.id, notice, false)
++          );
++        },
++
+         receiveTyping: (fromUsername) => {
+           const contactId = `u-${fromUsername}`;
+ 
+diff --git a/apps/extension/src/types/chat.ts b/apps/extension/src/types/chat.ts
+index 4ae2bf0..a005fbe 100644
+--- a/apps/extension/src/types/chat.ts
++++ b/apps/extension/src/types/chat.ts
+@@ -8,7 +8,7 @@ export interface Contact {
+   presence: Presence;
+ }
+ 
+-export type MessageKind = "text" | "link";
++export type MessageKind = "text" | "link" | "system";
+ 
+ export interface Message {
+   id: string;
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 49705ea..0488d4b 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -39,6 +39,9 @@ importers:
+       '@types/node':
+         specifier: ^24.10.9
+         version: 24.13.2
++      socket.io-client:
++        specifier: ^4.8.3
++        version: 4.8.3
+       tsx:
+         specifier: ^4.21.1
+         version: 4.22.4
+-- 
+2.43.0
+
