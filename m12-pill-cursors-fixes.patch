@@ -1,0 +1,1011 @@
+From 2b293de0fa90b4e140ae0480914af2217dc6b2c8 Mon Sep 17 00:00:00 2001
+From: Ramesh Mandal <ramesh@6epixels.com>
+Date: Fri, 3 Jul 2026 12:37:38 +0000
+Subject: [PATCH] feat(m12): floating pill + live member cursors; fix the two
+ remaining annotation bugs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+THE TWO BUGS that kept pins/highlights dead (both now fixed):
+
+1. socket.io's default first transport is HTTP long-polling, which uses
+   XMLHttpRequest — XHR DOES NOT EXIST in MV3 service workers. The
+   background relay could therefore never connect: every write timed
+   out and returned 'offline' silently. transports:['websocket'] forces
+   the one transport that works in every context we run in.
+
+2. Clicking the 'Highlight this' button collapses the page's text
+   selection on MOUSEDOWN — before the click handler runs — so
+   serializeSelection() at click time read an empty selection and
+   silently returned. The quote is now captured when the button is
+   SHOWN (while the selection exists) and the button preventDefaults
+   mousedown to keep the selection alive.
+
+3. (Bonus, found during audit) communities were never in the zustand
+   persist partialize — the content script's passive read path was
+   reading a key the panel never wrote, and background-cached board
+   data was wiped on the panel's next persist. Communities (which carry
+   all board/pin/highlight data) and pillHidden now persist.
+
+NEW — floating pill (per-community, enterprise-style opt-out):
+- On-page pill (bottom-right, shadow DOM) appears when the user is a
+  member of >=1 community with the pill enabled
+- Expanded: community selector, Chat (opens the side panel via the
+  documented user-gesture relay pattern), Add tab to board, Pin,
+  Highlight, and a quick-message composer that posts to the community
+  without opening the panel
+- Toggle per community from the community's InfoPanel ('Disable/Enable
+  floating pill on pages'), persisted
+
+NEW — live member cursors (the multiplayer moment):
+- Members of the same community on the SAME page (matched by
+  canonicalKey) see each other's cursors: colored Figma-style arrow +
+  name label, smoothly interpolated, throttled to ~11 updates/sec
+- Ephemeral by design: relayed only, never stored (server test
+  verifies member-only delivery + zero retention), cursors expire
+  after 4s of silence, sharing stops on tab hide and resumes on return
+- Background keeps its single connection alive while any tab is
+  sharing; idle-disconnects 5s after the last one stops
+
+Server: cursor_move/cursor_leave relay, membership-gated (28/28).
+---
+ apps/backend/src/index.ts                     |  55 +++
+ apps/backend/test/relay.test.mjs              |  61 ++-
+ .../extension/entrypoints/background/index.ts | 107 ++++-
+ apps/extension/entrypoints/content/index.ts   | 397 +++++++++++++++++-
+ .../workspace/views/chat/InfoPanel.tsx        |  25 ++
+ apps/extension/src/lib/realtime.ts            |  41 ++
+ apps/extension/src/stores/chat.store.ts       |  17 +
+ 7 files changed, 680 insertions(+), 23 deletions(-)
+
+diff --git a/apps/backend/src/index.ts b/apps/backend/src/index.ts
+index 7fe48ca..7ffd69f 100644
+--- a/apps/backend/src/index.ts
++++ b/apps/backend/src/index.ts
+@@ -952,6 +952,61 @@ io.on("connection", (socket) => {
+     }
+   );
+ 
++  // ---- Live cursors (ephemeral presence, zero retention) ----------------
++  //
++  // Relayed only to members of the same community who are on the same
++  // page (matched by canonicalKey client-side). Nothing is stored —
++  // a cursor position exists only in flight.
++
++  socket.on(
++    "cursor_move",
++    ({
++      communityId,
++      canonicalKey,
++      xPercent,
++      yPercent,
++    }: {
++      communityId: string;
++      canonicalKey: string;
++      xPercent: number;
++      yPercent: number;
++    }) => {
++      const me = users.get(socket.id);
++      const community = communities.get(communityId);
++      if (!me || !community || !canonicalKey) return;
++      if (!community.members.has(me.username)) return;
++
++      for (const member of community.members) {
++        if (member === me.username) continue;
++        notify(member, "cursor_peer", {
++          communityId,
++          canonicalKey,
++          from: { username: me.username, name: me.name, color: me.color },
++          xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
++          yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
++        });
++      }
++    }
++  );
++
++  socket.on(
++    "cursor_leave",
++    ({ communityId, canonicalKey }: { communityId: string; canonicalKey: string }) => {
++      const me = users.get(socket.id);
++      const community = communities.get(communityId);
++      if (!me || !community || !community.members.has(me.username)) return;
++
++      for (const member of community.members) {
++        if (member === me.username) continue;
++        notify(member, "cursor_peer_leave", {
++          communityId,
++          canonicalKey,
++          from: me.username,
++        });
++      }
++    }
++  );
++
+   // ---- Messaging (public + accepted only) ------------------------------
+ 
+   socket.on(
+diff --git a/apps/backend/test/relay.test.mjs b/apps/backend/test/relay.test.mjs
+index 21f9125..0333639 100644
+--- a/apps/backend/test/relay.test.mjs
++++ b/apps/backend/test/relay.test.mjs
+@@ -804,7 +804,66 @@ let pinItemId, pinId;
+ 
+ zed.disconnect(); amy.disconnect(); bob2.disconnect();
+ 
+-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/27)`);
++
++// TEST 28: cursor relay — same community receives, non-member never does
++{
++  const cur1 = await connect({ username: "cur1", name: "Cur1", color: "#2563EB", visibility: "public" });
++  const cur2 = await connect({ username: "cur2", name: "Cur2", color: "#059669", visibility: "public" });
++  const cur3 = await connect({ username: "cur3", name: "Cur3", color: "#7C3AED", visibility: "public" });
++  await sleep(200);
++
++  const req = new Promise((r) => cur2.once("connect_request", r));
++  cur1.emit("connect_request", { to: "cur2" });
++  await req;
++  const ok = new Promise((r) => cur1.once("connect_update", r));
++  cur2.emit("connect_response", { to: "cur1", action: "accept" });
++  await ok;
++
++  const created = new Promise((r) => cur1.once("community_update", r));
++  cur1.emit("community_create", { name: "Cursor Squad" });
++  const { community } = await created;
++
++  const invited = new Promise((r) => cur2.once("community_invite", r));
++  cur1.emit("community_invite", { communityId: community.id, username: "cur2" });
++  await invited;
++  const joined = new Promise((r) => {
++    const h = ({ community: c }) => {
++      if (c.members.some((m) => m.username === "cur2")) { cur1.off("community_update", h); r(); }
++    };
++    cur1.on("community_update", h);
++  });
++  cur2.emit("community_invite_response", { communityId: community.id, action: "accept" });
++  await joined;
++
++  let leaked = false;
++  cur3.once("cursor_peer", () => (leaked = true));
++
++  const received = new Promise((r) => cur2.once("cursor_peer", r));
++  cur1.emit("cursor_move", {
++    communityId: community.id,
++    canonicalKey: "airbnb:777",
++    xPercent: 33.3,
++    yPercent: 66.6,
++  });
++  const peer = await Promise.race([
++    received,
++    new Promise((_, rej) => setTimeout(() => rej(new Error("cursor not relayed")), 2000)),
++  ]);
++  if (peer.from.username !== "cur1") fail("cursor from wrong user");
++  if (peer.canonicalKey !== "airbnb:777") fail("cursor canonicalKey wrong");
++
++  const left = new Promise((r) => cur2.once("cursor_peer_leave", r));
++  cur1.emit("cursor_leave", { communityId: community.id, canonicalKey: "airbnb:777" });
++  await left;
++
++  await sleep(300);
++  if (leaked) fail("cursor leaked to a non-member");
++  pass("cursors: relayed to community members only, leave propagates, zero retention");
++
++  cur1.disconnect(); cur2.disconnect(); cur3.disconnect();
++}
++
++console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/28)`);
+ alice.disconnect(); bob.disconnect(); mallory.disconnect();
+ server.kill();
+ process.exit(0);
+diff --git a/apps/extension/entrypoints/background/index.ts b/apps/extension/entrypoints/background/index.ts
+index 5e960b8..9e57ba5 100644
+--- a/apps/extension/entrypoints/background/index.ts
++++ b/apps/extension/entrypoints/background/index.ts
+@@ -1,11 +1,15 @@
+ import { browser } from "wxt/browser";
+ import {
+   addBoardHighlight,
++  addBoardItem,
+   addBoardPin,
+   disconnectRealtime,
+   initRealtime,
+   removeBoardHighlight,
+   removeBoardPin,
++  sendCommunityMessage,
++  sendCursorLeave,
++  sendCursorMove,
+   type WireCommunity,
+ } from "../../src/lib/realtime";
+ 
+@@ -37,6 +41,10 @@ const IDLE_DISCONNECT_MS = 5000;
+ let writeConnected = false;
+ let idleTimer: ReturnType<typeof setTimeout> | null = null;
+ 
++/** Tabs currently sharing live cursors: tabId -> scope. While any tab
++ *  is sharing, the connection is kept alive instead of idle-closing. */
++const cursorTabs = new Map<number, { communityId: string; canonicalKey: string }>();
++
+ async function readStoredProfile(): Promise<StoredProfile | null> {
+   const result = await browser.storage.local.get("tabcom:profile");
+   const raw = result["tabcom:profile"] as string | undefined;
+@@ -91,6 +99,10 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
+ function scheduleIdleDisconnect() {
+   if (idleTimer) clearTimeout(idleTimer);
+   idleTimer = setTimeout(() => {
++    if (cursorTabs.size > 0) {
++      scheduleIdleDisconnect(); // someone is live — check again later
++      return;
++    }
+     disconnectRealtime();
+     writeConnected = false;
+   }, IDLE_DISCONNECT_MS);
+@@ -140,6 +152,26 @@ async function ensureWriteConnection(): Promise<boolean> {
+               communityId: community.id,
+             });
+           },
++          onCursorPeer: (peer) => {
++            for (const [tabId, scope] of cursorTabs) {
++              if (scope.canonicalKey !== peer.canonicalKey) continue;
++              if (scope.communityId !== peer.communityId) continue;
++              browser.tabs
++                .sendMessage(tabId, { type: "tabcom:cursor-peer", peer })
++                .catch(() => cursorTabs.delete(tabId));
++            }
++          },
++          onCursorPeerLeave: (payload) => {
++            for (const [tabId, scope] of cursorTabs) {
++              if (scope.canonicalKey !== payload.canonicalKey) continue;
++              browser.tabs
++                .sendMessage(tabId, {
++                  type: "tabcom:cursor-peer-leave",
++                  from: payload.from,
++                })
++                .catch(() => cursorTabs.delete(tabId));
++            }
++          },
+           onCommunityInvite: () => {},
+           onCommunityDeclined: () => {},
+           onCommunityLeft: () => {},
+@@ -162,7 +194,69 @@ async function ensureWriteConnection(): Promise<boolean> {
+   return writeConnected;
+ }
+ 
+-browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
++browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
++  // Open the side panel for the tab the pill was clicked in. Chrome
++  // permits sidePanel.open here because it's in response to a user
++  // gesture relayed from the content script (documented pattern).
++  if (message?.type === "tabcom:open-panel") {
++    const tabId = sender.tab?.id;
++    if (tabId != null) {
++      // Must be called synchronously to preserve the user gesture.
++      browser.sidePanel
++        .open({ tabId })
++        .then(() => sendResponse({ ok: true }))
++        .catch((error) => {
++          console.log("[tabcom:background] sidePanel.open failed:", error);
++          sendResponse({ ok: false });
++        });
++      return true;
++    }
++    sendResponse({ ok: false });
++    return true;
++  }
++
++  if (message?.type === "tabcom:cursor-start") {
++    const tabId = sender.tab?.id;
++    if (tabId != null) {
++      cursorTabs.set(tabId, {
++        communityId: message.communityId,
++        canonicalKey: message.canonicalKey,
++      });
++      void ensureWriteConnection().then((connected) =>
++        sendResponse({ ok: connected })
++      );
++      return true;
++    }
++    sendResponse({ ok: false });
++    return true;
++  }
++
++  if (message?.type === "tabcom:cursor-move") {
++    const tabId = sender.tab?.id;
++    const scope = tabId != null ? cursorTabs.get(tabId) : undefined;
++    if (scope && writeConnected) {
++      sendCursorMove(
++        scope.communityId,
++        scope.canonicalKey,
++        message.xPercent,
++        message.yPercent
++      );
++      scheduleIdleDisconnect();
++    }
++    return undefined; // fire-and-forget
++  }
++
++  if (message?.type === "tabcom:cursor-stop") {
++    const tabId = sender.tab?.id;
++    const scope = tabId != null ? cursorTabs.get(tabId) : undefined;
++    if (tabId != null && scope) {
++      if (writeConnected) sendCursorLeave(scope.communityId, scope.canonicalKey);
++      cursorTabs.delete(tabId);
++    }
++    sendResponse({ ok: true });
++    return true;
++  }
++
+   if (message?.type !== "tabcom:board-write") return undefined;
+ 
+   console.log("[tabcom:background] board-write received:", message.action, message.payload);
+@@ -192,6 +286,17 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+           message.payload.highlightId
+         );
+         break;
++      case "item_add":
++        addBoardItem(message.payload);
++        break;
++      case "community_message":
++        sendCommunityMessage(message.payload.communityId, {
++          id: crypto.randomUUID(),
++          kind: "text",
++          text: String(message.payload.text ?? "").slice(0, 2000),
++          sentAt: Date.now(),
++        });
++        break;
+     }
+ 
+     console.log("[tabcom:background] board-write completed:", message.action);
+diff --git a/apps/extension/entrypoints/content/index.ts b/apps/extension/entrypoints/content/index.ts
+index bb55cfa..3073856 100644
+--- a/apps/extension/entrypoints/content/index.ts
++++ b/apps/extension/entrypoints/content/index.ts
+@@ -107,6 +107,41 @@ function ensureShadowRoot(): ShadowRoot {
+     .highlight-btn { position: fixed; pointer-events: auto; background: #0F172A; color: white;
+       border: none; border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+       cursor: pointer; z-index: 2147483001; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
++
++    /* ---- Floating pill ---- */
++    .pill { position: fixed; bottom: 22px; right: 22px; z-index: 2147483002; pointer-events: auto; }
++    .pill-toggle { width: 46px; height: 46px; border-radius: 50%; border: none; cursor: pointer;
++      background: #0F172A; color: white; font-size: 15px; font-weight: 800;
++      box-shadow: 0 8px 24px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: center;
++      transition: transform .15s ease; }
++    .pill-toggle:hover { transform: scale(1.06); }
++    .pill-panel { position: absolute; bottom: 56px; right: 0; width: 252px; background: white;
++      border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.22); padding: 12px; color: #0F172A; }
++    .pill-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
++      color: #64748B; margin: 2px 2px 8px; }
++    .pill-select { width: 100%; border: 1px solid #E2E8F0; border-radius: 10px; padding: 7px 8px;
++      font-size: 12.5px; margin-bottom: 10px; background: white; color: #0F172A; }
++    .pill-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
++    .pill-action { border: 1px solid #E2E8F0; background: white; border-radius: 10px; padding: 8px 6px;
++      font-size: 11.5px; font-weight: 600; cursor: pointer; color: #0F172A; transition: all .12s ease; }
++    .pill-action:hover { border-color: #2563EB; color: #2563EB; background: #EFF6FF; }
++    .pill-msg { display: flex; gap: 6px; }
++    .pill-msg input { flex: 1; min-width: 0; border: 1px solid #E2E8F0; border-radius: 10px;
++      padding: 7px 9px; font-size: 12.5px; outline: none; }
++    .pill-msg input:focus { border-color: #2563EB; }
++    .pill-msg button { border: none; background: #0F172A; color: white; border-radius: 10px;
++      padding: 0 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
++    .pill-msg button:disabled { background: #CBD5E1; }
++    .pill-live { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: #059669;
++      font-weight: 600; margin-top: 8px; }
++    .pill-live .dot { width: 6px; height: 6px; border-radius: 50%; background: #10B981; }
++
++    /* ---- Live peer cursors ---- */
++    .peer-cursor { position: absolute; pointer-events: none; z-index: 2147483001;
++      transition: left .09s linear, top .09s linear; }
++    .peer-cursor svg { display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.3)); }
++    .peer-cursor .label { margin: 2px 0 0 12px; padding: 2px 7px; border-radius: 999px;
++      color: white; font-size: 10px; font-weight: 700; white-space: nowrap; width: fit-content; }
+   `;
+   shadowRoot.append(style);
+ 
+@@ -249,7 +284,13 @@ function showPinPopover(
+ // serves every tab from one connection — so writes are relayed there.
+ 
+ async function boardWrite(
+-  action: "pin_add" | "pin_remove" | "highlight_add" | "highlight_remove",
++  action:
++    | "pin_add"
++    | "pin_remove"
++    | "highlight_add"
++    | "highlight_remove"
++    | "item_add"
++    | "community_message",
+   payload: Record<string, unknown>
+ ): Promise<boolean> {
+   try {
+@@ -371,10 +412,7 @@ function handleSelectionChange(event: Event) {
+ 
+   // Don't tear down the button because of the mouseup that's the
+   // first half of clicking the button itself.
+-  if (eventTouchesOwnUI(event)) {
+-    console.debug("[tabcom] selection mouseup ignored — landed on our own UI");
+-    return;
+-  }
++  if (eventTouchesOwnUI(event)) return;
+ 
+   const root = ensureShadowRoot();
+   root.querySelectorAll(".highlight-btn").forEach((el) => el.remove());
+@@ -386,23 +424,31 @@ function handleSelectionChange(event: Event) {
+   const rect = range.getBoundingClientRect();
+   if (rect.width === 0 && rect.height === 0) return;
+ 
++  // CRITICAL: serialize the selection NOW, while it exists. Clicking
++  // the button collapses the selection on mousedown — before the click
++  // handler runs — so serializing at click time reads an empty
++  // selection and silently fails.
++  const capturedQuote = serializeSelection();
++  if (!capturedQuote) return;
++
+   const button = document.createElement("button");
+   button.className = "highlight-btn";
+   button.textContent = "✎ Highlight this";
+   button.style.left = `${rect.left + rect.width / 2 - 60}px`;
+   button.style.top = `${Math.max(8, rect.top - 38)}px`;
+ 
+-  button.addEventListener("click", async (event) => {
+-    event.stopPropagation();
+-    const quoteSelector = serializeSelection();
+-    console.debug("[tabcom] highlight submit, quote:", quoteSelector);
+-    if (!quoteSelector) return;
++  // Keep the page selection alive through the button press.
++  button.addEventListener("mousedown", (e) => e.preventDefault());
++
++  button.addEventListener("click", async (e) => {
++    e.stopPropagation();
++    console.debug("[tabcom] highlight submit, quote:", capturedQuote.quote);
+ 
+     const anchor = readPageAnchor();
+     const ok = await boardWrite("highlight_add", {
+       communityId: activeMode!.communityId,
+       ...anchor,
+-      ...quoteSelector,
++      ...capturedQuote,
+     });
+     console.debug("[tabcom] highlight_add result:", ok);
+     button.remove();
+@@ -412,6 +458,296 @@ function handleSelectionChange(event: Event) {
+   root.append(button);
+ }
+ 
++function enterPinMode(communityId: string) {
++  exitMode();
++  activeMode = { kind: "pin", communityId };
++  showModeBar("Click anywhere on the page to drop a pin");
++  document.addEventListener("click", handlePinClick, true);
++}
++
++function enterHighlightMode(communityId: string) {
++  exitMode();
++  activeMode = { kind: "highlight", communityId };
++  showModeBar("Select any text to highlight it");
++  document.addEventListener("mouseup", handleSelectionChange);
++}
++
++// ---- Floating pill: community actions directly on the page ------------
++
++interface PillCommunity {
++  id: string;
++  name: string;
++}
++
++let pillSelectedCommunityId: string | null = null;
++let pillExpanded = false;
++
++async function eligiblePillCommunities(): Promise<PillCommunity[]> {
++  const [profile, communities] = await Promise.all([
++    readStoredProfile(),
++    readStoredCommunities(),
++  ]);
++  if (!profile) return [];
++
++  const hidden = await readPillHidden();
++
++  return Object.values(communities)
++    .filter(
++      (community) =>
++        community.members.some((m) => m.username === profile.username) &&
++        !hidden.includes(community.id)
++    )
++    .map((community) => ({ id: community.id, name: community.name }));
++}
++
++async function readPillHidden(): Promise<string[]> {
++  const result = await browser.storage.local.get("tabcom:chat");
++  const raw = result["tabcom:chat"] as string | undefined;
++  if (!raw) return [];
++  try {
++    const parsed = JSON.parse(raw);
++    const state = parsed.state ?? parsed;
++    return Array.isArray(state.pillHidden) ? state.pillHidden : [];
++  } catch {
++    return [];
++  }
++}
++
++async function setupPill() {
++  const root = ensureShadowRoot();
++  root.querySelectorAll(".pill").forEach((el) => el.remove());
++
++  const communities = await eligiblePillCommunities();
++  if (communities.length === 0) {
++    stopCursorSharing();
++    return;
++  }
++
++  // Restore last selected community, or default to the first
++  const stored = await browser.storage.local.get("tabcom:pill:selected");
++  const remembered = stored["tabcom:pill:selected"] as string | undefined;
++  pillSelectedCommunityId =
++    communities.find((c) => c.id === remembered)?.id ?? communities[0].id;
++
++  const pill = document.createElement("div");
++  pill.className = "pill";
++
++  const toggle = document.createElement("button");
++  toggle.className = "pill-toggle";
++  toggle.textContent = "T";
++  toggle.title = "Tabcom — community actions";
++  toggle.addEventListener("click", () => {
++    pillExpanded = !pillExpanded;
++    renderPillPanel(pill, communities);
++  });
++
++  pill.append(toggle);
++  root.append(pill);
++
++  renderPillPanel(pill, communities);
++  void startCursorSharing();
++}
++
++function renderPillPanel(pill: HTMLElement, communities: PillCommunity[]) {
++  pill.querySelectorAll(".pill-panel").forEach((el) => el.remove());
++  if (!pillExpanded) return;
++
++  const panel = document.createElement("div");
++  panel.className = "pill-panel";
++
++  const head = document.createElement("div");
++  head.className = "pill-head";
++  head.textContent = "Tabcom";
++  panel.append(head);
++
++  if (communities.length > 1) {
++    const select = document.createElement("select");
++    select.className = "pill-select";
++    for (const community of communities) {
++      const option = document.createElement("option");
++      option.value = community.id;
++      option.textContent = community.name;
++      option.selected = community.id === pillSelectedCommunityId;
++      select.append(option);
++    }
++    select.addEventListener("change", () => {
++      pillSelectedCommunityId = select.value;
++      void browser.storage.local.set({ "tabcom:pill:selected": select.value });
++      stopCursorSharing();
++      void startCursorSharing();
++    });
++    panel.append(select);
++  }
++
++  const grid = document.createElement("div");
++  grid.className = "pill-grid";
++
++  const actions: Array<[string, () => void]> = [
++    [
++      "💬 Chat",
++      () => void browser.runtime.sendMessage({ type: "tabcom:open-panel" }),
++    ],
++    [
++      "➕ Add tab",
++      () => {
++        const anchor = readPageAnchor();
++        void boardWrite("item_add", {
++          communityId: pillSelectedCommunityId,
++          ...anchor,
++        });
++        pillExpanded = false;
++        renderPillPanel(pill, communities);
++      },
++    ],
++    [
++      "📍 Pin",
++      () => {
++        pillExpanded = false;
++        renderPillPanel(pill, communities);
++        if (pillSelectedCommunityId) enterPinMode(pillSelectedCommunityId);
++      },
++    ],
++    [
++      "✎ Highlight",
++      () => {
++        pillExpanded = false;
++        renderPillPanel(pill, communities);
++        if (pillSelectedCommunityId) enterHighlightMode(pillSelectedCommunityId);
++      },
++    ],
++  ];
++
++  for (const [label, onClick] of actions) {
++    const button = document.createElement("button");
++    button.className = "pill-action";
++    button.textContent = label;
++    button.addEventListener("click", onClick);
++    grid.append(button);
++  }
++  panel.append(grid);
++
++  const msg = document.createElement("div");
++  msg.className = "pill-msg";
++  const input = document.createElement("input");
++  input.placeholder = "Quick message…";
++  const send = document.createElement("button");
++  send.textContent = "Send";
++  const submit = () => {
++    if (!input.value.trim() || !pillSelectedCommunityId) return;
++    void boardWrite("community_message", {
++      communityId: pillSelectedCommunityId,
++      text: input.value.trim(),
++    });
++    input.value = "";
++  };
++  send.addEventListener("click", submit);
++  input.addEventListener("keydown", (e) => {
++    if (e.key === "Enter") submit();
++  });
++  msg.append(input, send);
++  panel.append(msg);
++
++  const live = document.createElement("div");
++  live.className = "pill-live";
++  live.innerHTML = '<span class="dot"></span> Live cursors on for this page';
++  panel.append(live);
++
++  pill.append(panel);
++}
++
++// ---- Live peer cursors -------------------------------------------------
++
++const peerCursors = new Map<
++  string,
++  { el: HTMLDivElement; expireTimer: ReturnType<typeof setTimeout> }
++>();
++let cursorSharing = false;
++let lastCursorSent = 0;
++
++async function startCursorSharing() {
++  if (cursorSharing || !pillSelectedCommunityId) return;
++
++  const anchor = readPageAnchor();
++  const response = await browser.runtime
++    .sendMessage({
++      type: "tabcom:cursor-start",
++      communityId: pillSelectedCommunityId,
++      canonicalKey: anchor.canonicalKey,
++    })
++    .catch(() => ({ ok: false }));
++
++  if (!response?.ok) {
++    console.debug("[tabcom] cursor sharing unavailable (offline?)");
++    return;
++  }
++
++  cursorSharing = true;
++  document.addEventListener("mousemove", handleCursorMove);
++  console.debug("[tabcom] live cursors ON for", anchor.canonicalKey);
++}
++
++function stopCursorSharing() {
++  if (!cursorSharing) return;
++  cursorSharing = false;
++  document.removeEventListener("mousemove", handleCursorMove);
++  void browser.runtime.sendMessage({ type: "tabcom:cursor-stop" }).catch(() => {});
++  for (const [username, entry] of peerCursors) {
++    clearTimeout(entry.expireTimer);
++    entry.el.remove();
++    peerCursors.delete(username);
++  }
++}
++
++function handleCursorMove(event: MouseEvent) {
++  const now = Date.now();
++  if (now - lastCursorSent < 90) return; // ~11 updates/sec max
++  lastCursorSent = now;
++
++  browser.runtime
++    .sendMessage({
++      type: "tabcom:cursor-move",
++      xPercent: (event.pageX / document.documentElement.scrollWidth) * 100,
++      yPercent: (event.pageY / documentHeight()) * 100,
++    })
++    .catch(() => {});
++}
++
++function upsertPeerCursor(peer: {
++  from: { username: string; name: string; color: string };
++  xPercent: number;
++  yPercent: number;
++}) {
++  let entry = peerCursors.get(peer.from.username);
++
++  if (!entry) {
++    const el = document.createElement("div");
++    el.className = "peer-cursor";
++    el.innerHTML = `
++      <svg width="16" height="16" viewBox="0 0 16 16">
++        <path d="M2 1 L14 8 L8.5 9.5 L6 15 Z" fill="${peer.from.color}" stroke="white" stroke-width="1.2"/>
++      </svg>
++      <div class="label" style="background:${peer.from.color}">${peer.from.name.replace(/</g, "&lt;")}</div>
++    `;
++    layerEl().append(el);
++    entry = { el, expireTimer: setTimeout(() => {}, 0) };
++    peerCursors.set(peer.from.username, entry);
++  }
++
++  entry.el.style.left = `${peer.xPercent}%`;
++  entry.el.style.top = `${peer.yPercent}%`;
++
++  clearTimeout(entry.expireTimer);
++  entry.expireTimer = setTimeout(() => removePeerCursor(peer.from.username), 4000);
++}
++
++function removePeerCursor(username: string) {
++  const entry = peerCursors.get(username);
++  if (!entry) return;
++  clearTimeout(entry.expireTimer);
++  entry.el.remove();
++  peerCursors.delete(username);
++}
++
+ // ---- Messages from the side panel --------------------------------------
+ 
+ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+@@ -425,19 +761,13 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+   }
+ 
+   if (message?.type === "tabcom:enter-pin-mode") {
+-    exitMode();
+-    activeMode = { kind: "pin", communityId: message.communityId };
+-    showModeBar("Click anywhere on the page to drop a pin");
+-    document.addEventListener("click", handlePinClick, true);
++    enterPinMode(message.communityId);
+     sendResponse({ ok: true });
+     return true;
+   }
+ 
+   if (message?.type === "tabcom:enter-highlight-mode") {
+-    exitMode();
+-    activeMode = { kind: "highlight", communityId: message.communityId };
+-    showModeBar("Select any text to highlight it");
+-    document.addEventListener("mouseup", handleSelectionChange);
++    enterHighlightMode(message.communityId);
+     sendResponse({ ok: true });
+     return true;
+   }
+@@ -450,12 +780,30 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+ 
+   if (message?.type === "tabcom:community-updated") {
+     void renderExisting();
++    void setupPill();
++    return undefined;
++  }
++
++  if (message?.type === "tabcom:cursor-peer") {
++    upsertPeerCursor(message.peer);
++    return undefined;
++  }
++
++  if (message?.type === "tabcom:cursor-peer-leave") {
++    removePeerCursor(message.from);
+     return undefined;
+   }
+ 
+   return undefined;
+ });
+ 
++// Stop streaming when the tab hides; resume when it's visible again.
++document.addEventListener("visibilitychange", () => {
++  if (document.visibilityState === "hidden") stopCursorSharing();
++  else void startCursorSharing();
++});
++window.addEventListener("pagehide", stopCursorSharing);
++
+ document.addEventListener("keydown", (event) => {
+   if (event.key === "Escape" && activeMode) exitMode();
+ });
+@@ -463,8 +811,12 @@ document.addEventListener("keydown", (event) => {
+ export default defineContentScript({
+   matches: ["<all_urls>"],
+   main() {
+-    if (document.readyState === "complete") void renderExisting();
+-    else window.addEventListener("load", () => void renderExisting());
++    const boot = () => {
++      void renderExisting();
++      void setupPill();
++    };
++    if (document.readyState === "complete") boot();
++    else window.addEventListener("load", boot);
+ 
+     // Re-render on SPA navigations (Airbnb, Amazon are client-routed).
+     let lastHref = window.location.href;
+@@ -472,6 +824,9 @@ export default defineContentScript({
+       if (window.location.href !== lastHref) {
+         lastHref = window.location.href;
+         void renderExisting();
++        // Page identity changed — restart cursor scope for the new page.
++        stopCursorSharing();
++        void startCursorSharing();
+       }
+     }, 1000);
+   },
+diff --git a/apps/extension/src/features/workspace/views/chat/InfoPanel.tsx b/apps/extension/src/features/workspace/views/chat/InfoPanel.tsx
+index 6a4a52a..100fe24 100644
+--- a/apps/extension/src/features/workspace/views/chat/InfoPanel.tsx
++++ b/apps/extension/src/features/workspace/views/chat/InfoPanel.tsx
+@@ -1,6 +1,7 @@
+ import {
+   BellOff,
+   Bell,
++  CircleDot,
+   EyeOff,
+   Eye,
+   ExternalLink,
+@@ -51,6 +52,10 @@ export default function InfoPanel({
+   const hiddenFrom = useChatStore((state) => state.hiddenFrom);
+ 
+   const toggleMute = useChatStore((state) => state.toggleMute);
++  const pillHidden = useChatStore((state) => state.pillHidden);
++  const toggleCommunityPill = useChatStore(
++    (state) => state.toggleCommunityPill
++  );
+   const toggleHidePresence = useChatStore((state) => state.toggleHidePresence);
+   const removeContact = useChatStore((state) => state.removeContact);
+   const clearHistory = useChatStore((state) => state.clearHistory);
+@@ -257,6 +262,26 @@ export default function InfoPanel({
+           {isMutedTarget ? "Unmute notifications" : "Mute notifications"}
+         </button>
+ 
++        {community && (
++          <button
++            type="button"
++            className={actionRow}
++            onClick={() => toggleCommunityPill(community.id)}
++          >
++            <CircleDot
++              size={17}
++              className={
++                pillHidden.includes(community.id)
++                  ? "text-slate-400"
++                  : "text-emerald-500"
++              }
++            />
++            {pillHidden.includes(community.id)
++              ? "Enable floating pill on pages"
++              : "Disable floating pill on pages"}
++          </button>
++        )}
++
+         <button
+           type="button"
+           className={actionRow}
+diff --git a/apps/extension/src/lib/realtime.ts b/apps/extension/src/lib/realtime.ts
+index 24d0df7..705ced5 100644
+--- a/apps/extension/src/lib/realtime.ts
++++ b/apps/extension/src/lib/realtime.ts
+@@ -142,6 +142,12 @@ export interface RealtimeHandlers {
+     username: string;
+     reason: CommunityErrorReason;
+   }) => void;
++  onCursorPeer?: (peer: CursorPeer) => void;
++  onCursorPeerLeave?: (payload: {
++    communityId: string;
++    canonicalKey: string;
++    from: string;
++  }) => void;
+ }
+ 
+ let socket: Socket | null = null;
+@@ -153,6 +159,10 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
+     reconnectionAttempts: 5,
+     reconnectionDelay: 2000,
+     timeout: 4000,
++    // Polling (the default first transport) uses XMLHttpRequest, which
++    // does not exist in MV3 service workers — the background relay
++    // could never connect. WebSocket works in every context we run in.
++    transports: ["websocket"],
+   });
+ 
+   socket.on("connect", () => {
+@@ -244,6 +254,16 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
+   socket.on("community_error", (payload) =>
+     handlers.onCommunityError(payload)
+   );
++
++  socket.on("cursor_peer", (peer: CursorPeer) =>
++    handlers.onCursorPeer?.(peer)
++  );
++
++  socket.on(
++    "cursor_peer_leave",
++    (payload: { communityId: string; canonicalKey: string; from: string }) =>
++      handlers.onCursorPeerLeave?.(payload)
++  );
+ }
+ 
+ /** Re-announce profile changes (name, color, photo) mid-session. */
+@@ -313,6 +333,27 @@ export function decideBoardItem(
+   socket?.emit("board_decide", { communityId, itemId });
+ }
+ 
++export interface CursorPeer {
++  communityId: string;
++  canonicalKey: string;
++  from: { username: string; name: string; color: string };
++  xPercent: number;
++  yPercent: number;
++}
++
++export function sendCursorMove(
++  communityId: string,
++  canonicalKey: string,
++  xPercent: number,
++  yPercent: number
++): void {
++  socket?.emit("cursor_move", { communityId, canonicalKey, xPercent, yPercent });
++}
++
++export function sendCursorLeave(communityId: string, canonicalKey: string): void {
++  socket?.emit("cursor_leave", { communityId, canonicalKey });
++}
++
+ export interface BoardAnchorInput {
+   communityId: string;
+   url: string;
+diff --git a/apps/extension/src/stores/chat.store.ts b/apps/extension/src/stores/chat.store.ts
+index 5c47b32..0a32cb5 100644
+--- a/apps/extension/src/stores/chat.store.ts
++++ b/apps/extension/src/stores/chat.store.ts
+@@ -171,6 +171,10 @@ interface ChatState {
+   commentOnBoardItem: (communityId: string, itemId: string, text: string) => void;
+   voteOnBoardItem: (communityId: string, itemId: string) => void;
+   decideBoardItem: (communityId: string, itemId: string | null) => void;
++
++  /** Community ids for which the on-page floating pill is disabled. */
++  pillHidden: string[];
++  toggleCommunityPill: (communityId: string) => void;
+   receiveCommunities: (list: WireCommunity[]) => void;
+   receiveCommunityUpdate: (community: WireCommunity) => void;
+   receiveCommunityInvite: (
+@@ -905,6 +909,14 @@ export const useChatStore = create<ChatState>()(
+         decideBoardItem: (communityId, itemId) =>
+           decideBoardItem(communityId, itemId),
+ 
++        pillHidden: [],
++        toggleCommunityPill: (communityId) =>
++          set((state) => ({
++            pillHidden: state.pillHidden.includes(communityId)
++              ? state.pillHidden.filter((id) => id !== communityId)
++              : [...state.pillHidden, communityId],
++          })),
++
+         receiveCommunities: (list) => {
+           const communities: Record<string, Community> = {};
+           const communityInvites: Record<string, CommunityInvite> = {};
+@@ -1036,6 +1048,11 @@ export const useChatStore = create<ChatState>()(
+         conversations: state.conversations,
+         messages: state.messages,
+         muted: state.muted,
++        // Communities carry board data (pins/highlights) which the
++        // content script reads passively from storage on page load —
++        // they MUST be persisted or on-page annotations can't render.
++        communities: state.communities,
++        pillHidden: state.pillHidden,
+       }),
+       migrate: (persisted: unknown, version) => {
+         const state = persisted as {
+-- 
+2.43.0
+
