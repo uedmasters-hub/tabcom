@@ -12,17 +12,41 @@ const presenceColors = {
   offline: "bg-slate-300",
 } as const;
 
+/**
+ * Contacts — strictly people you've CONNECTED with (accepted) and
+ * actually chatted with, plus demo contacts in offline mode.
+ * Discovery of new people lives in Communities.
+ */
 export default function ContactsView() {
   const contacts = useChatStore((state) => state.contacts);
+  const connections = useChatStore((state) => state.connections);
+  const conversations = useChatStore((state) => state.conversations);
+  const messages = useChatStore((state) => state.messages);
   const startConversation = useChatStore((state) => state.startConversation);
   const setTab = useWorkspaceStore((state) => state.setTab);
 
-  if (contacts.length === 0) {
+  const hasChatted = (contactId: string) => {
+    const conversation = conversations.find(
+      (item) => item.contactId === contactId
+    );
+    if (!conversation) return false;
+    return (messages[conversation.id] ?? []).some(
+      (message) => message.kind !== "system"
+    );
+  };
+
+  const list = contacts.filter((contact) =>
+    contact.id.startsWith("u-")
+      ? connections[contact.username] === "accepted" && hasChatted(contact.id)
+      : true
+  );
+
+  if (list.length === 0) {
     return (
       <EmptyState
         icon={<Users size={24} />}
         title="No contacts yet"
-        description="Invite people or discover public profiles to start building your network."
+        description="People appear here once you've connected AND exchanged messages. Find people in Communities → Discover."
       />
     );
   }
@@ -34,7 +58,7 @@ export default function ContactsView() {
 
   return (
     <ul className="flex-1 overflow-y-auto">
-      {contacts.map((contact) => (
+      {list.map((contact) => (
         <li key={contact.id}>
           <button
             type="button"
@@ -42,7 +66,12 @@ export default function ContactsView() {
             className="flex w-full items-center gap-3 border-b border-slate-100 px-6 py-4 text-left transition hover:bg-slate-50"
           >
             <div className="relative">
-              <Avatar name={contact.name} color={contact.color} size="md" />
+              <Avatar
+                name={contact.name}
+                color={contact.color}
+                photo={contact.photo}
+                size="md"
+              />
               <span
                 className={cn(
                   "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white",

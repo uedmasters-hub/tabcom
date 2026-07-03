@@ -26,6 +26,9 @@ export default function TabBar() {
   const unread = useChatStore((state) =>
     state.conversations.reduce((sum, item) => sum + item.unread, 0)
   );
+  const inviteCount = useChatStore(
+    (state) => Object.keys(state.communityInvites).length
+  );
 
   return (
     <nav
@@ -34,7 +37,9 @@ export default function TabBar() {
     >
       {tabs.map(({ id, label, icon: Icon }) => {
         const isActive = tab === id;
-        const showBadge = id === "inbox" && unread > 0;
+        const badgeCount =
+          id === "inbox" ? unread : id === "communities" ? inviteCount : 0;
+        const showBadge = badgeCount > 0;
 
         return (
           <button
@@ -54,7 +59,7 @@ export default function TabBar() {
 
               {showBadge && (
                 <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white">
-                  {unread}
+                  {badgeCount}
                 </span>
               )}
             </span>

@@ -6,6 +6,7 @@ type AvatarSize = "sm" | "md" | "lg" | "xl";
 interface AvatarProps {
   name: string;
   color: string;
+  photo?: string;
   size?: AvatarSize;
   className?: string;
 }
@@ -21,9 +22,25 @@ const sizeClasses: Record<AvatarSize, string> = {
 export default function Avatar({
   name,
   color,
+  photo,
   size = "md",
   className,
 }: AvatarProps) {
+  if (photo) {
+    return (
+      <img
+        src={photo}
+        alt=""
+        aria-hidden
+        className={cn(
+          "inline-block shrink-0 rounded-full object-cover",
+          sizeClasses[size],
+          className
+        )}
+      />
+    );
+  }
+
   return (
     <span
       aria-hidden

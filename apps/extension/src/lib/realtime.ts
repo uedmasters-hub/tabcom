@@ -22,7 +22,21 @@ export interface WireUser {
   name: string;
   color: string;
   visibility: Visibility;
+  photo?: string;
 }
+
+export interface WireCommunity {
+  id: string;
+  name: string;
+  admin: string;
+  members: Array<{ username: string; name: string; color: string }>;
+  pendingForMe: boolean;
+}
+
+export type CommunityErrorReason =
+  | "not_connected"
+  | "invite_limit"
+  | "already_pending";
 
 export interface WireMessage {
   id: string;
@@ -56,6 +70,31 @@ export interface RealtimeHandlers {
   ) => void;
   onConnectRequest: (from: WireUser) => void;
   onConnectUpdate: (username: string, status: ConnectionStatus) => void;
+  onCommunities: (communities: WireCommunity[]) => void;
+  onCommunityUpdate: (community: WireCommunity) => void;
+  onCommunityInvite: (
+    community: WireCommunity,
+    from: WireUser,
+    attempt: number
+  ) => void;
+  onCommunityDeclined: (payload: {
+    communityId: string;
+    communityName: string;
+    username: string;
+    attemptsLeft: number;
+    barred: boolean;
+  }) => void;
+  onCommunityLeft: (communityId: string) => void;
+  onCommunityMessage: (
+    communityId: string,
+    from: WireUser,
+    message: WireMessage
+  ) => void;
+  onCommunityError: (payload: {
+    communityId: string;
+    username: string;
+    reason: CommunityErrorReason;
+  }) => void;
 }
 
 let socket: Socket | null = null;
@@ -110,6 +149,85 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
     ({ username, status }: { username: string; status: ConnectionStatus }) =>
       handlers.onConnectUpdate(username, status)
   );
+
+  socket.on("communities", (list: WireCommunity[]) =>
+    handlers.onCommunities(list)
+  );
+
+  socket.on(
+    "community_update",
+    ({ community }: { community: WireCommunity }) =>
+      handlers.onCommunityUpdate(community)
+  );
+
+  socket.on(
+    "community_invite",
+    ({
+      community,
+      from,
+      attempt,
+    }: {
+      community: WireCommunity;
+      from: WireUser;
+      attempt: number;
+    }) => handlers.onCommunityInvite(community, from, attempt)
+  );
+
+  socket.on("community_invite_declined", (payload) =>
+    handlers.onCommunityDeclined(payload)
+  );
+
+  socket.on("community_left", ({ communityId }: { communityId: string }) =>
+    handlers.onCommunityLeft(communityId)
+  );
+
+  socket.on(
+    "community_message",
+    ({
+      communityId,
+      from,
+      message,
+    }: {
+      communityId: string;
+      from: WireUser;
+      message: WireMessage;
+    }) => handlers.onCommunityMessage(communityId, from, message)
+  );
+
+  socket.on("community_error", (payload) =>
+    handlers.onCommunityError(payload)
+  );
+}
+
+/** Re-announce profile changes (name, color, photo) mid-session. */
+export function reannounce(me: WireUser): void {
+  socket?.emit("hello", me);
+}
+
+export function createCommunity(name: string): void {
+  socket?.emit("community_create", { name });
+}
+
+export function inviteToCommunity(communityId: string, username: string): void {
+  socket?.emit("community_invite", { communityId, username });
+}
+
+export function respondToCommunityInvite(
+  communityId: string,
+  action: "accept" | "decline"
+): void {
+  socket?.emit("community_invite_response", { communityId, action });
+}
+
+export function leaveCommunity(communityId: string): void {
+  socket?.emit("community_leave", { communityId });
+}
+
+export function sendCommunityMessage(
+  communityId: string,
+  message: WireMessage
+): void {
+  socket?.emit("community_message", { communityId, message });
 }
 
 /** Ask to connect with someone. Consent gate: no chat until they accept. */

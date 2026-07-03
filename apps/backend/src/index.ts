@@ -24,6 +24,8 @@ export interface WireUser {
   name: string;
   color: string;
   visibility: Visibility;
+  /** Optional small avatar photo (data URL, capped). */
+  photo?: string;
 }
 
 export interface WireMessage {
@@ -48,6 +50,32 @@ const httpServer = createServer((_req, res) => {
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
 const users = new Map<string, WireUser>(); // socket.id -> user
+
+interface Community {
+  id: string;
+  name: string;
+  admin: string; // username
+  members: Set<string>;
+  memberInfo: Map<string, { name: string; color: string }>;
+  invites: Map<string, { attempts: number; pending: boolean }>;
+}
+
+const communities = new Map<string, Community>();
+const MAX_INVITE_ATTEMPTS = 3;
+
+function serializeCommunity(c: Community, forUsername?: string) {
+  const invite = forUsername ? c.invites.get(forUsername) : undefined;
+  return {
+    id: c.id,
+    name: c.name,
+    admin: c.admin,
+    members: [...c.members].map((username) => ({
+      username,
+      ...(c.memberInfo.get(username) ?? { name: username, color: "#334155" }),
+    })),
+    pendingForMe: invite?.pending ?? false,
+  };
+}
 const pairs = new Map<string, Pair>(); // pairKey -> connection state
 const blocks = new Set<string>(); // "blocker|blocked"
 
@@ -136,11 +164,24 @@ io.on("connection", (socket) => {
       name: String(raw.name ?? raw.username).slice(0, 40),
       color: String(raw.color ?? "#2563EB").slice(0, 9),
       visibility: sanitizeVisibility(raw.visibility),
+      photo:
+        typeof raw.photo === "string" && raw.photo.startsWith("data:image/")
+          ? raw.photo.slice(0, 60000)
+          : undefined,
     };
 
     users.set(socket.id, user);
     broadcastRoster();
     sendConnections(socket.id, user.username);
+
+    const mine = [...communities.values()]
+      .filter(
+        (c) =>
+          c.members.has(user.username) ||
+          c.invites.get(user.username)?.pending
+      )
+      .map((c) => serializeCommunity(c, user.username));
+    socket.emit("communities", mine);
   });
 
   socket.on("visibility", (raw: unknown) => {
@@ -253,6 +294,193 @@ io.on("connection", (socket) => {
       blocks.add(`${me.username}|${username}`);
       pairs.delete(pairKey(me.username, username));
       notify(me.username, "connect_update", { username, status: "blocked" });
+    }
+  );
+
+  // ---- Communities (consent-gated membership) ---------------------------
+
+  socket.on("community_create", ({ name }: { name: string }) => {
+    const me = users.get(socket.id);
+    if (!me || !name?.trim()) return;
+    if (me.visibility === "private") return;
+
+    const community: Community = {
+      id: crypto.randomUUID(),
+      name: String(name).trim().slice(0, 40),
+      admin: me.username,
+      members: new Set([me.username]),
+      memberInfo: new Map([[me.username, { name: me.name, color: me.color }]]),
+      invites: new Map(),
+    };
+    communities.set(community.id, community);
+    notify(me.username, "community_update", {
+      community: serializeCommunity(community),
+    });
+  });
+
+  socket.on(
+    "community_invite",
+    ({ communityId, username }: { communityId: string; username: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !username) return;
+
+      // Only the admin invites; membership is never imposed.
+      if (community.admin !== me.username) return;
+      if (community.members.has(username)) return;
+
+      // Invitees must be ACCEPTED connections of the admin.
+      const pair = pairs.get(pairKey(me.username, username));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(me.username, username)) {
+        socket.emit("community_error", {
+          communityId,
+          username,
+          reason: "not_connected",
+        });
+        return;
+      }
+
+      const invite = community.invites.get(username) ?? {
+        attempts: 0,
+        pending: false,
+      };
+
+      // 3-strike rule: after three declined/withdrawn invites the user
+      // can never be added to THIS community again.
+      if (invite.attempts >= MAX_INVITE_ATTEMPTS) {
+        socket.emit("community_error", {
+          communityId,
+          username,
+          reason: "invite_limit",
+        });
+        return;
+      }
+      if (invite.pending) {
+        socket.emit("community_error", {
+          communityId,
+          username,
+          reason: "already_pending",
+        });
+        return;
+      }
+
+      invite.attempts += 1;
+      invite.pending = true;
+      community.invites.set(username, invite);
+
+      notify(username, "community_invite", {
+        community: serializeCommunity(community, username),
+        from: me,
+        attempt: invite.attempts,
+      });
+      socket.emit("community_update", {
+        community: serializeCommunity(community),
+      });
+    }
+  );
+
+  socket.on(
+    "community_invite_response",
+    ({
+      communityId,
+      action,
+    }: {
+      communityId: string;
+      action: "accept" | "decline";
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+
+      const invite = community.invites.get(me.username);
+      if (!invite?.pending) return;
+      invite.pending = false;
+
+      if (action === "accept") {
+        community.members.add(me.username);
+        community.memberInfo.set(me.username, {
+          name: me.name,
+          color: me.color,
+        });
+        for (const member of community.members) {
+          notify(member, "community_update", {
+            community: serializeCommunity(community),
+          });
+        }
+      } else {
+        const attemptsLeft = Math.max(
+          0,
+          MAX_INVITE_ATTEMPTS - invite.attempts
+        );
+        notify(community.admin, "community_invite_declined", {
+          communityId,
+          communityName: community.name,
+          username: me.username,
+          attemptsLeft,
+          barred: attemptsLeft === 0,
+        });
+        notify(me.username, "community_update", {
+          community: serializeCommunity(community, me.username),
+        });
+      }
+    }
+  );
+
+  socket.on("community_leave", ({ communityId }: { communityId: string }) => {
+    const me = users.get(socket.id);
+    const community = communities.get(communityId);
+    if (!me || !community || !community.members.has(me.username)) return;
+
+    community.members.delete(me.username);
+
+    // Leaving counts toward the 3-strike limit (a revocation).
+    const invite = community.invites.get(me.username) ?? {
+      attempts: 0,
+      pending: false,
+    };
+    community.invites.set(me.username, { ...invite, pending: false });
+
+    notify(community.admin, "community_invite_declined", {
+      communityId,
+      communityName: community.name,
+      username: me.username,
+      attemptsLeft: Math.max(0, MAX_INVITE_ATTEMPTS - invite.attempts),
+      barred: invite.attempts >= MAX_INVITE_ATTEMPTS,
+    });
+
+    for (const member of community.members) {
+      notify(member, "community_update", {
+        community: serializeCommunity(community),
+      });
+    }
+    notify(me.username, "community_left", { communityId });
+  });
+
+  socket.on(
+    "community_message",
+    ({
+      communityId,
+      message,
+    }: {
+      communityId: string;
+      message: WireMessage;
+    }) => {
+      const from = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!from || !community || !message) return;
+      if (from.visibility === "private") {
+        socket.emit("dm_error", { to: communityId, reason: "sender_private" });
+        return;
+      }
+      if (!community.members.has(from.username)) return;
+
+      // Relay to every ONLINE member except the sender. Zero retention.
+      for (const member of community.members) {
+        if (member === from.username) continue;
+        for (const id of publicSocketIdsFor(member)) {
+          io.to(id).emit("community_message", { communityId, from, message });
+        }
+      }
     }
   );
 

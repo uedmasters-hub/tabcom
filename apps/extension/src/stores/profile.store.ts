@@ -30,11 +30,17 @@ interface ProfileState {
   displayName: string;
   username: string;
   avatarColor: string;
+  /** Optional profile photo (small data URL). */
+  photo?: string;
+  /** iMessage-style message animations. */
+  animations: boolean;
 
   setHasHydrated: (value: boolean) => void;
   setVisibility: (visibility: ProfileVisibility) => void;
   setIdentity: (identity: { displayName: string; username: string }) => void;
   setAvatarColor: (color: string) => void;
+  setPhoto: (photo?: string) => void;
+  setAnimations: (animations: boolean) => void;
   completeProfile: () => void;
   resetProfile: () => void;
 }
@@ -45,6 +51,8 @@ const initialProfile = {
   displayName: "",
   username: "",
   avatarColor: AVATAR_COLORS[0]!.value,
+  photo: undefined as string | undefined,
+  animations: true,
 };
 
 export const useProfileStore = create<ProfileState>()(
@@ -62,6 +70,10 @@ export const useProfileStore = create<ProfileState>()(
 
       setAvatarColor: (avatarColor) => set({ avatarColor }),
 
+      setPhoto: (photo) => set({ photo }),
+
+      setAnimations: (animations) => set({ animations }),
+
       completeProfile: () => set({ isComplete: true }),
 
       resetProfile: () => set({ ...initialProfile }),
@@ -75,6 +87,8 @@ export const useProfileStore = create<ProfileState>()(
         displayName: state.displayName,
         username: state.username,
         avatarColor: state.avatarColor,
+        photo: state.photo,
+        animations: state.animations,
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);

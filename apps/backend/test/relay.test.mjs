@@ -279,7 +279,127 @@ await sleep(400);
   eve.disconnect();
 }
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/13)`);
+
+// ---- Community tests ----
+// fresh users: gia (admin), hana (member-to-be), ivan (stranger)
+const gia = await connect({ username: "gia", name: "Gia", color: "#2563EB", visibility: "public" });
+const hana = await connect({ username: "hana", name: "Hana", color: "#059669", visibility: "public" });
+const ivan = await connect({ username: "ivan", name: "Ivan", color: "#7C3AED", visibility: "public" });
+await sleep(200);
+
+// connect gia <-> hana (required for invites)
+{
+  const req = new Promise((r) => hana.once("connect_request", r));
+  gia.emit("connect_request", { to: "hana" });
+  await req;
+  const ok = new Promise((r) => gia.once("connect_update", r));
+  hana.emit("connect_response", { to: "gia", action: "accept" });
+  await ok;
+}
+
+// TEST 13: create community + invite requires an accepted connection
+let communityId;
+{
+  const created = new Promise((r) => gia.once("community_update", r));
+  gia.emit("community_create", { name: "Design Guild" });
+  const { community } = await created;
+  communityId = community.id;
+  if (community.admin !== "gia" || community.members.length !== 1) fail("community create malformed");
+
+  const err = new Promise((r) => gia.once("community_error", r));
+  gia.emit("community_invite", { communityId, username: "ivan" }); // stranger
+  const e = await err;
+  if (e.reason !== "not_connected") fail("stranger invite not rejected: " + e.reason);
+  pass("community: created; invites restricted to accepted connections");
+}
+
+// TEST 14: invite -> notified -> accept -> membership + group message relay
+{
+  const invited = new Promise((r) => hana.once("community_invite", r));
+  gia.emit("community_invite", { communityId, username: "hana" });
+  const inv = await invited;
+  if (inv.from.username !== "gia" || inv.attempt !== 1) fail("invite notification malformed");
+
+  const joined = new Promise((r) => {
+    const handler = ({ community }) => {
+      if (community.members.some((m) => m.username === "hana")) {
+        gia.off("community_update", handler);
+        r({ community });
+      }
+    };
+    gia.on("community_update", handler);
+  });
+  hana.emit("community_invite_response", { communityId, action: "accept" });
+  await joined;
+
+  const delivery = new Promise((r) => hana.once("community_message", r));
+  gia.emit("community_message", { communityId, message: { id: "cm1", kind: "text", text: "welcome!", sentAt: Date.now() } });
+  const { from, message } = await delivery;
+  if (from.username !== "gia" || message.text !== "welcome!") fail("group message corrupted");
+  pass("community: invite notified, accept joins, group messages relay");
+}
+
+// TEST 15: non-members get nothing; members going private stop receiving
+{
+  let leaked = false;
+  ivan.once("community_message", () => (leaked = true));
+  gia.emit("community_message", { communityId, message: { id: "cm2", kind: "text", text: "secret", sentAt: Date.now() } });
+  await sleep(300);
+  if (leaked) fail("group message leaked to non-member");
+
+  hana.emit("visibility", "private");
+  await sleep(200);
+  let leakedPrivate = false;
+  hana.once("community_message", () => (leakedPrivate = true));
+  gia.emit("community_message", { communityId, message: { id: "cm3", kind: "text", text: "psst", sentAt: Date.now() } });
+  await sleep(300);
+  if (leakedPrivate) fail("group message reached a private member");
+  hana.emit("visibility", "public");
+  await sleep(200);
+  pass("community: non-members and private members receive nothing");
+}
+
+// TEST 16: leave notifies admin (revocation); decline counts attempts; 3-strike bars forever
+{
+  const revoked = new Promise((r) => gia.once("community_invite_declined", r));
+  hana.emit("community_leave", { communityId });
+  const rev = await revoked;
+  if (rev.username !== "hana" || rev.attemptsLeft !== 2) fail("leave/revoke notify wrong: " + JSON.stringify(rev));
+
+  // attempt 2: invite -> decline
+  const inv2 = new Promise((r) => hana.once("community_invite", r));
+  gia.emit("community_invite", { communityId, username: "hana" });
+  await inv2;
+  const dec2 = new Promise((r) => gia.once("community_invite_declined", r));
+  hana.emit("community_invite_response", { communityId, action: "decline" });
+  const d2 = await dec2;
+  if (d2.attemptsLeft !== 1) fail("attempt counter wrong after decline 2: " + d2.attemptsLeft);
+
+  // attempt 3: invite -> decline -> barred
+  const inv3 = new Promise((r) => hana.once("community_invite", r));
+  gia.emit("community_invite", { communityId, username: "hana" });
+  const i3 = await inv3;
+  if (i3.attempt !== 3) fail("third invite attempt not counted");
+  const dec3 = new Promise((r) => gia.once("community_invite_declined", r));
+  hana.emit("community_invite_response", { communityId, action: "decline" });
+  const d3 = await dec3;
+  if (!d3.barred || d3.attemptsLeft !== 0) fail("3-strike bar not reported");
+
+  // attempt 4 must be refused by the server
+  const limitErr = new Promise((r) => gia.once("community_error", r));
+  let reached = false;
+  hana.once("community_invite", () => (reached = true));
+  gia.emit("community_invite", { communityId, username: "hana" });
+  const le = await limitErr;
+  await sleep(200);
+  if (reached) fail("4th invite reached the user");
+  if (le.reason !== "invite_limit") fail("wrong limit reason: " + le.reason);
+  pass("community: revoke notifies admin, 3 attempts max, then barred forever");
+}
+
+gia.disconnect(); hana.disconnect(); ivan.disconnect();
+
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/17)`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);

@@ -34,12 +34,13 @@ export default function WorkspaceScreen() {
   const displayName = useProfileStore((state) => state.displayName);
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const visibility = useProfileStore((state) => state.visibility);
+  const photo = useProfileStore((state) => state.photo);
 
   useEffect(() => {
     ensureSeeded();
 
     initRealtime(
-      { username, name: displayName, color: avatarColor, visibility },
+      { username, name: displayName, color: avatarColor, visibility, photo },
       {
         onConnectionChange: (live) =>
           useChatStore.getState().setLiveStatus(live),
@@ -66,6 +67,27 @@ export default function WorkspaceScreen() {
 
         onConnectUpdate: (username, status) =>
           useChatStore.getState().receiveConnectUpdate(username, status),
+
+        onCommunities: (list) =>
+          useChatStore.getState().receiveCommunities(list),
+
+        onCommunityUpdate: (community) =>
+          useChatStore.getState().receiveCommunityUpdate(community),
+
+        onCommunityInvite: (community, from, attempt) =>
+          useChatStore.getState().receiveCommunityInvite(community, from, attempt),
+
+        onCommunityDeclined: (payload) =>
+          useChatStore.getState().receiveCommunityDeclined(payload),
+
+        onCommunityLeft: (communityId) =>
+          useChatStore.getState().receiveCommunityLeft(communityId),
+
+        onCommunityMessage: (communityId, from, message) =>
+          useChatStore.getState().receiveCommunityMessage(communityId, from, message),
+
+        onCommunityError: (payload) =>
+          useChatStore.getState().receiveCommunityError(payload),
       }
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
