@@ -117,7 +117,7 @@ function FloatApp() {
 
   if (!conversationId) {
     return (
-      <div className="flex h-full flex-col items-center justify-center bg-white px-8 text-center">
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-white px-8 text-center">
         <p className="text-sm font-semibold">No conversation yet</p>
         <p className="mt-1 text-xs text-slate-500">
           Start one in the Tabcom panel — it will appear here.
@@ -244,7 +244,7 @@ function FloatThread({ conversationId }: { conversationId: string }) {
 
   const [draft, setDraft] = useState("");
   const [showEmoji, setShowEmoji] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lastTypingSent = useRef(0);
 
@@ -266,7 +266,10 @@ function FloatThread({ conversationId }: { conversationId: string }) {
   const isTyping = contact ? typing.includes(contact.id) : false;
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({
+    const list = listRef.current;
+    if (!list) return;
+    list.scrollTo({
+      top: list.scrollHeight,
       behavior: animations ? "smooth" : "auto",
     });
   }, [messages.length, isTyping, animations]);
@@ -288,9 +291,9 @@ function FloatThread({ conversationId }: { conversationId: string }) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-white font-sans text-slate-900">
+    <div className="fixed inset-0 flex flex-col overflow-hidden bg-white font-sans text-slate-900">
       {/* Identity header */}
-      <div className="flex shrink-0 items-center gap-2.5 border-b border-slate-200 px-3.5 py-2.5">
+      <div className="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
         {community ? (
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
             {community.name.charAt(0).toUpperCase()}
@@ -332,7 +335,10 @@ function FloatThread({ conversationId }: { conversationId: string }) {
       </div>
 
       {/* Messages */}
-      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-4"
+      >
         {messages.map((message) => (
           <FloatBubble
             key={message.id}
@@ -354,11 +360,10 @@ function FloatThread({ conversationId }: { conversationId: string }) {
           </div>
         )}
 
-        <div ref={endRef} />
       </div>
 
       {/* Composer */}
-      <div className="relative flex shrink-0 items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
+      <div className="relative flex shrink-0 items-center gap-2 border-t border-slate-200 px-4 py-3">
         {showEmoji && (
           <EmojiPicker
             onPick={(emoji) => {
