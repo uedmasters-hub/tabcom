@@ -10,7 +10,6 @@ import {
   Smile,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { browser } from "wxt/browser";
 
 import { Avatar } from "../../../../components/ui";
@@ -25,7 +24,10 @@ import { formatClockTime } from "../../../../utils/time";
 import ConsentPanel from "./ConsentPanel";
 import EmojiPicker from "./EmojiPicker";
 import InfoPanel from "./InfoPanel";
-import { usePipWindow } from "./usePipWindow";
+import {
+  isFloatOpen,
+  toggleFloatingChat,
+} from "../../../../lib/floating-chat";
 
 const presenceColors = {
   online: "bg-emerald-500",
@@ -152,7 +154,7 @@ export default function ChatView({
   const visibility = useProfileStore((state) => state.visibility);
   const animations = useProfileStore((state) => state.animations);
   const pipEnabled = useProfileStore((state) => state.pipEnabled);
-  const { pipWindow, open: openPip, close: closePip, supported: pipSupported } = usePipWindow();
+  const [floating, setFloating] = useState(isFloatOpen());
 
   const [draft, setDraft] = useState("");
   const [showInfo, setShowInfo] = useState(false);
@@ -256,15 +258,19 @@ export default function ChatView({
           </span>
         </button>
 
-        {pipEnabled && pipSupported && (
+        {pipEnabled && (
           <button
             type="button"
-            onClick={() => (pipWindow ? closePip() : void openPip())}
-            title={pipWindow ? "Close floating chat" : "Float this chat"}
+            onClick={() => {
+              void toggleFloatingChat(conversationId).then(() =>
+                setFloating(isFloatOpen())
+              );
+            }}
+            title={floating ? "Close floating chat" : "Float this chat"}
             aria-label="Float this chat"
             className={cn(
               "rounded-lg p-1.5 transition hover:bg-slate-100",
-              pipWindow
+              floating
                 ? "text-blue-600"
                 : "text-slate-400 hover:text-slate-900"
             )}
@@ -414,123 +420,6 @@ export default function ChatView({
         />
       )}
 
-      {/* Floating PiP chat — same thread, portal into the PiP document */}
-      {pipWindow &&
-        createPortal(
-          <PipThread
-            title={title}
-            conversationId={conversationId}
-            messages={messages}
-            onSend={(text) => sendText(conversationId, text)}
-            onShareTab={() => void shareCurrentTab(conversationId)}
-          />,
-          pipWindow.document.body
-        )}
-    </div>
-  );
-}
-
-function PipThread({
-  title,
-  conversationId,
-  messages,
-  onSend,
-  onShareTab,
-}: {
-  title: string;
-  conversationId: string;
-  messages: Message[];
-  onSend: (text: string) => void;
-  onShareTab: () => void;
-}) {
-  const [draft, setDraft] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView();
-  }, [messages.length, conversationId]);
-
-  const submit = () => {
-    if (!draft.trim()) return;
-    onSend(draft);
-    setDraft("");
-  };
-
-  return (
-    <div className="flex h-screen flex-col bg-white font-sans text-slate-900">
-      <div className="border-b border-slate-200 px-4 py-2.5">
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="text-[10px] uppercase tracking-wide text-blue-600">
-          Tabcom · floating
-        </p>
-      </div>
-
-      <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
-        {messages.map((message) =>
-          message.kind === "system" ? (
-            <p
-              key={message.id}
-              className="mx-auto max-w-[90%] rounded-full bg-slate-50 px-3 py-1 text-center text-[11px] text-slate-500"
-            >
-              {message.text}
-            </p>
-          ) : (
-            <div
-              key={message.id}
-              className={cn(
-                "flex",
-                message.authorId === ME ? "justify-end" : "justify-start"
-              )}
-            >
-              <div
-                className={cn(
-                  "max-w-[80%] rounded-2xl px-3 py-2 text-[13px] leading-5",
-                  message.authorId === ME
-                    ? "rounded-br-md bg-slate-900 text-white"
-                    : "rounded-bl-md bg-slate-100"
-                )}
-              >
-                {message.kind === "link" ? `🔗 ${message.text}` : message.text}
-              </div>
-            </div>
-          )
-        )}
-        <div ref={endRef} />
-      </div>
-
-      <div className="flex items-center gap-1.5 border-t border-slate-200 px-3 py-2.5">
-        <button
-          type="button"
-          onClick={onShareTab}
-          title="Share current tab"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500"
-        >
-          <LinkIcon size={15} />
-        </button>
-
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="Message…"
-          className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 px-3 text-[13px] outline-none focus:border-blue-500"
-        />
-
-        <button
-          type="button"
-          onClick={submit}
-          disabled={!draft.trim()}
-          aria-label="Send"
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white disabled:bg-slate-300"
-        >
-          <Send size={14} />
-        </button>
-      </div>
     </div>
   );
 }

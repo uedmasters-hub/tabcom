@@ -203,10 +203,17 @@ function appendMessage(
   message: Message,
   incrementUnread: boolean
 ) {
+  const thread = state.messages[conversationId] ?? [];
+
+  // Two windows (panel + float) each hold a socket; dedupe by id.
+  if (thread.some((existing) => existing.id === message.id)) {
+    return { messages: state.messages, conversations: state.conversations };
+  }
+
   return {
     messages: {
       ...state.messages,
-      [conversationId]: [...(state.messages[conversationId] ?? []), message],
+      [conversationId]: [...thread, message],
     },
     conversations: state.conversations
       .map((conversation) =>

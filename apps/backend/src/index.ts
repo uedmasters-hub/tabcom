@@ -101,8 +101,26 @@ function isBlockedEitherWay(a: string, b: string): boolean {
   return blocks.has(`${a}|${b}`) || blocks.has(`${b}|${a}`);
 }
 
+const PRESENCE_PRIORITY: Presence[] = ["online", "busy", "away", "offline"];
+
+/** One entry per username (a user may hold several sockets, e.g. panel + float). */
 function publicRoster(): WireUser[] {
-  return [...users.values()].filter((user) => user.visibility === "public");
+  const byUsername = new Map<string, WireUser>();
+
+  for (const user of users.values()) {
+    if (user.visibility !== "public") continue;
+
+    const existing = byUsername.get(user.username);
+    if (
+      !existing ||
+      PRESENCE_PRIORITY.indexOf(user.presence) <
+        PRESENCE_PRIORITY.indexOf(existing.presence)
+    ) {
+      byUsername.set(user.username, user);
+    }
+  }
+
+  return [...byUsername.values()];
 }
 
 /** Roster personalized per viewer: hidden presence masks to offline. */

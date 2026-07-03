@@ -249,10 +249,11 @@ export default function SettingsView() {
       >
         <PictureInPicture2 size={18} className="shrink-0 text-slate-500" />
         <span className="min-w-0 flex-1">
-          <span className="block font-semibold">Floating chat (PiP)</span>
+          <span className="block font-semibold">Floating chat</span>
           <span className="mt-0.5 block text-sm text-slate-500">
-            Pop a chat into an always-on-top window that stays visible when
-            the browser is minimized. Opening it sets you Online.
+            Pop a chat into its own small window that keeps working when the
+            main browser window is minimized. While it's open you appear
+            Online.
           </span>
         </span>
         <span
