@@ -40,7 +40,12 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
 async function readStoredProfile(): Promise<StoredProfile | null> {
   const result = await browser.storage.local.get("tabcom:profile");
   const raw = result["tabcom:profile"] as string | undefined;
-  if (!raw) return null;
+  if (!raw) {
+    console.log(
+      "[tabcom:background] no stored profile found — open the panel at least once first"
+    );
+    return null;
+  }
   try {
     const parsed = JSON.parse(raw);
     const state = parsed.state ?? parsed;
@@ -125,6 +130,10 @@ async function ensureWriteConnection(): Promise<boolean> {
           onConnectUpdate: () => {},
           onCommunities: () => {},
           onCommunityUpdate: (community) => {
+            console.log(
+              "[tabcom:background] community_update received, board items:",
+              community.board.length
+            );
             void writeStoredCommunity(community);
             void broadcastToAllTabs({
               type: "tabcom:community-updated",
@@ -156,8 +165,11 @@ async function ensureWriteConnection(): Promise<boolean> {
 browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "tabcom:board-write") return undefined;
 
+  console.log("[tabcom:background] board-write received:", message.action, message.payload);
+
   (async () => {
     const connected = await ensureWriteConnection();
+    console.log("[tabcom:background] write connection status:", connected);
     if (!connected) {
       sendResponse({ ok: false, reason: "offline" });
       return;
@@ -182,6 +194,7 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         break;
     }
 
+    console.log("[tabcom:background] board-write completed:", message.action);
     sendResponse({ ok: true });
   })();
 

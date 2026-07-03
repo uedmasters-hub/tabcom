@@ -137,9 +137,18 @@ async function renderExisting() {
     readStoredProfile(),
     readStoredCommunities(),
   ]);
-  if (!profile) return;
+  if (!profile) {
+    console.debug("[tabcom] renderExisting: no stored profile yet");
+    return;
+  }
 
   const anchor = readPageAnchor();
+  console.debug(
+    "[tabcom] renderExisting: canonicalKey =",
+    anchor.canonicalKey,
+    "communities known =",
+    Object.keys(communities).length
+  );
   const layer = layerEl();
   clearChildren(layer);
   layer.style.height = `${documentHeight()}px`;
@@ -153,6 +162,12 @@ async function renderExisting() {
 
     const item = community.board.find((i) => i.canonicalKey === anchor.canonicalKey);
     if (!item) continue;
+    console.debug(
+      "[tabcom] found matching item in",
+      community.name,
+      "- pins:", item.pins.length,
+      "highlights:", item.highlights.length
+    );
 
     for (const pin of item.pins) {
       const marker = document.createElement("div");
@@ -251,6 +266,26 @@ async function boardWrite(
 
 // ---- Active modes: pin / highlight ------------------------------------
 
+/**
+ * Shadow DOM retargets event.target for listeners outside the shadow
+ * tree — every click on our overlay reports the same generic host
+ * element from document's perspective. composedPath() reveals the true
+ * path through the shadow boundary, which is what these checks need.
+ */
+function eventTouchesOwnUI(event: Event): boolean {
+  return event
+    .composedPath()
+    .some(
+      (node) =>
+        node instanceof Element &&
+        (node.classList?.contains("composer") ||
+          node.classList?.contains("mode-bar") ||
+          node.classList?.contains("pin") ||
+          node.classList?.contains("popover") ||
+          node.classList?.contains("highlight-btn"))
+    );
+}
+
 function exitMode() {
   activeMode = null;
   ensureShadowRoot()
@@ -271,24 +306,28 @@ function showModeBar(label: string) {
 
 function handlePinClick(event: MouseEvent) {
   if (!activeMode || activeMode.kind !== "pin") return;
-  const target = event.target as HTMLElement;
-  if (target.closest(".composer, .mode-bar, .pin, .popover")) return;
+  if (eventTouchesOwnUI(event)) {
+    console.debug("[tabcom] pin click ignored — landed on our own UI");
+    return;
+  }
 
   event.preventDefault();
   event.stopPropagation();
+  console.debug("[tabcom] dropping pin at", event.pageX, event.pageY);
 
   const xPercent = (event.pageX / document.documentElement.scrollWidth) * 100;
   const yPercent = (event.pageY / documentHeight()) * 100;
 
   showComposer(event.clientX, event.clientY, async (text) => {
     const anchor = readPageAnchor();
-    await boardWrite("pin_add", {
+    const ok = await boardWrite("pin_add", {
       communityId: activeMode!.communityId,
       ...anchor,
       text,
       xPercent,
       yPercent,
     });
+    console.debug("[tabcom] pin_add result:", ok);
     exitMode();
   });
 }
@@ -327,8 +366,15 @@ function showComposer(clientX: number, clientY: number, onSubmit: (text: string)
   setTimeout(() => input.focus(), 0);
 }
 
-function handleSelectionChange() {
+function handleSelectionChange(event: Event) {
   if (!activeMode || activeMode.kind !== "highlight") return;
+
+  // Don't tear down the button because of the mouseup that's the
+  // first half of clicking the button itself.
+  if (eventTouchesOwnUI(event)) {
+    console.debug("[tabcom] selection mouseup ignored — landed on our own UI");
+    return;
+  }
 
   const root = ensureShadowRoot();
   root.querySelectorAll(".highlight-btn").forEach((el) => el.remove());
@@ -349,14 +395,16 @@ function handleSelectionChange() {
   button.addEventListener("click", async (event) => {
     event.stopPropagation();
     const quoteSelector = serializeSelection();
+    console.debug("[tabcom] highlight submit, quote:", quoteSelector);
     if (!quoteSelector) return;
 
     const anchor = readPageAnchor();
-    await boardWrite("highlight_add", {
+    const ok = await boardWrite("highlight_add", {
       communityId: activeMode!.communityId,
       ...anchor,
       ...quoteSelector,
     });
+    console.debug("[tabcom] highlight_add result:", ok);
     button.remove();
     exitMode();
   });
