@@ -9,6 +9,7 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
+import { SettingsToggleRow } from "../../../components/shared/SettingsToggleRow";
 import { getPillEnabled, setPillEnabled } from "../../../lib/pill-settings";
 import {
   disconnectRealtime,
@@ -227,90 +228,32 @@ export default function SettingsView() {
       {/* Chat preferences */}
       <SectionLabel className="mt-8">Chat</SectionLabel>
 
-      <button
-        type="button"
-        onClick={() => setAnimations(!animations)}
-        className="mt-4 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-300"
-      >
-        <Sparkles size={18} className="shrink-0 text-slate-500" />
-        <span className="min-w-0 flex-1">
-          <span className="block font-semibold">Message animations</span>
-          <span className="mt-0.5 block text-sm text-slate-500">
-            Apple-style spring pop when messages arrive.
-          </span>
-        </span>
-        <span
-          className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-            animations ? "bg-slate-900" : "bg-slate-200"
-          )}
-        >
-          <span
-            className={cn(
-              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
-              animations ? "left-[22px]" : "left-0.5"
-            )}
-          />
-        </span>
-      </button>
+      <SettingsToggleRow
+        className="mt-4"
+        icon={<Sparkles size={18} />}
+        label="Message animations"
+        description="Apple-style spring pop when messages arrive."
+        checked={animations}
+        onToggle={() => setAnimations(!animations)}
+      />
 
-      <button
-        type="button"
-        onClick={togglePill}
-        className="mt-3 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-300"
-      >
-        <CircleDot size={18} className="shrink-0 text-slate-500" />
-        <span className="min-w-0 flex-1">
-          <span className="block font-semibold">Tabcom pill on pages</span>
-          <span className="mt-0.5 block text-sm text-slate-500">
-            Quick actions on every page — and your presence: while the
-            pill is on you appear Online even with this panel closed;
-            turn it off to go offline. (Build M18)
-          </span>
-        </span>
-        <span
-          className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-            pillEnabled ? "bg-slate-900" : "bg-slate-200"
-          )}
-        >
-          <span
-            className={cn(
-              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
-              pillEnabled ? "left-[22px]" : "left-0.5"
-            )}
-          />
-        </span>
-      </button>
+      <SettingsToggleRow
+        className="mt-3"
+        icon={<CircleDot size={18} />}
+        label="Tabcom pill on pages"
+        description="Quick actions on every page — and your presence: while the pill is on you appear Online even with this panel closed; turn it off to go offline."
+        checked={pillEnabled}
+        onToggle={togglePill}
+      />
 
-      <button
-        type="button"
-        onClick={() => setPipEnabled(!pipEnabled)}
-        className="mt-3 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-300"
-      >
-        <PictureInPicture2 size={18} className="shrink-0 text-slate-500" />
-        <span className="min-w-0 flex-1">
-          <span className="block font-semibold">Floating chat</span>
-          <span className="mt-0.5 block text-sm text-slate-500">
-            Pop a chat into its own small window that keeps working when the
-            main browser window is minimized. While it's open you appear
-            Online.
-          </span>
-        </span>
-        <span
-          className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-            pipEnabled ? "bg-slate-900" : "bg-slate-200"
-          )}
-        >
-          <span
-            className={cn(
-              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
-              pipEnabled ? "left-[22px]" : "left-0.5"
-            )}
-          />
-        </span>
-      </button>
+      <SettingsToggleRow
+        className="mt-3"
+        icon={<PictureInPicture2 size={18} />}
+        label="Floating chat"
+        description="Pop a chat into its own small window that keeps working when the main browser window is minimized. While it's open you appear Online."
+        checked={pipEnabled}
+        onToggle={() => setPipEnabled(!pipEnabled)}
+      />
 
       {/* Visibility */}
       <SectionLabel className="mt-8">Discovery</SectionLabel>

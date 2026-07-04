@@ -1,32 +1,19 @@
-import {
-  Check,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  MapPin,
-  MessageSquareText,
-  Pencil,
-  Plus,
-  Send,
-  ThumbsUp,
-  Trash2,
-  Trophy,
-} from "lucide-react";
+import { MapPin, Pencil, Plus, ThumbsUp, Trophy } from "lucide-react";
 import { useState } from "react";
 import { browser } from "wxt/browser";
 
+import {
+  AnnotationGroup,
+  BoardCard,
+  HighlightRow,
+  PinRow,
+} from "../../../../components/shared/BoardElements";
 import { Button, EmptyState } from "../../../../components/ui";
 import { navigateToAnnotation } from "../../../../lib/board-navigation";
 import { cn } from "../../../../lib/cn";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
-import type {
-  BoardHighlight,
-  BoardItem,
-  BoardPin,
-  Community,
-} from "../../../../types/chat";
-import { formatRelativeTime } from "../../../../utils/time";
+import type { Community } from "../../../../types/chat";
 
 /**
  * Community board, organized as a segmented control:
@@ -34,6 +21,11 @@ import { formatRelativeTime } from "../../../../utils/time";
  *   Pins       — every pin across all pages; click = jump to the exact
  *                spot on the page (focus-or-open + scroll + pulse)
  *   Highlights — every highlight across all pages; click = jump + flash
+ *
+ * All rendering below is the SHARED implementation in
+ * components/shared/BoardElements — the page pill renders the exact
+ * same components against the exact same data, wired to the
+ * background relay instead of this store.
  */
 
 type Section = "tabs" | "pins" | "highlights";
@@ -101,6 +93,9 @@ function TabsSection({ community }: { community: Community }) {
     (state) => state.addCurrentTabToBoard
   );
   const decideBoardItem = useChatStore((state) => state.decideBoardItem);
+  const removeBoardItem = useChatStore((state) => state.removeBoardItem);
+  const commentOnBoardItem = useChatStore((state) => state.commentOnBoardItem);
+  const voteOnBoardItem = useChatStore((state) => state.voteOnBoardItem);
 
   const isAdmin = community.admin === username;
   const decided = community.board.find((item) => item.decided);
@@ -150,9 +145,14 @@ function TabsSection({ community }: { community: Community }) {
             <BoardCard
               key={item.id}
               item={item}
-              communityId={community.id}
-              isAdmin={isAdmin}
-              username={username}
+              canRemove={isAdmin || item.addedBy === username}
+              canDecide={isAdmin}
+              hasVoted={item.votes.includes(username)}
+              onOpen={(url) => browser.tabs.create({ url })}
+              onVote={() => voteOnBoardItem(community.id, item.id)}
+              onComment={(text) => commentOnBoardItem(community.id, item.id, text)}
+              onDecide={() => decideBoardItem(community.id, item.id)}
+              onRemove={() => removeBoardItem(community.id, item.id)}
             />
           ))}
         </ul>
@@ -197,35 +197,17 @@ function PinsSection({ community }: { community: Community }) {
           {itemsWithPins.map((item) => (
             <AnnotationGroup key={item.id} item={item}>
               {item.pins.map((pin) => (
-                <PinRow key={pin.id} item={item} pin={pin} />
+                <PinRow
+                  key={pin.id}
+                  pin={pin}
+                  onJump={() => void navigateToAnnotation(item, { kind: "pin", id: pin.id })}
+                />
               ))}
             </AnnotationGroup>
           ))}
         </div>
       )}
     </>
-  );
-}
-
-function PinRow({ item, pin }: { item: BoardItem; pin: BoardPin }) {
-  return (
-    <button
-      type="button"
-      onClick={() => void navigateToAnnotation(item, { kind: "pin", id: pin.id })}
-      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
-      title="Jump to this spot on the page"
-    >
-      <MapPin size={14} className="mt-0.5 shrink-0 text-blue-500" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium leading-snug">
-          {pin.text}
-        </span>
-        <span className="mt-0.5 block text-[11px] text-slate-400">
-          @{pin.author} · {formatRelativeTime(pin.sentAt)}
-        </span>
-      </span>
-      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
-    </button>
   );
 }
 
@@ -267,225 +249,18 @@ function HighlightsSection({ community }: { community: Community }) {
           {itemsWithHighlights.map((item) => (
             <AnnotationGroup key={item.id} item={item}>
               {item.highlights.map((highlight) => (
-                <HighlightRow key={highlight.id} item={item} highlight={highlight} />
+                <HighlightRow
+                  key={highlight.id}
+                  highlight={highlight}
+                  onJump={() =>
+                    void navigateToAnnotation(item, { kind: "highlight", id: highlight.id })
+                  }
+                />
               ))}
             </AnnotationGroup>
           ))}
         </div>
       )}
     </>
-  );
-}
-
-function HighlightRow({
-  item,
-  highlight,
-}: {
-  item: BoardItem;
-  highlight: BoardHighlight;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() =>
-        void navigateToAnnotation(item, { kind: "highlight", id: highlight.id })
-      }
-      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
-      title="Jump to this text on the page"
-    >
-      <Pencil size={14} className="mt-0.5 shrink-0 text-amber-500" />
-      <span className="min-w-0 flex-1">
-        <span className="block text-[13px] italic leading-snug text-slate-700">
-          "{highlight.quote.slice(0, 90)}
-          {highlight.quote.length > 90 ? "…" : ""}"
-        </span>
-        <span className="mt-0.5 block text-[11px] text-slate-400">
-          @{highlight.author} · {formatRelativeTime(highlight.sentAt)}
-        </span>
-      </span>
-      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
-    </button>
-  );
-}
-
-// ---- shared pieces -----------------------------------------------------------
-
-function AnnotationGroup({
-  item,
-  children,
-}: {
-  item: BoardItem;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200">
-      <header className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-3.5 py-2">
-        <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-600">
-          {item.title}
-        </p>
-        {item.siteName && (
-          <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-400">
-            {item.siteName}
-          </span>
-        )}
-      </header>
-      <div className="flex flex-col p-1.5">{children}</div>
-    </section>
-  );
-}
-
-function BoardCard({
-  item,
-  communityId,
-  isAdmin,
-  username,
-}: {
-  item: BoardItem;
-  communityId: string;
-  isAdmin: boolean;
-  username: string;
-}) {
-  const removeBoardItem = useChatStore((state) => state.removeBoardItem);
-  const commentOnBoardItem = useChatStore((state) => state.commentOnBoardItem);
-  const voteOnBoardItem = useChatStore((state) => state.voteOnBoardItem);
-  const decideBoardItem = useChatStore((state) => state.decideBoardItem);
-
-  const [expanded, setExpanded] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  const hasVoted = item.votes.includes(username);
-  const canRemove = isAdmin || item.addedBy === username;
-
-  const submitComment = () => {
-    if (!draft.trim()) return;
-    commentOnBoardItem(communityId, item.id, draft);
-    setDraft("");
-  };
-
-  return (
-    <li
-      className={cn(
-        "overflow-hidden rounded-2xl border transition",
-        item.decided ? "border-emerald-300 bg-emerald-50/40" : "border-slate-200"
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => browser.tabs.create({ url: item.url })}
-        className="flex w-full items-start gap-3 p-3.5 text-left"
-      >
-        {item.image ? (
-          <img
-            src={item.image}
-            alt=""
-            className="h-16 w-16 shrink-0 rounded-lg object-cover"
-          />
-        ) : (
-          <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
-            <ExternalLink size={20} />
-          </span>
-        )}
-
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-semibold leading-snug">
-            {item.title}
-          </span>
-          {item.siteName && (
-            <span className="mt-0.5 block text-xs text-slate-400">
-              {item.siteName}
-            </span>
-          )}
-          <span className="mt-1 block text-[11px] text-slate-400">
-            added by @{item.addedBy} · {formatRelativeTime(item.addedAt)}
-          </span>
-        </span>
-      </button>
-
-      <div className="flex items-center gap-1.5 border-t border-slate-100 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => voteOnBoardItem(communityId, item.id)}
-          className={cn(
-            "flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition",
-            hasVoted
-              ? "border-blue-300 bg-blue-50 text-blue-600"
-              : "border-slate-200 text-slate-500 hover:border-slate-300"
-          )}
-        >
-          <ThumbsUp size={13} className={hasVoted ? "fill-blue-600" : ""} />
-          {item.votes.length}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-slate-500 transition hover:bg-slate-50"
-        >
-          <MessageSquareText size={12} />
-          {item.comments.length}
-          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
-
-        <span className="flex-1" />
-
-        {isAdmin && !item.decided && (
-          <button
-            type="button"
-            title="Mark as decided"
-            onClick={() => decideBoardItem(communityId, item.id)}
-            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600"
-          >
-            <Check size={15} />
-          </button>
-        )}
-
-        {canRemove && (
-          <button
-            type="button"
-            title="Remove from board"
-            onClick={() => removeBoardItem(communityId, item.id)}
-            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
-          >
-            <Trash2 size={15} />
-          </button>
-        )}
-      </div>
-
-      {expanded && (
-        <div className="border-t border-slate-100 bg-slate-50/60 px-3.5 py-3">
-          {item.comments.length > 0 && (
-            <ul className="mb-2 space-y-2">
-              {item.comments.map((comment) => (
-                <li key={comment.id} className="text-xs leading-5">
-                  <span className="font-semibold">@{comment.author}</span>{" "}
-                  <span className="text-slate-600">{comment.text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <div className="flex items-center gap-2">
-            <input
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitComment();
-              }}
-              placeholder="Add a comment…"
-              className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-blue-500"
-            />
-            <button
-              type="button"
-              onClick={submitComment}
-              disabled={!draft.trim()}
-              aria-label="Send comment"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white disabled:bg-slate-300"
-            >
-              <Send size={12} />
-            </button>
-          </div>
-        </div>
-      )}
-    </li>
   );
 }
