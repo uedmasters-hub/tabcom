@@ -49,6 +49,10 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
  *  (unless the panel is open with its own socket). */
 let persistentPresence = false;
 
+/** Windows opened from the pill — focused instead of duplicated. */
+let panelWindowId: number | null = null;
+let floatWindowId: number | null = null;
+
 /** Messages arriving while only the pill holds the connection would
  *  otherwise be lost (zero server retention). Buffer them; the panel
  *  drains the buffer into its store on next open. Doubles as the data

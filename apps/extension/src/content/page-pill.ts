@@ -25,7 +25,7 @@ import {
  *    no community -> explains what to do; not onboarded -> stays hidden.
  */
 
-export const PILL_VERSION = "M19";
+export const PILL_VERSION = "M20";
 
 export interface PillActions {
   enterPinMode: (communityId: string) => void;
@@ -93,6 +93,7 @@ async function readMemberCommunities(
 interface ChatEntry {
   kind: "community" | "dm";
   id: string; // community id, or contact USERNAME for dms
+  conversationId: string | null;
   label: string;
   unread: number;
 }
@@ -146,6 +147,7 @@ async function readChatEntries(username: string): Promise<ChatEntry[]> {
       entries.push({
         kind: "community",
         id: community.id,
+        conversationId: conversation?.id ?? null,
         label: community.name,
         unread: (conversation?.unread ?? 0) + (buffered[`c:${community.id}`] ?? 0),
       });
@@ -158,6 +160,7 @@ async function readChatEntries(username: string): Promise<ChatEntry[]> {
       entries.push({
         kind: "dm",
         id: contact.username,
+        conversationId: conversation.id,
         label: contact.alias || contact.name,
         unread:
           (conversation.unread ?? 0) + (buffered[`d:${contact.username}`] ?? 0),
@@ -418,33 +421,23 @@ function renderChatMenu(entries: ChatEntry[]) {
       ${entry.unread > 0 ? `<span class="count">${entry.unread > 99 ? "99+" : entry.unread}</span>` : ""}
     `;
     row.addEventListener("click", async () => {
-      // The panel reads this on open and jumps straight to the chat.
-      await browser.storage.local.set({
-        "tabcom:open-target": JSON.stringify({
-          kind: entry.kind,
-          id: entry.id,
-        }),
-      });
       chatMenuOpen = false;
       root.querySelectorAll(".menu").forEach((el) => el.remove());
-      actionsRef?.openPanel();
+
+      // Panel also honors this if opened later.
+      await browser.storage.local.set({
+        "tabcom:open-target": JSON.stringify({ kind: entry.kind, id: entry.id }),
+      });
+
+      // Open the floating Chat PiP directly on this conversation —
+      // full chat without the panel.
+      void browser.runtime.sendMessage({
+        type: "tabcom:open-float",
+        conversationId: entry.conversationId,
+      });
     });
     menu.append(row);
   }
-
-  const divider = document.createElement("div");
-  divider.className = "divider";
-  menu.append(divider);
-
-  const openRow = document.createElement("button");
-  openRow.className = "row";
-  openRow.innerHTML = `<span class="grow">Open Tabcom panel</span>`;
-  openRow.addEventListener("click", () => {
-    chatMenuOpen = false;
-    root.querySelectorAll(".menu").forEach((el) => el.remove());
-    actionsRef?.openPanel();
-  });
-  menu.append(openRow);
 
   root.append(menu);
 }
