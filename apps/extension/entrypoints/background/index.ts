@@ -94,15 +94,15 @@ async function syncPresenceMode(): Promise<void> {
 const cursorTabs = new Map<number, { communityId: string; canonicalKey: string }>();
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
-  const result = await browser.storage.local.get("tabcom:profile");
-  const raw = result["tabcom:profile"] as string | undefined;
-  if (!raw) {
-    console.log(
-      "[tabcom:background] no stored profile found — open the panel at least once first"
-    );
-    return null;
-  }
   try {
+    const result = await browser.storage.local.get("tabcom:profile");
+    const raw = result["tabcom:profile"] as string | undefined;
+    if (!raw) {
+      console.log(
+        "[tabcom:background] no stored profile found — open the panel at least once first"
+      );
+      return null;
+    }
     const parsed = JSON.parse(raw);
     const state = parsed.state ?? parsed;
     if (!state?.username) return null;
@@ -118,10 +118,10 @@ async function readStoredProfile(): Promise<StoredProfile | null> {
 }
 
 async function writeStoredCommunity(community: WireCommunity): Promise<void> {
-  const result = await browser.storage.local.get("tabcom:chat");
-  const raw = result["tabcom:chat"] as string | undefined;
-  if (!raw) return;
   try {
+    const result = await browser.storage.local.get("tabcom:chat");
+    const raw = result["tabcom:chat"] as string | undefined;
+    if (!raw) return;
     const parsed = JSON.parse(raw);
     const state = parsed.state ?? parsed;
     state.communities = { ...state.communities, [community.id]: community };

@@ -48,10 +48,10 @@ let shadowRoot: ShadowRoot | null = null;
 let activeMode: { kind: "pin" | "highlight"; communityId: string } | null = null;
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
-  const result = await browser.storage.local.get("tabcom:profile");
-  const raw = result["tabcom:profile"] as string | undefined;
-  if (!raw) return null;
   try {
+    const result = await browser.storage.local.get("tabcom:profile");
+    const raw = result["tabcom:profile"] as string | undefined;
+    if (!raw) return null;
     const parsed = JSON.parse(raw);
     const state = parsed.state ?? parsed;
     if (!state?.username) return null;
@@ -67,10 +67,10 @@ async function readStoredProfile(): Promise<StoredProfile | null> {
 }
 
 async function readStoredCommunities(): Promise<Record<string, WireCommunity>> {
-  const result = await browser.storage.local.get("tabcom:chat");
-  const raw = result["tabcom:chat"] as string | undefined;
-  if (!raw) return {};
   try {
+    const result = await browser.storage.local.get("tabcom:chat");
+    const raw = result["tabcom:chat"] as string | undefined;
+    if (!raw) return {};
     const parsed = JSON.parse(raw);
     const state = (parsed.state ?? parsed) as StoredChatState;
     return state.communities ?? {};
