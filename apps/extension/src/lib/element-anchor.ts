@@ -84,28 +84,35 @@ export function anchorForPoint(
   clientX: number,
   clientY: number
 ): ElementAnchor | null {
-  const element = anchorElementAt(clientX, clientY);
-  if (!element) return null;
+  let element = anchorElementAt(clientX, clientY);
 
-  const selector = buildSelector(element);
-  if (!selector) return null;
-
-  // The selector must actually resolve back to this element, or it's
-  // worthless as an anchor.
-  try {
-    if (document.querySelector(selector) !== element) return null;
-  } catch {
-    return null;
+  // A selector must resolve back to its element to be a usable anchor.
+  // Messy DOMs (duplicated subtrees, unstable ids) can fail validation
+  // on the exact hit — walk up a few parents until one validates.
+  for (let attempt = 0; element && attempt < 4; attempt += 1) {
+    const selector = buildSelector(element);
+    if (selector) {
+      let resolved: Element | null = null;
+      try {
+        resolved = document.querySelector(selector);
+      } catch {
+        resolved = null;
+      }
+      if (resolved === element) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width >= 1 && rect.height >= 1) {
+          return {
+            selector,
+            elXPercent: Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100)),
+            elYPercent: Math.min(100, Math.max(0, ((clientY - rect.top) / rect.height) * 100)),
+          };
+        }
+      }
+    }
+    element = element.parentElement;
   }
 
-  const rect = element.getBoundingClientRect();
-  if (rect.width < 1 || rect.height < 1) return null;
-
-  return {
-    selector,
-    elXPercent: Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100)),
-    elYPercent: Math.min(100, Math.max(0, ((clientY - rect.top) / rect.height) * 100)),
-  };
+  return null;
 }
 
 /** Resolve an anchor back to absolute PAGE coordinates, or null if the

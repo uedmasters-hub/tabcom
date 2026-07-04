@@ -3,10 +3,7 @@ import { browser } from "wxt/browser";
 import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
-import {
-  anchorForPoint,
-  resolveAnchorToPagePoint,
-} from "../../src/lib/element-anchor";
+import { anchorForPoint } from "../../src/lib/element-anchor";
 import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
 
 /**
@@ -86,6 +83,7 @@ function ensureShadowRoot(): ShadowRoot {
     :host { all: initial; }
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     .layer { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; z-index: 2147483000; }
+    .fixed-layer { position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; }
     .pin { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; }
     .pin-dot { width: 28px; height: 28px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
       background: #2563EB; border: 2px solid white; box-shadow: 0 2px 6px rgba(0,0,0,.25); }
@@ -117,12 +115,12 @@ function ensureShadowRoot(): ShadowRoot {
       50% { transform: rotate(-45deg) scale(1.45); } }
     .pin.pulsing .pin-dot { animation: tabcom-pulse .7s ease 3; }
 
-    .flash-box { position: absolute; pointer-events: none; z-index: 2147483001;
+    .flash-box { position: fixed; pointer-events: none; z-index: 2147483001;
       border: 2.5px solid #2563EB; border-radius: 6px; background: rgba(37,99,235,.14);
       transition: opacity .5s ease; }
 
     .peer-cursor { position: absolute; pointer-events: none; z-index: 2147483001;
-      transition: left .09s linear, top .09s linear; }
+      transition: left .09s linear, top .09s linear; will-change: left, top; }
     .peer-cursor svg { display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.3)); }
     .peer-cursor .plabel { margin: 2px 0 0 12px; padding: 2px 7px; border-radius: 999px;
       color: white; font-size: 10px; font-weight: 700; white-space: nowrap; width: fit-content; }
@@ -134,11 +132,24 @@ function ensureShadowRoot(): ShadowRoot {
   layer.id = "layer";
   shadowRoot.append(layer);
 
+  // Viewport-locked layer for pins/cursors: many sites (Flipkart, most
+  // SPAs) scroll an INNER container, not the document — document-space
+  // coordinates never move there and overlays look glued to the screen.
+  // A fixed layer + live element rects works on every scroll model.
+  const fixedLayer = document.createElement("div");
+  fixedLayer.className = "fixed-layer";
+  fixedLayer.id = "fixed-layer";
+  shadowRoot.append(fixedLayer);
+
   return shadowRoot;
 }
 
 function layerEl(): HTMLDivElement {
   return ensureShadowRoot().getElementById("layer") as HTMLDivElement;
+}
+
+function fixedLayerEl(): HTMLDivElement {
+  return ensureShadowRoot().getElementById("fixed-layer") as HTMLDivElement;
 }
 
 function documentHeight(): number {
@@ -151,7 +162,30 @@ function clearChildren(el: Element) {
 
 // ---- Read mode: render existing pins + highlights --------------------
 
-async function renderExisting() {
+let renderInFlight = false;
+let renderQueued = false;
+
+async function renderExisting(): Promise<void> {
+  // Async render with await-points: two overlapping calls interleave as
+  // clear/clear/append/append and duplicate every marker. Serialize —
+  // one render at a time, with at most one queued rerun.
+  if (renderInFlight) {
+    renderQueued = true;
+    return;
+  }
+  renderInFlight = true;
+  try {
+    await renderExistingInner();
+  } finally {
+    renderInFlight = false;
+    if (renderQueued) {
+      renderQueued = false;
+      void renderExisting();
+    }
+  }
+}
+
+async function renderExistingInner() {
   const [profile, communities] = await Promise.all([
     readStoredProfile(),
     readStoredCommunities(),
@@ -171,6 +205,12 @@ async function renderExisting() {
   const layer = layerEl();
   clearChildren(layer);
   layer.style.height = `${documentHeight()}px`;
+
+  // Pins/popovers live in the fixed layer — clear stale ones on
+  // re-render, but never touch live peer cursors.
+  fixedLayerEl()
+    .querySelectorAll(".pin, .popover")
+    .forEach((el) => el.remove());
 
   removeHighlightStyle();
   const ranges: Range[] = [];
@@ -210,7 +250,7 @@ async function renderExisting() {
         showPinPopover(marker, pin, community.id, item.id);
       });
 
-      layer.append(marker);
+      fixedLayerEl().append(marker);
     }
 
     for (const highlight of item.highlights) {
@@ -263,8 +303,8 @@ function showPinPopover(
   const rect = anchorEl.getBoundingClientRect();
   const popover = document.createElement("div");
   popover.className = "popover";
-  popover.style.left = `${rect.left + window.scrollX}px`;
-  popover.style.top = `${rect.bottom + window.scrollY + 6}px`;
+  popover.style.left = `${Math.min(rect.left, window.innerWidth - 236)}px`;
+  popover.style.top = `${rect.bottom + 6}px`;
   popover.innerHTML = `
     <div class="author">@${pin.author}</div>
     <div>${pin.text.replace(/</g, "&lt;")}</div>
@@ -276,7 +316,7 @@ function showPinPopover(
   });
 
   document.addEventListener("click", () => popover.remove(), { once: true });
-  layerEl().append(popover);
+  fixedLayerEl().append(popover);
 }
 
 // ---- Write path: relay to the background service worker ---------------
@@ -520,35 +560,77 @@ interface PinLike {
 const renderedPins = new Map<string, { marker: HTMLElement; pin: PinLike }>();
 let repositionObserver: ResizeObserver | null = null;
 
-function positionPinMarker(marker: HTMLElement, pin: PinLike) {
-  if (pin.anchorSelector && pin.elXPercent != null && pin.elYPercent != null) {
-    const point = resolveAnchorToPagePoint({
-      selector: pin.anchorSelector,
-      elXPercent: pin.elXPercent,
-      elYPercent: pin.elYPercent,
-    });
-    if (point) {
-      marker.style.left = `${point.pageX}px`;
-      marker.style.top = `${point.pageY}px`;
-      return;
-    }
+/** Viewport position from an element anchor's LIVE on-screen rect —
+ *  correct under document scrolling AND inner-container scrolling. */
+function anchorViewportPoint(pin: {
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}): { x: number; y: number } | null {
+  if (!pin.anchorSelector || pin.elXPercent == null || pin.elYPercent == null) {
+    return null;
   }
-  // Fallback: page-percent (converted to px so both paths use one unit)
-  marker.style.left = `${(pin.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1)}px`;
-  marker.style.top = `${(pin.yPercent / 100) * documentHeight()}px`;
+  let element: Element | null = null;
+  try {
+    element = document.querySelector(pin.anchorSelector);
+  } catch {
+    return null;
+  }
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return null;
+  return {
+    x: rect.left + (rect.width * pin.elXPercent) / 100,
+    y: rect.top + (rect.height * pin.elYPercent) / 100,
+  };
+}
+
+function positionPinMarker(marker: HTMLElement, pin: PinLike) {
+  const point = anchorViewportPoint(pin);
+  if (point) {
+    marker.style.left = `${point.x}px`;
+    marker.style.top = `${point.y}px`;
+    marker.style.display = "";
+    return;
+  }
+  // Legacy fallback (no element anchor): document-percent minus scroll.
+  // Correct on document-scrolling pages; best-effort elsewhere.
+  marker.style.left = `${(pin.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1) - window.scrollX}px`;
+  marker.style.top = `${(pin.yPercent / 100) * documentHeight() - window.scrollY}px`;
 }
 
 function repositionAllPins() {
   for (const { marker, pin } of renderedPins.values()) {
     positionPinMarker(marker, pin);
   }
+  repositionAllCursors();
+}
+
+let repositionScheduled = false;
+function scheduleReposition() {
+  if (repositionScheduled) return;
+  repositionScheduled = true;
+  requestAnimationFrame(() => {
+    repositionScheduled = false;
+    repositionAllPins();
+  });
 }
 
 function ensureRepositionObserver() {
-  if (repositionObserver || typeof ResizeObserver === "undefined") return;
-  repositionObserver = new ResizeObserver(() => repositionAllPins());
-  repositionObserver.observe(document.body);
-  window.addEventListener("resize", repositionAllPins);
+  if (repositionObserver) return;
+  if (typeof ResizeObserver !== "undefined") {
+    repositionObserver = new ResizeObserver(scheduleReposition);
+    repositionObserver.observe(document.body);
+  } else {
+    repositionObserver = { disconnect() {} } as ResizeObserver;
+  }
+  // capture:true sees scrolls of INNER containers, not just the window —
+  // this is what keeps overlays tracking on Flipkart-style pages.
+  window.addEventListener("scroll", scheduleReposition, {
+    capture: true,
+    passive: true,
+  });
+  window.addEventListener("resize", scheduleReposition);
 }
 
 // ---- Click-to-anchor navigation ----------------------------------------
@@ -556,9 +638,31 @@ function ensureRepositionObserver() {
 const highlightRanges = new Map<string, Range>();
 
 function pulsePin(pinId: string) {
-  const marker = layerEl().querySelector(`[data-pin-id="${pinId}"]`) as HTMLElement | null;
+  const entry = [...renderedPins.entries()].find(([id]) => id === pinId)?.[1];
+  const marker = fixedLayerEl().querySelector(
+    `[data-pin-id="${pinId}"]`
+  ) as HTMLElement | null;
   if (!marker) return false;
-  marker.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  // Scroll the anchored ELEMENT into view (works with inner scrollers);
+  // fall back to document scroll from the legacy percent.
+  let element: Element | null = null;
+  if (entry?.pin.anchorSelector) {
+    try {
+      element = document.querySelector(entry.pin.anchorSelector);
+    } catch {
+      element = null;
+    }
+  }
+  if (element) {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  } else if (entry) {
+    window.scrollTo({
+      top: (entry.pin.yPercent / 100) * documentHeight() - window.innerHeight / 2,
+      behavior: "smooth",
+    });
+  }
+
   marker.classList.add("pulsing");
   setTimeout(() => marker.classList.remove("pulsing"), 2400);
   return true;
@@ -568,21 +672,26 @@ function flashHighlight(highlightId: string) {
   const range = highlightRanges.get(highlightId);
   if (!range) return false;
 
-  const rect = range.getBoundingClientRect();
-  window.scrollTo({
-    top: rect.top + window.scrollY - window.innerHeight / 2,
-    behavior: "smooth",
-  });
+  // Scroll the highlighted node into view (handles inner scrollers).
+  const node =
+    range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+  node?.scrollIntoView({ behavior: "smooth", block: "center" });
 
-  const box = document.createElement("div");
-  box.className = "flash-box";
-  box.style.left = `${rect.left + window.scrollX - 4}px`;
-  box.style.top = `${rect.top + window.scrollY - 4}px`;
-  box.style.width = `${rect.width + 8}px`;
-  box.style.height = `${rect.height + 8}px`;
-  layerEl().append(box);
-  setTimeout(() => (box.style.opacity = "0"), 2000);
-  setTimeout(() => box.remove(), 2600);
+  // Flash after the scroll settles, at the range's LIVE viewport rect.
+  setTimeout(() => {
+    const rect = range.getBoundingClientRect();
+    const box = document.createElement("div");
+    box.className = "flash-box";
+    box.style.left = `${rect.left - 4}px`;
+    box.style.top = `${rect.top - 4}px`;
+    box.style.width = `${rect.width + 8}px`;
+    box.style.height = `${rect.height + 8}px`;
+    fixedLayerEl().append(box);
+    setTimeout(() => (box.style.opacity = "0"), 1800);
+    setTimeout(() => box.remove(), 2400);
+  }, 500);
   return true;
 }
 
@@ -618,10 +727,39 @@ async function consumePendingNavigation(canonicalKey: string) {
 
 // ---- Live peer cursors (only on pages that are on a board) --------------
 
+interface PeerPayload {
+  xPercent: number;
+  yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}
+
 const peerCursors = new Map<
   string,
-  { el: HTMLDivElement; expireTimer: ReturnType<typeof setTimeout> }
+  {
+    el: HTMLDivElement;
+    expireTimer: ReturnType<typeof setTimeout>;
+    last: PeerPayload;
+  }
 >();
+
+function positionCursor(el: HTMLElement, payload: PeerPayload) {
+  const point = anchorViewportPoint(payload);
+  if (point) {
+    el.style.left = `${point.x}px`;
+    el.style.top = `${point.y}px`;
+    return;
+  }
+  el.style.left = `${(payload.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1) - window.scrollX}px`;
+  el.style.top = `${(payload.yPercent / 100) * documentHeight() - window.scrollY}px`;
+}
+
+function repositionAllCursors() {
+  for (const entry of peerCursors.values()) {
+    positionCursor(entry.el, entry.last);
+  }
+}
 let cursorScope: { communityId: string; canonicalKey: string } | null = null;
 let lastCursorSent = 0;
 
@@ -708,30 +846,17 @@ function upsertPeerCursor(peer: {
       </svg>
       <div class="plabel" style="background:${peer.from.color}">${peer.from.name.replace(/</g, "&lt;")}</div>
     `;
-    layerEl().append(el);
-    entry = { el, expireTimer: setTimeout(() => {}, 0) };
+    fixedLayerEl().append(el);
+    entry = {
+      el,
+      expireTimer: setTimeout(() => {}, 0),
+      last: peer,
+    };
     peerCursors.set(peer.from.username, entry);
   }
 
-  // Prefer the element anchor (same CONTENT on both screens); fall
-  // back to page-percent only when the element can't be found here.
-  let placed = false;
-  if (peer.anchorSelector && peer.elXPercent != null && peer.elYPercent != null) {
-    const point = resolveAnchorToPagePoint({
-      selector: peer.anchorSelector,
-      elXPercent: peer.elXPercent,
-      elYPercent: peer.elYPercent,
-    });
-    if (point) {
-      entry.el.style.left = `${point.pageX}px`;
-      entry.el.style.top = `${point.pageY}px`;
-      placed = true;
-    }
-  }
-  if (!placed) {
-    entry.el.style.left = `${(peer.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1)}px`;
-    entry.el.style.top = `${(peer.yPercent / 100) * documentHeight()}px`;
-  }
+  entry.last = peer;
+  positionCursor(entry.el, peer);
 
   clearTimeout(entry.expireTimer);
   entry.expireTimer = setTimeout(() => removePeerCursor(peer.from.username), 4000);
