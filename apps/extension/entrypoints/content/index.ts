@@ -4,7 +4,12 @@ import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
 import { anchorForPoint } from "../../src/lib/element-anchor";
-import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
+import {
+  extensionAlive,
+  initPagePill,
+  refreshPagePill,
+  showRefreshChip,
+} from "../../src/content/page-pill";
 import {
   getCursorsEnabled,
   onCursorsEnabledChange,
@@ -332,6 +337,12 @@ function showPinPopover(
 // worker is an extension page, never subject to any website's CSP, and
 // serves every tab from one connection — so writes are relayed there.
 
+function orphanCheck(): boolean {
+  if (extensionAlive()) return false;
+  showRefreshChip();
+  return true;
+}
+
 async function boardWrite(
   action:
     | "pin_add"
@@ -341,6 +352,7 @@ async function boardWrite(
     | "item_add",
   payload: Record<string, unknown>
 ): Promise<boolean> {
+  if (orphanCheck()) return false;
   try {
     const response = await browser.runtime.sendMessage({
       type: "tabcom:board-write",
@@ -348,7 +360,8 @@ async function boardWrite(
       payload,
     });
     return !!response?.ok;
-  } catch {
+  } catch (error) {
+    if (String(error).includes("context invalidated")) showRefreshChip();
     return false;
   }
 }
@@ -819,6 +832,11 @@ function handleCursorMove(event: MouseEvent) {
   if (now - lastCursorSent < 90) return; // ~11 updates/sec max
   lastCursorSent = now;
 
+  if (orphanCheck()) {
+    document.removeEventListener("mousemove", handleCursorMove);
+    return;
+  }
+
   // Content-anchored: the receiver positions this cursor on the SAME
   // element in THEIR page, not at the same raw coordinates — so "I'm
   // looking at section 4" reads as section 4 on every screen, no
@@ -979,7 +997,12 @@ export default defineContentScript({
 
     // Re-render on SPA navigations (Airbnb, Amazon are client-routed).
     let lastHref = window.location.href;
-    setInterval(() => {
+    const spaPoll = setInterval(() => {
+      if (!extensionAlive()) {
+        clearInterval(spaPoll);
+        showRefreshChip();
+        return;
+      }
       if (window.location.href !== lastHref) {
         lastHref = window.location.href;
         void renderExisting();

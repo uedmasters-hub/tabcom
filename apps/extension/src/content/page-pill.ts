@@ -25,7 +25,7 @@ import {
  *    no community -> explains what to do; not onboarded -> stays hidden.
  */
 
-export const PILL_VERSION = "M20";
+export const PILL_VERSION = "M21";
 
 export interface PillActions {
   enterPinMode: (communityId: string) => void;
@@ -46,6 +46,57 @@ const ICONS = {
   highlight: '<svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/><path d="M4 21h9" /></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>',
 };
+
+/** After the extension reloads, content scripts already injected into
+ *  open tabs become orphans — the pill still renders but every
+ *  browser.* call throws "Extension context invalidated". Detect it and
+ *  show a clear call to action instead of dying silently. */
+export function extensionAlive(): boolean {
+  try {
+    return !!browser.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
+let invalidated = false;
+
+export function showRefreshChip(): void {
+  if (invalidated) return;
+  invalidated = true;
+
+  const root = ensurePillRoot();
+  clearUI();
+
+  const chip = document.createElement("button");
+  chip.className = "refresh-chip";
+  chip.innerHTML = `↻&nbsp; Tabcom was updated — click to refresh this page`;
+  chip.addEventListener("click", () => window.location.reload());
+  root.append(chip);
+}
+
+/** Wrap any handler that talks to the extension. */
+function guarded<T extends unknown[]>(
+  fn: (...args: T) => void | Promise<void>
+): (...args: T) => void {
+  return (...args: T) => {
+    if (invalidated) return;
+    if (!extensionAlive()) {
+      showRefreshChip();
+      return;
+    }
+    try {
+      const result = fn(...args);
+      if (result instanceof Promise) {
+        result.catch((error) => {
+          if (String(error).includes("context invalidated")) showRefreshChip();
+        });
+      }
+    } catch (error) {
+      if (String(error).includes("context invalidated")) showRefreshChip();
+    }
+  };
+}
 
 let host: HTMLDivElement | null = null;
 let shadow: ShadowRoot | null = null;
@@ -239,6 +290,13 @@ const STYLES = `
   .menu .danger:hover { background: #FEF2F2; }
   .menu .empty { padding: 8px; font-size: 12px; color: #64748B; line-height: 1.5; }
 
+  .refresh-chip { position: fixed; bottom: 20px; right: 20px; z-index: 2147483600;
+    display: flex; align-items: center; gap: 4px; border: none; cursor: pointer;
+    background: #F59E0B; color: #451A03; font-size: 12px; font-weight: 700;
+    padding: 9px 14px; border-radius: 999px; box-shadow: 0 10px 30px rgba(120,53,15,.35);
+    font-family: inherit; }
+  .refresh-chip:hover { background: #FBbf24; }
+
   .toast { position: fixed; bottom: 72px; right: 20px; z-index: 2147483600;
     background: #0F172A; color: #fff; font-size: 12px; font-weight: 600;
     padding: 8px 14px; border-radius: 999px; box-shadow: 0 10px 30px rgba(2,6,23,.35); }
@@ -258,7 +316,9 @@ function ensurePillRoot(): ShadowRoot {
 }
 
 function clearUI() {
-  shadow?.querySelectorAll(".fab, .menu, .toast").forEach((el) => el.remove());
+  shadow
+    ?.querySelectorAll(".fab, .menu, .toast, .refresh-chip")
+    .forEach((el) => el.remove());
 }
 
 function toast(message: string) {
@@ -274,6 +334,12 @@ function toast(message: string) {
 // ---- rendering ----------------------------------------------------------
 
 async function render() {
+  if (invalidated) return;
+  if (!extensionAlive()) {
+    showRefreshChip();
+    return;
+  }
+
   const root = ensurePillRoot();
   clearUI();
 
@@ -313,10 +379,13 @@ async function render() {
     button.setAttribute("aria-label", label);
     if (dataAction) button.dataset.action = dataAction;
     button.innerHTML = ICONS[icon];
-    button.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onClick();
-    });
+    button.addEventListener(
+      "click",
+      guarded((e: MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+      })
+    );
     return button;
   };
 
@@ -420,22 +489,25 @@ function renderChatMenu(entries: ChatEntry[]) {
       <span class="grow">${entry.label.replace(/</g, "&lt;")}</span>
       ${entry.unread > 0 ? `<span class="count">${entry.unread > 99 ? "99+" : entry.unread}</span>` : ""}
     `;
-    row.addEventListener("click", async () => {
-      chatMenuOpen = false;
-      root.querySelectorAll(".menu").forEach((el) => el.remove());
+    row.addEventListener(
+      "click",
+      guarded(async () => {
+        chatMenuOpen = false;
+        root.querySelectorAll(".menu").forEach((el) => el.remove());
 
-      // Panel also honors this if opened later.
-      await browser.storage.local.set({
-        "tabcom:open-target": JSON.stringify({ kind: entry.kind, id: entry.id }),
-      });
+        // Panel also honors this if opened later.
+        await browser.storage.local.set({
+          "tabcom:open-target": JSON.stringify({ kind: entry.kind, id: entry.id }),
+        });
 
-      // Open the floating Chat PiP directly on this conversation —
-      // full chat without the panel.
-      void browser.runtime.sendMessage({
-        type: "tabcom:open-float",
-        conversationId: entry.conversationId,
-      });
-    });
+        // Open the floating Chat PiP directly on this conversation —
+        // full chat without the panel.
+        await browser.runtime.sendMessage({
+          type: "tabcom:open-float",
+          conversationId: entry.conversationId,
+        });
+      })
+    );
     menu.append(row);
   }
 
