@@ -32,3 +32,29 @@ export function onPillEnabledChange(
     callback(changes[KEY].newValue !== false);
   });
 }
+
+// ---- Live cursors visibility (managed from the pill's menu) -------------
+
+const CURSORS_KEY = "tabcom:cursors-enabled";
+
+export async function getCursorsEnabled(): Promise<boolean> {
+  try {
+    const result = await browser.storage.local.get(CURSORS_KEY);
+    return result[CURSORS_KEY] !== false;
+  } catch {
+    return true;
+  }
+}
+
+export async function setCursorsEnabled(enabled: boolean): Promise<void> {
+  await browser.storage.local.set({ [CURSORS_KEY]: enabled });
+}
+
+export function onCursorsEnabledChange(
+  callback: (enabled: boolean) => void
+): void {
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !(CURSORS_KEY in changes)) return;
+    callback(changes[CURSORS_KEY].newValue !== false);
+  });
+}

@@ -1,4 +1,5 @@
 import { browser } from "wxt/browser";
+import { getPillEnabled } from "../../src/lib/pill-settings";
 import {
   addBoardHighlight,
   addBoardItem,
@@ -40,6 +41,28 @@ const IDLE_DISCONNECT_MS = 5000;
 
 let writeConnected = false;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Presence follows the pill: while it's enabled, this connection is
+ *  held open (socket.io's 25s protocol pings keep the MV3 service
+ *  worker alive under Chrome's WebSocket-activity rule), so the person
+ *  reads as Online without the panel. Pill off -> disconnect -> Offline
+ *  (unless the panel is open with its own socket). */
+let persistentPresence = false;
+
+async function syncPresenceMode(): Promise<void> {
+  const enabled = await getPillEnabled();
+  const profile = await readStoredProfile();
+  persistentPresence = enabled && !!profile;
+
+  console.log("[tabcom:background] presence mode:", persistentPresence ? "persistent (pill on)" : "on-demand");
+
+  if (persistentPresence) {
+    await ensureWriteConnection();
+  } else if (cursorTabs.size === 0) {
+    disconnectRealtime();
+    writeConnected = false;
+  }
+}
 
 /** Tabs currently sharing live cursors: tabId -> scope. While any tab
  *  is sharing, the connection is kept alive instead of idle-closing. */
@@ -99,8 +122,8 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
 function scheduleIdleDisconnect() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (cursorTabs.size > 0) {
-      scheduleIdleDisconnect(); // someone is live — check again later
+    if (persistentPresence || cursorTabs.size > 0) {
+      scheduleIdleDisconnect(); // presence held or someone is live
       return;
     }
     disconnectRealtime();
@@ -312,5 +335,20 @@ export default defineBackground(() => {
     await browser.sidePanel.setPanelBehavior({
       openPanelOnActionClick: true,
     });
+    void syncPresenceMode();
   });
+
+  browser.runtime.onStartup.addListener(() => void syncPresenceMode());
+
+  // React live: pill toggled anywhere, or profile created/changed.
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (
+      area === "local" &&
+      ("tabcom:pill-enabled" in changes || "tabcom:profile" in changes)
+    ) {
+      void syncPresenceMode();
+    }
+  });
+
+  void syncPresenceMode();
 });

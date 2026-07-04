@@ -263,9 +263,9 @@ export default function SettingsView() {
         <span className="min-w-0 flex-1">
           <span className="block font-semibold">Tabcom pill on pages</span>
           <span className="mt-0.5 block text-sm text-slate-500">
-            Floating button on every page for quick chat, pin, highlight,
-            and add-to-board. Hiding it from the pill itself lands back
-            here. (Build M14)
+            Quick actions on every page — and your presence: while the
+            pill is on you appear Online even with this panel closed;
+            turn it off to go offline. (Build M18)
           </span>
         </span>
         <span

@@ -5,6 +5,10 @@ import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
 import { anchorForPoint } from "../../src/lib/element-anchor";
 import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
+import {
+  getCursorsEnabled,
+  onCursorsEnabledChange,
+} from "../../src/lib/pill-settings";
 
 /**
  * On-page annotation overlay.
@@ -787,6 +791,12 @@ async function syncCursorScope(
   cursorScope = next;
   if (!next) return;
 
+  // Respect the pill-menu toggle: cursors can be turned off entirely.
+  if (!(await getCursorsEnabled())) {
+    cursorScope = null;
+    return;
+  }
+
   const response = await browser.runtime
     .sendMessage({
       type: "tabcom:cursor-start",
@@ -937,6 +947,11 @@ document.addEventListener("visibilitychange", () => {
 export default defineContentScript({
   matches: ["<all_urls>"],
   main() {
+    onCursorsEnabledChange((enabled) => {
+      if (!enabled) void syncCursorScope(null);
+      else void renderExisting(); // re-arm scope detection
+    });
+
     const boot = () => {
       void renderExisting();
       initPagePill({

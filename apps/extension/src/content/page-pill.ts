@@ -1,8 +1,10 @@
 import { browser } from "wxt/browser";
 
 import {
+  getCursorsEnabled,
   getPillEnabled,
   onPillEnabledChange,
+  setCursorsEnabled,
   setPillEnabled,
 } from "../lib/pill-settings";
 
@@ -23,7 +25,7 @@ import {
  *    no community -> explains what to do; not onboarded -> stays hidden.
  */
 
-export const PILL_VERSION = "M14";
+export const PILL_VERSION = "M18";
 
 export interface PillActions {
   enterPinMode: (communityId: string) => void;
@@ -36,6 +38,14 @@ interface PillCommunity {
   id: string;
   name: string;
 }
+
+const ICONS = {
+  chat: '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg>',
+  add: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 4H6a2 2 0 0 0-2 2v10"/><path d="M14.5 12h-0.01M14.5 14.5v-5M12 14.5h5" stroke-width="0"/><path d="M14.5 11v6M11.5 14h6"/></svg>',
+  pin: '<svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="5.5"/><path d="M12 14.5V21"/></svg>',
+  highlight: '<svg viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/><path d="M4 21h9" /></svg>',
+  more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>',
+};
 
 let host: HTMLDivElement | null = null;
 let shadow: ShadowRoot | null = null;
@@ -86,40 +96,48 @@ const STYLES = `
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 
   .fab { position: fixed; bottom: 20px; right: 20px; z-index: 2147483600;
-    display: flex; align-items: center; gap: 8px;
-    background: #0F172A; color: #fff; border: none; cursor: pointer;
-    border-radius: 999px; padding: 9px 16px 9px 10px;
-    font-size: 13px; font-weight: 700; letter-spacing: .01em;
-    box-shadow: 0 10px 30px rgba(2,6,23,.35);
-    transition: transform .15s ease, box-shadow .15s ease; }
-  .fab:hover { transform: translateY(-1px); box-shadow: 0 14px 36px rgba(2,6,23,.4); }
-  .fab .dot { width: 22px; height: 22px; border-radius: 50%;
-    background: linear-gradient(135deg, #2563EB, #7C3AED);
+    display: flex; align-items: center; gap: 2px;
+    background: #111827; border-radius: 999px; padding: 6px 8px;
+    box-shadow: 0 10px 34px rgba(2,6,23,.4); }
+  .fab .status { width: 7px; height: 7px; border-radius: 50%; background: #10B981;
+    margin: 0 6px 0 6px; box-shadow: 0 0 0 3px rgba(16,185,129,.18); }
+  .fab .ibtn { width: 34px; height: 34px; border-radius: 999px; border: none;
+    background: transparent; color: #E2E8F0; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 800; }
+    transition: background .12s ease, color .12s ease, transform .1s ease; }
+  .fab .ibtn:hover { background: rgba(255,255,255,.12); color: #fff; transform: translateY(-1px); }
+  .fab .ibtn:active { transform: translateY(0); }
+  .fab .ibtn svg { width: 17px; height: 17px; stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .fab .divider { width: 1px; height: 20px; background: rgba(255,255,255,.16); margin: 0 5px; }
 
-  .menu { position: fixed; bottom: 66px; right: 20px; z-index: 2147483600;
-    width: 248px; background: #fff; color: #0F172A;
-    border-radius: 16px; box-shadow: 0 18px 50px rgba(2,6,23,.28);
-    padding: 10px; }
-  .menu .head { display: flex; align-items: center; justify-content: space-between;
-    padding: 2px 4px 8px; }
-  .menu .title { font-size: 11px; font-weight: 800; text-transform: uppercase;
-    letter-spacing: .05em; color: #64748B; }
+  .menu { position: fixed; bottom: 72px; right: 20px; z-index: 2147483600;
+    width: 244px; background: #fff; color: #0F172A;
+    border-radius: 14px; box-shadow: 0 18px 50px rgba(2,6,23,.28); padding: 8px; }
+  .menu .title { font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: .05em; color: #94A3B8; padding: 4px 8px 6px; }
   .menu select { width: 100%; border: 1px solid #E2E8F0; border-radius: 10px;
-    padding: 8px; font-size: 12.5px; background: #fff; color: #0F172A;
-    margin-bottom: 8px; }
-  .menu .action { display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 7px 8px; font-size: 12.5px; background: #fff; color: #0F172A;
+    margin: 0 0 6px; }
+  .menu .row { display: flex; align-items: center; gap: 9px; width: 100%;
     border: none; background: none; text-align: left; cursor: pointer;
-    padding: 9px 8px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    padding: 8px; border-radius: 10px; font-size: 12.5px; font-weight: 600;
     color: #0F172A; }
-  .menu .action:hover { background: #F1F5F9; }
-  .menu .action .ic { width: 20px; text-align: center; }
-  .menu .divider { height: 1px; background: #F1F5F9; margin: 6px 2px; }
-  .menu .hide { color: #64748B; font-weight: 500; font-size: 12px; }
-  .menu .hide:hover { color: #DC2626; background: #FEF2F2; }
-  .menu .empty { padding: 10px 8px; font-size: 12.5px; color: #64748B; line-height: 1.5; }
-  .toast { position: fixed; bottom: 66px; right: 20px; z-index: 2147483600;
+  .menu .row:hover { background: #F1F5F9; }
+  .menu .row .grow { flex: 1; }
+  .menu .knob { width: 32px; height: 18px; border-radius: 999px; position: relative;
+    background: #CBD5E1; transition: background .15s ease; flex-shrink: 0; }
+  .menu .knob.on { background: #0F172A; }
+  .menu .knob::after { content: ""; position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%; background: #fff;
+    transition: left .15s ease; }
+  .menu .knob.on::after { left: 16px; }
+  .menu .divider { height: 1px; background: #F1F5F9; margin: 5px 4px; }
+  .menu .danger { color: #DC2626; }
+  .menu .danger:hover { background: #FEF2F2; }
+  .menu .empty { padding: 8px; font-size: 12px; color: #64748B; line-height: 1.5; }
+
+  .toast { position: fixed; bottom: 72px; right: 20px; z-index: 2147483600;
     background: #0F172A; color: #fff; font-size: 12px; font-weight: 600;
     padding: 8px 14px; border-radius: 999px; box-shadow: 0 10px 30px rgba(2,6,23,.35); }
 `;
@@ -173,112 +191,164 @@ async function render() {
     selectedCommunityId = communities[0].id;
   }
 
-  const fab = document.createElement("button");
-  fab.className = "fab";
-  fab.title = `Tabcom pill ${PILL_VERSION}`;
-  fab.innerHTML = `<span class="dot">T</span><span>Tabcom</span>`;
-  fab.addEventListener("click", () => {
-    expanded = !expanded;
-    void render();
-  });
-  root.append(fab);
+  const bar = document.createElement("div");
+  bar.className = "fab";
+  bar.title = `Tabcom pill ${PILL_VERSION} — you're visible as Online`;
 
+  const status = document.createElement("span");
+  status.className = "status";
+  bar.append(status);
+
+  const iconButton = (
+    icon: keyof typeof ICONS,
+    label: string,
+    onClick: () => void,
+    dataAction?: string
+  ) => {
+    const button = document.createElement("button");
+    button.className = "ibtn";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    if (dataAction) button.dataset.action = dataAction;
+    button.innerHTML = ICONS[icon];
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClick();
+    });
+    return button;
+  };
+
+  const requireCommunity = (run: (communityId: string) => void) => () => {
+    if (!selectedCommunityId) {
+      toast("Create a community first — open the panel");
+      return;
+    }
+    run(selectedCommunityId);
+  };
+
+  bar.append(
+    iconButton("chat", "Open community chat", () => {
+      actionsRef?.openPanel();
+    })
+  );
+
+  const divider = document.createElement("span");
+  divider.className = "divider";
+  bar.append(divider);
+
+  bar.append(
+    iconButton(
+      "add",
+      "Add this page to board",
+      requireCommunity(async (communityId) => {
+        const ok = await actionsRef?.addCurrentPage(communityId);
+        toast(ok ? "Added to board" : "Couldn't add — is the server running?");
+      })
+    ),
+    iconButton(
+      "pin",
+      "Pin a spot on this page",
+      requireCommunity((communityId) => actionsRef?.enterPinMode(communityId))
+    ),
+    iconButton(
+      "highlight",
+      "Highlight text on this page",
+      requireCommunity((communityId) =>
+        actionsRef?.enterHighlightMode(communityId)
+      )
+    ),
+    iconButton(
+      "more",
+      "More options",
+      () => {
+        expanded = !expanded;
+        void renderMenu(bar, communities);
+      },
+      "menu"
+    )
+  );
+
+  root.append(bar);
+  if (expanded) void renderMenu(bar, communities);
+}
+
+async function renderMenu(bar: HTMLElement, communities: PillCommunity[]) {
+  const root = ensurePillRoot();
+  root.querySelectorAll(".menu").forEach((el) => el.remove());
   if (!expanded) return;
 
   const menu = document.createElement("div");
   menu.className = "menu";
 
-  const head = document.createElement("div");
-  head.className = "head";
-  head.innerHTML = `<span class="title">Tabcom</span>`;
-  menu.append(head);
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = "Tabcom";
+  menu.append(title);
 
   if (communities.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent =
-      "You're not in a community yet. Open the panel and create one to pin, highlight, and share pages with your people.";
+      "You're not in a community yet — open the panel and create one.";
     menu.append(empty);
-    menu.append(
-      actionButton("💬", "Open Tabcom panel", () => {
-        actionsRef?.openPanel();
-        collapse();
-      })
-    );
-  } else {
-    if (communities.length > 1) {
-      const select = document.createElement("select");
-      for (const community of communities) {
-        const option = document.createElement("option");
-        option.value = community.id;
-        option.textContent = community.name;
-        option.selected = community.id === selectedCommunityId;
-        select.append(option);
-      }
-      select.addEventListener("change", () => {
-        selectedCommunityId = select.value;
-      });
-      menu.append(select);
+  } else if (communities.length > 1) {
+    const select = document.createElement("select");
+    for (const community of communities) {
+      const option = document.createElement("option");
+      option.value = community.id;
+      option.textContent = community.name;
+      option.selected = community.id === selectedCommunityId;
+      select.append(option);
     }
-
-    menu.append(
-      actionButton("💬", "Open chat", () => {
-        actionsRef?.openPanel();
-        collapse();
-      }),
-      actionButton("➕", "Add this page to board", async () => {
-        if (!selectedCommunityId) return;
-        collapse();
-        const ok = await actionsRef?.addCurrentPage(selectedCommunityId);
-        toast(ok ? "Added to board" : "Couldn't add — is the server running?");
-      }),
-      actionButton("📍", "Pin a spot on this page", () => {
-        collapse();
-        if (selectedCommunityId) actionsRef?.enterPinMode(selectedCommunityId);
-      }),
-      actionButton("✎", "Highlight text on this page", () => {
-        collapse();
-        if (selectedCommunityId)
-          actionsRef?.enterHighlightMode(selectedCommunityId);
-      })
-    );
+    select.addEventListener("change", () => {
+      selectedCommunityId = select.value;
+    });
+    menu.append(select);
   }
+
+  // Live cursors toggle
+  const cursorsOn = await getCursorsEnabled();
+  const cursorsRow = document.createElement("button");
+  cursorsRow.className = "row";
+  cursorsRow.innerHTML = `<span class="grow">Live cursors</span><span class="knob ${cursorsOn ? "on" : ""}"></span>`;
+  cursorsRow.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const next = !(await getCursorsEnabled());
+    await setCursorsEnabled(next);
+    void renderMenu(bar, communities);
+  });
+  menu.append(cursorsRow);
+
+  const openRow = document.createElement("button");
+  openRow.className = "row";
+  openRow.innerHTML = `<span class="grow">Open Tabcom panel</span>`;
+  openRow.addEventListener("click", () => {
+    actionsRef?.openPanel();
+    expanded = false;
+    void renderMenu(bar, communities);
+  });
+  menu.append(openRow);
 
   const divider = document.createElement("div");
   divider.className = "divider";
   menu.append(divider);
 
-  menu.append(
-    actionButton(
-      "✕",
-      "Hide pill (re-enable in Settings)",
-      async () => {
-        await setPillEnabled(false);
-        clearUI();
-      },
-      "hide"
-    )
-  );
+  const hideRow = document.createElement("button");
+  hideRow.className = "row danger";
+  hideRow.innerHTML = `<span class="grow">Hide pill & go offline</span>`;
+  hideRow.title = "Re-enable from Settings";
+  hideRow.addEventListener("click", async () => {
+    await setPillEnabled(false);
+    clearUI();
+  });
+  menu.append(hideRow);
 
   root.append(menu);
 }
 
-function actionButton(
-  icon: string,
-  label: string,
-  onClick: () => void,
-  extraClass = ""
-): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.className = `action ${extraClass}`.trim();
-  button.innerHTML = `<span class="ic">${icon}</span><span>${label}</span>`;
-  button.addEventListener("click", onClick);
-  return button;
-}
-
 function collapse() {
   expanded = false;
-  void render();
+  ensurePillRoot().querySelectorAll(".menu").forEach((el) => el.remove());
 }
 
 // ---- public API ---------------------------------------------------------
