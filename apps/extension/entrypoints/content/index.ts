@@ -988,7 +988,13 @@ export default defineContentScript({
           return boardWrite("item_add", { communityId, ...anchor });
         },
         openPanel: () => {
-          void browser.runtime.sendMessage({ type: "tabcom:open-panel" });
+          browser.runtime
+            .sendMessage({ type: "tabcom:open-panel" })
+            .catch((error) => {
+              if (String(error).includes("context invalidated")) {
+                showRefreshChip();
+              }
+            });
         },
       });
     };

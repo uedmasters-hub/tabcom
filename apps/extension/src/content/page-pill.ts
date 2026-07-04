@@ -553,22 +553,28 @@ async function renderMenu(bar: HTMLElement, communities: PillCommunity[]) {
   const cursorsRow = document.createElement("button");
   cursorsRow.className = "row";
   cursorsRow.innerHTML = `<span class="grow">Live cursors</span><span class="knob ${cursorsOn ? "on" : ""}"></span>`;
-  cursorsRow.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const next = !(await getCursorsEnabled());
-    await setCursorsEnabled(next);
-    void renderMenu(bar, communities);
-  });
+  cursorsRow.addEventListener(
+    "click",
+    guarded(async (e: MouseEvent) => {
+      e.stopPropagation();
+      const next = !(await getCursorsEnabled());
+      await setCursorsEnabled(next);
+      void renderMenu(bar, communities);
+    })
+  );
   menu.append(cursorsRow);
 
   const openRow = document.createElement("button");
   openRow.className = "row";
   openRow.innerHTML = `<span class="grow">Open Tabcom panel</span>`;
-  openRow.addEventListener("click", () => {
-    actionsRef?.openPanel();
-    expanded = false;
-    void renderMenu(bar, communities);
-  });
+  openRow.addEventListener(
+    "click",
+    guarded(() => {
+      actionsRef?.openPanel();
+      expanded = false;
+      void renderMenu(bar, communities);
+    })
+  );
   menu.append(openRow);
 
   const divider = document.createElement("div");
@@ -579,10 +585,13 @@ async function renderMenu(bar: HTMLElement, communities: PillCommunity[]) {
   hideRow.className = "row danger";
   hideRow.innerHTML = `<span class="grow">Hide pill & go offline</span>`;
   hideRow.title = "Re-enable from Settings";
-  hideRow.addEventListener("click", async () => {
-    await setPillEnabled(false);
-    clearUI();
-  });
+  hideRow.addEventListener(
+    "click",
+    guarded(async () => {
+      await setPillEnabled(false);
+      clearUI();
+    })
+  );
   menu.append(hideRow);
 
   root.append(menu);

@@ -20,7 +20,11 @@ export async function getPillEnabled(): Promise<boolean> {
 }
 
 export async function setPillEnabled(enabled: boolean): Promise<void> {
-  await browser.storage.local.set({ [KEY]: enabled });
+  try {
+    await browser.storage.local.set({ [KEY]: enabled });
+  } catch {
+    // extension context gone — nothing to persist to
+  }
 }
 
 /** Live changes (e.g. toggled from Settings while a page is open). */
@@ -47,7 +51,11 @@ export async function getCursorsEnabled(): Promise<boolean> {
 }
 
 export async function setCursorsEnabled(enabled: boolean): Promise<void> {
-  await browser.storage.local.set({ [CURSORS_KEY]: enabled });
+  try {
+    await browser.storage.local.set({ [CURSORS_KEY]: enabled });
+  } catch {
+    // extension context gone — nothing to persist to
+  }
 }
 
 export function onCursorsEnabledChange(
