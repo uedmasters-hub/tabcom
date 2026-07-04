@@ -235,12 +235,13 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab?.id;
     const scope = tabId != null ? cursorTabs.get(tabId) : undefined;
     if (scope && writeConnected) {
-      sendCursorMove(
-        scope.communityId,
-        scope.canonicalKey,
-        message.xPercent,
-        message.yPercent
-      );
+      sendCursorMove(scope.communityId, scope.canonicalKey, {
+        xPercent: message.xPercent,
+        yPercent: message.yPercent,
+        anchorSelector: message.anchorSelector,
+        elXPercent: message.elXPercent,
+        elYPercent: message.elYPercent,
+      });
       scheduleIdleDisconnect();
     }
     return undefined; // fire-and-forget

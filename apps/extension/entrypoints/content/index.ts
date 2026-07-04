@@ -3,6 +3,10 @@ import { browser } from "wxt/browser";
 import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
+import {
+  anchorForPoint,
+  resolveAnchorToPagePoint,
+} from "../../src/lib/element-anchor";
 import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
 
 /**
@@ -171,6 +175,8 @@ async function renderExisting() {
   removeHighlightStyle();
   const ranges: Range[] = [];
   highlightRanges.clear();
+  renderedPins.clear();
+  ensureRepositionObserver();
   let boardScope: { communityId: string; canonicalKey: string } | null = null;
 
   for (const community of Object.values(communities)) {
@@ -195,8 +201,8 @@ async function renderExisting() {
       const marker = document.createElement("div");
       marker.className = "pin";
       marker.dataset.pinId = pin.id;
-      marker.style.left = `${pin.xPercent}%`;
-      marker.style.top = `${pin.yPercent}%`;
+      renderedPins.set(pin.id, { marker, pin });
+      positionPinMarker(marker, pin);
       marker.innerHTML = `<div class="pin-dot"><span>${pin.author.charAt(0).toUpperCase()}</span></div>`;
 
       marker.addEventListener("click", (event) => {
@@ -357,6 +363,10 @@ function handlePinClick(event: MouseEvent) {
   const xPercent = Math.min(100, (event.pageX / pageWidth) * 100) || 0;
   const yPercent = Math.min(100, (event.pageY / documentHeight()) * 100) || 0;
 
+  // Element anchor captured at click time — the pin sticks to this
+  // element even as lazy-loading reshapes everything around it.
+  const elementAnchor = anchorForPoint(event.clientX, event.clientY);
+
   showComposer(event.clientX, event.clientY, async (text) => {
     const anchor = readPageAnchor();
     const ok = await boardWrite("pin_add", {
@@ -365,8 +375,11 @@ function handlePinClick(event: MouseEvent) {
       text,
       xPercent,
       yPercent,
+      anchorSelector: elementAnchor?.selector,
+      elXPercent: elementAnchor?.elXPercent,
+      elYPercent: elementAnchor?.elYPercent,
     });
-    console.debug("[tabcom] pin_add result:", ok);
+    console.debug("[tabcom] pin_add result:", ok, "anchored:", !!elementAnchor);
     exitMode();
   });
 }
@@ -399,6 +412,22 @@ function showComposer(clientX: number, clientY: number, onSubmit: (text: string)
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") submit();
     if (e.key === "Escape") composer.remove();
+  });
+
+  // KEYBOARD ISOLATION: host pages (Airbnb galleries, video players)
+  // listen for Space/arrow shortcuts at the document level. Typing in
+  // this composer must never reach them — otherwise Space triggers the
+  // site's shortcut, focus gets stolen, and the pin is lost.
+  for (const type of ["keydown", "keyup", "keypress"] as const) {
+    composer.addEventListener(type, (e) => e.stopPropagation());
+  }
+  composer.addEventListener("mousedown", (e) => e.stopPropagation());
+
+  // If the site steals focus anyway, take it back while composing.
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (composer.isConnected) input.focus();
+    }, 0);
   });
 
   root.append(composer);
@@ -471,6 +500,55 @@ function enterHighlightMode(communityId: string) {
   activeMode = { kind: "highlight", communityId };
   showModeBar("Select any text to highlight it");
   document.addEventListener("mouseup", handleSelectionChange);
+}
+
+// ---- Pin positioning: element-anchored, self-correcting ------------------
+//
+// A pin anchored to a page-percent floats away as lazy-loading reshapes
+// the document. Pins therefore position from their ELEMENT anchor when
+// it resolves (falling back to page-percent), and reposition whenever
+// the document resizes — the pin sticks to the content it was placed on.
+
+interface PinLike {
+  xPercent: number;
+  yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}
+
+const renderedPins = new Map<string, { marker: HTMLElement; pin: PinLike }>();
+let repositionObserver: ResizeObserver | null = null;
+
+function positionPinMarker(marker: HTMLElement, pin: PinLike) {
+  if (pin.anchorSelector && pin.elXPercent != null && pin.elYPercent != null) {
+    const point = resolveAnchorToPagePoint({
+      selector: pin.anchorSelector,
+      elXPercent: pin.elXPercent,
+      elYPercent: pin.elYPercent,
+    });
+    if (point) {
+      marker.style.left = `${point.pageX}px`;
+      marker.style.top = `${point.pageY}px`;
+      return;
+    }
+  }
+  // Fallback: page-percent (converted to px so both paths use one unit)
+  marker.style.left = `${(pin.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1)}px`;
+  marker.style.top = `${(pin.yPercent / 100) * documentHeight()}px`;
+}
+
+function repositionAllPins() {
+  for (const { marker, pin } of renderedPins.values()) {
+    positionPinMarker(marker, pin);
+  }
+}
+
+function ensureRepositionObserver() {
+  if (repositionObserver || typeof ResizeObserver === "undefined") return;
+  repositionObserver = new ResizeObserver(() => repositionAllPins());
+  repositionObserver.observe(document.body);
+  window.addEventListener("resize", repositionAllPins);
 }
 
 // ---- Click-to-anchor navigation ----------------------------------------
@@ -592,12 +670,21 @@ function handleCursorMove(event: MouseEvent) {
   if (now - lastCursorSent < 90) return; // ~11 updates/sec max
   lastCursorSent = now;
 
+  // Content-anchored: the receiver positions this cursor on the SAME
+  // element in THEIR page, not at the same raw coordinates — so "I'm
+  // looking at section 4" reads as section 4 on every screen, no
+  // matter how differently the pages have loaded.
+  const elementAnchor = anchorForPoint(event.clientX, event.clientY);
+
   browser.runtime
     .sendMessage({
       type: "tabcom:cursor-move",
       xPercent:
         Math.min(100, (event.pageX / Math.max(document.documentElement.scrollWidth, 1)) * 100) || 0,
       yPercent: Math.min(100, (event.pageY / documentHeight()) * 100) || 0,
+      anchorSelector: elementAnchor?.selector,
+      elXPercent: elementAnchor?.elXPercent,
+      elYPercent: elementAnchor?.elYPercent,
     })
     .catch(() => {});
 }
@@ -606,6 +693,9 @@ function upsertPeerCursor(peer: {
   from: { username: string; name: string; color: string };
   xPercent: number;
   yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
 }) {
   let entry = peerCursors.get(peer.from.username);
 
@@ -623,8 +713,25 @@ function upsertPeerCursor(peer: {
     peerCursors.set(peer.from.username, entry);
   }
 
-  entry.el.style.left = `${peer.xPercent}%`;
-  entry.el.style.top = `${peer.yPercent}%`;
+  // Prefer the element anchor (same CONTENT on both screens); fall
+  // back to page-percent only when the element can't be found here.
+  let placed = false;
+  if (peer.anchorSelector && peer.elXPercent != null && peer.elYPercent != null) {
+    const point = resolveAnchorToPagePoint({
+      selector: peer.anchorSelector,
+      elXPercent: peer.elXPercent,
+      elYPercent: peer.elYPercent,
+    });
+    if (point) {
+      entry.el.style.left = `${point.pageX}px`;
+      entry.el.style.top = `${point.pageY}px`;
+      placed = true;
+    }
+  }
+  if (!placed) {
+    entry.el.style.left = `${(peer.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1)}px`;
+    entry.el.style.top = `${(peer.yPercent / 100) * documentHeight()}px`;
+  }
 
   clearTimeout(entry.expireTimer);
   entry.expireTimer = setTimeout(() => removePeerCursor(peer.from.username), 4000);

@@ -42,6 +42,9 @@ export interface WireBoardPin {
   sentAt: number;
   xPercent: number;
   yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
 }
 
 export interface WireBoardHighlight {
@@ -339,15 +342,25 @@ export interface CursorPeer {
   from: { username: string; name: string; color: string };
   xPercent: number;
   yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}
+
+export interface CursorMovePayload {
+  xPercent: number;
+  yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
 }
 
 export function sendCursorMove(
   communityId: string,
   canonicalKey: string,
-  xPercent: number,
-  yPercent: number
+  payload: CursorMovePayload
 ): void {
-  socket?.emit("cursor_move", { communityId, canonicalKey, xPercent, yPercent });
+  socket?.emit("cursor_move", { communityId, canonicalKey, ...payload });
 }
 
 export function sendCursorLeave(communityId: string, canonicalKey: string): void {

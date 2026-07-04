@@ -74,10 +74,14 @@ interface BoardPin {
   author: string;
   text: string;
   sentAt: number;
-  /** Position as a percentage of full document width/height — resilient
-   *  to different viewport sizes, not pixel-exact by design. */
+  /** Fallback position as a percentage of full document width/height. */
   xPercent: number;
   yPercent: number;
+  /** Element anchor (preferred): CSS path + offsets within the element,
+   *  so the pin sticks to CONTENT even as lazy-loading reshapes the page. */
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
 }
 
 interface BoardHighlight {
@@ -898,6 +902,9 @@ io.on("connection", (socket) => {
       text: string;
       xPercent: number;
       yPercent: number;
+      anchorSelector?: string;
+      elXPercent?: number;
+      elYPercent?: number;
     }) => {
       const me = users.get(socket.id);
       const community = communities.get(input?.communityId);
@@ -913,6 +920,18 @@ io.on("connection", (socket) => {
         sentAt: Date.now(),
         xPercent: Math.max(0, Math.min(100, Number(input.xPercent) || 0)),
         yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
+        anchorSelector:
+          typeof input.anchorSelector === "string"
+            ? input.anchorSelector.slice(0, 500)
+            : undefined,
+        elXPercent:
+          input.elXPercent != null
+            ? Math.max(0, Math.min(100, Number(input.elXPercent) || 0))
+            : undefined,
+        elYPercent:
+          input.elYPercent != null
+            ? Math.max(0, Math.min(100, Number(input.elYPercent) || 0))
+            : undefined,
       });
 
       for (const member of community.members) {
@@ -1068,11 +1087,17 @@ io.on("connection", (socket) => {
       canonicalKey,
       xPercent,
       yPercent,
+      anchorSelector,
+      elXPercent,
+      elYPercent,
     }: {
       communityId: string;
       canonicalKey: string;
       xPercent: number;
       yPercent: number;
+      anchorSelector?: string;
+      elXPercent?: number;
+      elYPercent?: number;
     }) => {
       const me = users.get(socket.id);
       const community = communities.get(communityId);
@@ -1087,6 +1112,18 @@ io.on("connection", (socket) => {
           from: { username: me.username, name: me.name, color: me.color },
           xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
           yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
+          anchorSelector:
+            typeof anchorSelector === "string"
+              ? anchorSelector.slice(0, 500)
+              : undefined,
+          elXPercent:
+            elXPercent != null
+              ? Math.max(0, Math.min(100, Number(elXPercent) || 0))
+              : undefined,
+          elYPercent:
+            elYPercent != null
+              ? Math.max(0, Math.min(100, Number(elYPercent) || 0))
+              : undefined,
         });
       }
     }

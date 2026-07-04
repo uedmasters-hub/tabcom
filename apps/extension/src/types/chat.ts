@@ -50,6 +50,9 @@ export interface BoardPin {
   sentAt: number;
   xPercent: number;
   yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
 }
 
 export interface BoardHighlight {
