@@ -4,14 +4,22 @@ import {
   addBoardHighlight,
   addBoardItem,
   addBoardPin,
+  commentOnBoardItem,
+  decideBoardItem,
   disconnectRealtime,
   initRealtime,
+  reannounce,
   removeBoardHighlight,
+  removeBoardItem,
   removeBoardPin,
   sendCommunityMessage,
   sendCursorLeave,
   sendCursorMove,
+  sendDm,
+  sendTyping,
+  voteOnBoardItem,
   type WireCommunity,
+  type WireMessage,
 } from "../../src/lib/realtime";
 
 /**
@@ -35,6 +43,7 @@ interface StoredProfile {
   displayName: string;
   avatarColor: string;
   photo?: string;
+  visibility: "public" | "private";
 }
 
 const IDLE_DISCONNECT_MS = 5000;
@@ -111,6 +120,7 @@ async function readStoredProfile(): Promise<StoredProfile | null> {
       displayName: state.displayName,
       avatarColor: state.avatarColor,
       photo: state.photo,
+      visibility: state.visibility === "private" ? "private" : "public",
     };
   } catch {
     return null;
@@ -169,7 +179,7 @@ async function ensureWriteConnection(): Promise<boolean> {
           username: profile.username,
           name: profile.displayName,
           color: profile.avatarColor,
-          visibility: "public",
+          visibility: profile.visibility,
           presence: "online",
           photo: profile.photo,
         },
@@ -184,8 +194,11 @@ async function ensureWriteConnection(): Promise<boolean> {
           onRoster: () => {},
           onDm: (from, message) => {
             void bufferIncoming({ kind: "dm", from, message });
+            void broadcastToAllTabs({ type: "tabcom:dm-live", from, message });
           },
-          onTyping: () => {},
+          onTyping: (from) => {
+            void broadcastToAllTabs({ type: "tabcom:typing-live", from });
+          },
           onDmError: () => {},
           onConnections: () => {},
           onConnectRequest: () => {},
@@ -227,6 +240,12 @@ async function ensureWriteConnection(): Promise<boolean> {
           onCommunityLeft: () => {},
           onCommunityMessage: (communityId, from, message) => {
             void bufferIncoming({ kind: "community", communityId, from, message });
+            void broadcastToAllTabs({
+              type: "tabcom:community-message-live",
+              communityId,
+              from,
+              message,
+            });
           },
           onCommunityError: () => {},
         }
@@ -280,6 +299,59 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log("[tabcom:background] open-panel failed:", error);
         sendResponse({ ok: false, reason: String(error) });
       }
+    })();
+    return true;
+  }
+
+  if (message?.type === "tabcom:navigate-to-annotation") {
+    void (async () => {
+      const { url, canonicalKey, kind, id } = message as {
+        url: string;
+        canonicalKey: string;
+        kind: "pin" | "highlight";
+        id: string;
+      };
+
+      await browser.storage.local.set({
+        "tabcom:pending-nav": JSON.stringify({
+          canonicalKey,
+          kind,
+          id,
+          ts: Date.now(),
+        }),
+      });
+
+      const tabs = await browser.tabs.query({});
+      const target = tabs.find((t) => {
+        if (!t.url) return false;
+        try {
+          const a = new URL(t.url);
+          const b = new URL(url);
+          return a.origin === b.origin && a.pathname === b.pathname;
+        } catch {
+          return false;
+        }
+      });
+
+      if (target?.id != null) {
+        await browser.tabs.update(target.id, { active: true });
+        if (target.windowId != null) {
+          await browser.windows.update(target.windowId, { focused: true });
+        }
+        try {
+          await browser.tabs.sendMessage(target.id, {
+            type: "tabcom:navigate-to",
+            kind,
+            id,
+          });
+        } catch {
+          // content script not ready yet — pending-nav covers it on load
+        }
+      } else {
+        await browser.tabs.create({ url });
+      }
+
+      sendResponse({ ok: true });
     })();
     return true;
   }
@@ -399,6 +471,33 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sentAt: Date.now(),
         });
         break;
+      case "dm_send":
+        sendDm(message.payload.username, {
+          id: crypto.randomUUID(),
+          kind: "text",
+          text: String(message.payload.text ?? "").slice(0, 2000),
+          sentAt: Date.now(),
+        } as WireMessage);
+        break;
+      case "typing_send":
+        sendTyping(message.payload.username);
+        break;
+      case "board_vote":
+        voteOnBoardItem(message.payload.communityId, message.payload.itemId);
+        break;
+      case "board_comment":
+        commentOnBoardItem(
+          message.payload.communityId,
+          message.payload.itemId,
+          message.payload.text
+        );
+        break;
+      case "board_decide":
+        decideBoardItem(message.payload.communityId, message.payload.itemId ?? null);
+        break;
+      case "board_remove_item":
+        removeBoardItem(message.payload.communityId, message.payload.itemId);
+        break;
     }
 
     console.log("[tabcom:background] board-write completed:", message.action);
@@ -420,11 +519,27 @@ export default defineBackground(() => {
 
   // React live: pill toggled anywhere, or profile created/changed.
   browser.storage.onChanged.addListener((changes, area) => {
-    if (
-      area === "local" &&
-      ("tabcom:pill-enabled" in changes || "tabcom:profile" in changes)
-    ) {
+    if (area !== "local") return;
+
+    if ("tabcom:pill-enabled" in changes || "tabcom:profile" in changes) {
       void syncPresenceMode();
+    }
+
+    // Visibility (and name/color/photo) can change while the persistent
+    // connection is already open — re-announce immediately rather than
+    // waiting for a reconnect the person would never see.
+    if ("tabcom:profile" in changes && writeConnected) {
+      void readStoredProfile().then((profile) => {
+        if (!profile) return;
+        reannounce({
+          username: profile.username,
+          name: profile.displayName,
+          color: profile.avatarColor,
+          visibility: profile.visibility,
+          presence: "online",
+          photo: profile.photo,
+        });
+      });
     }
   });
 

@@ -66,3 +66,56 @@ export function onCursorsEnabledChange(
     callback(changes[CURSORS_KEY].newValue !== false);
   });
 }
+
+// ---- Profile toggles surfaced in the pill's Settings panel ---------------
+//
+// These read/write the SAME "tabcom:profile" blob the main extension's
+// zustand store persists to — kept in the zustand {state, version}
+// wrapper shape so either side can write without corrupting the other's
+// fields on next load.
+
+const PROFILE_KEY = "tabcom:profile";
+
+interface ProfileToggles {
+  animations: boolean;
+  visibility: "public" | "private";
+}
+
+export async function getProfileToggles(): Promise<ProfileToggles | null> {
+  try {
+    const result = await browser.storage.local.get(PROFILE_KEY);
+    const raw = result[PROFILE_KEY] as string | undefined;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const state = parsed.state ?? parsed;
+    return {
+      animations: state.animations !== false,
+      visibility: state.visibility === "private" ? "private" : "public",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function setProfileToggle(
+  key: "animations" | "visibility",
+  value: boolean | "public" | "private"
+): Promise<void> {
+  try {
+    const result = await browser.storage.local.get(PROFILE_KEY);
+    const raw = result[PROFILE_KEY] as string | undefined;
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const state = parsed.state ?? parsed;
+    state[key] = value;
+    if (parsed.state) parsed.state = state;
+    await browser.storage.local.set({
+      [PROFILE_KEY]: JSON.stringify(parsed.state ? parsed : state),
+    });
+    // The live panel (if open) re-announces visibility changes over the
+    // socket itself on its own storage-driven effect; writing here just
+    // updates the shared source of truth both surfaces read from.
+  } catch {
+    // extension context gone — nothing to persist to
+  }
+}

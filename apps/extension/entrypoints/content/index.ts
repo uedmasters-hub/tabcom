@@ -349,7 +349,10 @@ async function boardWrite(
     | "pin_remove"
     | "highlight_add"
     | "highlight_remove"
-    | "item_add",
+    | "item_add"
+    | "dm_send"
+    | "typing_send"
+    | "community_message",
   payload: Record<string, unknown>
 ): Promise<boolean> {
   if (orphanCheck()) return false;
@@ -990,6 +993,21 @@ export default defineContentScript({
         openPanel: () => {
           browser.runtime
             .sendMessage({ type: "tabcom:open-panel" })
+            .catch((error) => {
+              if (String(error).includes("context invalidated")) {
+                showRefreshChip();
+              }
+            });
+        },
+        navigateToAnnotation: (item, target) => {
+          browser.runtime
+            .sendMessage({
+              type: "tabcom:navigate-to-annotation",
+              url: item.url,
+              canonicalKey: item.canonicalKey,
+              kind: target.kind,
+              id: target.id,
+            })
             .catch((error) => {
               if (String(error).includes("context invalidated")) {
                 showRefreshChip();
