@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { browser } from "wxt/browser";
 
 import AppShell from "../../components/layout/AppShell";
 import { initRealtime } from "../../lib/realtime";
@@ -36,6 +37,68 @@ export default function WorkspaceScreen() {
   const visibility = useProfileStore((state) => state.visibility);
   const photo = useProfileStore((state) => state.photo);
   const myPresence = useProfileStore((state) => state.presence);
+
+  // Drain messages the background buffered while only the pill was
+  // online (zero server retention — they exist nowhere else), then
+  // honor a chat target chosen from the pill's chat menu.
+  useEffect(() => {
+    let cancelled = false;
+
+    const drainAndTarget = async () => {
+      try {
+        const result = await browser.storage.local.get([
+          "tabcom:inbox-buffer",
+          "tabcom:open-target",
+        ]);
+        if (cancelled) return;
+
+        const rawBuffer = result["tabcom:inbox-buffer"] as string | undefined;
+        if (rawBuffer) {
+          await browser.storage.local.remove("tabcom:inbox-buffer");
+          const state = useChatStore.getState();
+          for (const entry of JSON.parse(rawBuffer)) {
+            if (entry.kind === "dm") {
+              state.receiveDm(entry.from, entry.message);
+            } else if (entry.kind === "community") {
+              state.receiveCommunityMessage(
+                entry.communityId,
+                entry.from,
+                entry.message
+              );
+            }
+          }
+        }
+
+        const rawTarget = result["tabcom:open-target"] as string | undefined;
+        if (rawTarget) {
+          await browser.storage.local.remove("tabcom:open-target");
+          const target = JSON.parse(rawTarget) as {
+            kind: "dm" | "community";
+            id: string;
+          };
+          const { conversations, contacts, openConversation } =
+            useChatStore.getState();
+          const conversation =
+            target.kind === "community"
+              ? conversations.find((c) => c.communityId === target.id)
+              : conversations.find((c) => {
+                  const contact = contacts.find(
+                    (item) => item.id === c.contactId
+                  );
+                  return contact?.username === target.id;
+                });
+          if (conversation) openConversation(conversation.id);
+        }
+      } catch {
+        // best effort — the panel still works without either
+      }
+    };
+
+    void drainAndTarget();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     ensureSeeded();

@@ -49,6 +49,24 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
  *  (unless the panel is open with its own socket). */
 let persistentPresence = false;
 
+/** Messages arriving while only the pill holds the connection would
+ *  otherwise be lost (zero server retention). Buffer them; the panel
+ *  drains the buffer into its store on next open. Doubles as the data
+ *  source for the pill's unread badge. */
+async function bufferIncoming(entry: Record<string, unknown>): Promise<void> {
+  try {
+    const result = await browser.storage.local.get("tabcom:inbox-buffer");
+    const raw = result["tabcom:inbox-buffer"] as string | undefined;
+    const buffer: unknown[] = raw ? JSON.parse(raw) : [];
+    buffer.push({ ...entry, receivedAt: Date.now() });
+    await browser.storage.local.set({
+      "tabcom:inbox-buffer": JSON.stringify(buffer.slice(-200)),
+    });
+  } catch {
+    // best effort
+  }
+}
+
 async function syncPresenceMode(): Promise<void> {
   const enabled = await getPillEnabled();
   const profile = await readStoredProfile();
@@ -58,7 +76,10 @@ async function syncPresenceMode(): Promise<void> {
 
   if (persistentPresence) {
     await ensureWriteConnection();
-  } else if (cursorTabs.size === 0) {
+  } else {
+    // The pill is the presence switch — turning it off means offline,
+    // full stop. Cursor streams don't get to hold the connection open.
+    cursorTabs.clear();
     disconnectRealtime();
     writeConnected = false;
   }
@@ -157,7 +178,9 @@ async function ensureWriteConnection(): Promise<boolean> {
             }
           },
           onRoster: () => {},
-          onDm: () => {},
+          onDm: (from, message) => {
+            void bufferIncoming({ kind: "dm", from, message });
+          },
           onTyping: () => {},
           onDmError: () => {},
           onConnections: () => {},
@@ -198,7 +221,9 @@ async function ensureWriteConnection(): Promise<boolean> {
           onCommunityInvite: () => {},
           onCommunityDeclined: () => {},
           onCommunityLeft: () => {},
-          onCommunityMessage: () => {},
+          onCommunityMessage: (communityId, from, message) => {
+            void bufferIncoming({ kind: "community", communityId, from, message });
+          },
           onCommunityError: () => {},
         }
       );

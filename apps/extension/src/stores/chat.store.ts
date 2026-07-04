@@ -250,6 +250,19 @@ function appendMessage(
   };
 }
 
+function messageIdExists(
+  messages: Record<string, Message[]>,
+  id: string
+): boolean {
+  for (const thread of Object.values(messages)) {
+    // scan from the end — duplicates are always recent
+    for (let i = thread.length - 1; i >= 0 && i >= thread.length - 60; i -= 1) {
+      if (thread[i].id === id) return true;
+    }
+  }
+  return false;
+}
+
 export const useChatStore = create<ChatState>()(
   persist(
     (set, get) => {
@@ -754,6 +767,10 @@ export const useChatStore = create<ChatState>()(
           }),
 
         receiveDm: (from, message) => {
+          // Two delivery paths exist (live socket + background buffer
+          // drained on panel open) — the same id must never append twice.
+          if (messageIdExists(get().messages, message.id)) return;
+
           const contactId = `u-${from.username}`;
 
           set((state) => ({
@@ -969,6 +986,8 @@ export const useChatStore = create<ChatState>()(
         },
 
         receiveCommunityMessage: (communityId, from, message) => {
+          if (messageIdExists(get().messages, message.id)) return;
+
           const community = get().communities[communityId];
           if (!community) return;
 

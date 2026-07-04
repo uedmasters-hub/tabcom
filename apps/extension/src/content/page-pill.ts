@@ -25,7 +25,7 @@ import {
  *    no community -> explains what to do; not onboarded -> stays hidden.
  */
 
-export const PILL_VERSION = "M18";
+export const PILL_VERSION = "M19";
 
 export interface PillActions {
   enterPinMode: (communityId: string) => void;
@@ -50,6 +50,7 @@ const ICONS = {
 let host: HTMLDivElement | null = null;
 let shadow: ShadowRoot | null = null;
 let expanded = false;
+let chatMenuOpen = false;
 let selectedCommunityId: string | null = null;
 let actionsRef: PillActions | null = null;
 
@@ -89,6 +90,89 @@ async function readMemberCommunities(
   }
 }
 
+interface ChatEntry {
+  kind: "community" | "dm";
+  id: string; // community id, or contact USERNAME for dms
+  label: string;
+  unread: number;
+}
+
+async function readChatEntries(username: string): Promise<ChatEntry[]> {
+  try {
+    const result = await browser.storage.local.get([
+      "tabcom:chat",
+      "tabcom:inbox-buffer",
+    ]);
+
+    const raw = result["tabcom:chat"] as string | undefined;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    const state = parsed.state ?? parsed;
+    const conversations: Array<{
+      id: string;
+      contactId?: string;
+      communityId?: string;
+      unread?: number;
+    }> = state.conversations ?? [];
+    const contacts: Array<{
+      id: string;
+      username: string;
+      name: string;
+      alias?: string;
+    }> = state.contacts ?? [];
+    const communities: Record<string, { id: string; name: string; members: Array<{ username: string }> }> =
+      state.communities ?? {};
+
+    // Messages buffered while the panel was closed add to unread counts.
+    const buffered: Record<string, number> = {};
+    const rawBuffer = result["tabcom:inbox-buffer"] as string | undefined;
+    if (rawBuffer) {
+      for (const entry of JSON.parse(rawBuffer)) {
+        const key =
+          entry.kind === "community"
+            ? `c:${entry.communityId}`
+            : `d:${entry.from?.username}`;
+        buffered[key] = (buffered[key] ?? 0) + 1;
+      }
+    }
+
+    const entries: ChatEntry[] = [];
+
+    for (const community of Object.values(communities)) {
+      if (!community.members?.some((m) => m.username === username)) continue;
+      const conversation = conversations.find(
+        (c) => c.communityId === community.id
+      );
+      entries.push({
+        kind: "community",
+        id: community.id,
+        label: community.name,
+        unread: (conversation?.unread ?? 0) + (buffered[`c:${community.id}`] ?? 0),
+      });
+    }
+
+    for (const conversation of conversations) {
+      if (!conversation.contactId) continue;
+      const contact = contacts.find((c) => c.id === conversation.contactId);
+      if (!contact) continue;
+      entries.push({
+        kind: "dm",
+        id: contact.username,
+        label: contact.alias || contact.name,
+        unread:
+          (conversation.unread ?? 0) + (buffered[`d:${contact.username}`] ?? 0),
+      });
+    }
+
+    // Unread first, then alphabetical — the badge earns its position.
+    return entries.sort(
+      (a, b) => b.unread - a.unread || a.label.localeCompare(b.label)
+    );
+  } catch {
+    return [];
+  }
+}
+
 // ---- shadow scaffolding -------------------------------------------------
 
 const STYLES = `
@@ -110,6 +194,21 @@ const STYLES = `
   .fab .ibtn svg { width: 17px; height: 17px; stroke: currentColor; fill: none;
     stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .fab .divider { width: 1px; height: 20px; background: rgba(255,255,255,.16); margin: 0 5px; }
+  .fab .ibtn { position: relative; }
+  .fab .badge { position: absolute; top: 1px; right: 1px; min-width: 15px; height: 15px;
+    border-radius: 999px; background: #EF4444; color: #fff; font-size: 9.5px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
+    border: 2px solid #111827; }
+  .menu .chat-row { display: flex; align-items: center; gap: 9px; width: 100%;
+    border: none; background: none; text-align: left; cursor: pointer;
+    padding: 8px; border-radius: 10px; font-size: 12.5px; font-weight: 600; color: #0F172A; }
+  .menu .chat-row:hover { background: #F1F5F9; }
+  .menu .chat-row .tag { font-size: 9px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: .04em; color: #94A3B8; width: 30px; flex-shrink: 0; }
+  .menu .chat-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .menu .chat-row .count { min-width: 17px; height: 17px; border-radius: 999px; background: #EF4444;
+    color: #fff; font-size: 10px; font-weight: 800; display: flex; align-items: center;
+    justify-content: center; padding: 0 5px; flex-shrink: 0; }
 
   .menu { position: fixed; bottom: 72px; right: 20px; z-index: 2147483600;
     width: 244px; background: #fff; color: #0F172A;
@@ -226,11 +325,27 @@ async function render() {
     run(selectedCommunityId);
   };
 
-  bar.append(
-    iconButton("chat", "Open community chat", () => {
-      actionsRef?.openPanel();
-    })
+  const chatEntries = await readChatEntries(username);
+  const totalUnread = chatEntries.reduce((n, e) => n + e.unread, 0);
+
+  const chatButton = iconButton(
+    "chat",
+    "Chats — communities & people",
+    () => {
+      chatMenuOpen = !chatMenuOpen;
+      expanded = false;
+      ensurePillRoot().querySelectorAll(".menu").forEach((el) => el.remove());
+      if (chatMenuOpen) renderChatMenu(chatEntries);
+    },
+    "chat"
   );
+  if (totalUnread > 0) {
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = totalUnread > 99 ? "99+" : String(totalUnread);
+    chatButton.append(badge);
+  }
+  bar.append(chatButton);
 
   const divider = document.createElement("span");
   divider.className = "divider";
@@ -262,6 +377,7 @@ async function render() {
       "More options",
       () => {
         expanded = !expanded;
+        chatMenuOpen = false;
         void renderMenu(bar, communities);
       },
       "menu"
@@ -270,6 +386,67 @@ async function render() {
 
   root.append(bar);
   if (expanded) void renderMenu(bar, communities);
+}
+
+function renderChatMenu(entries: ChatEntry[]) {
+  const root = ensurePillRoot();
+  root.querySelectorAll(".menu").forEach((el) => el.remove());
+  if (!chatMenuOpen) return;
+
+  const menu = document.createElement("div");
+  menu.className = "menu";
+
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = "Chats";
+  menu.append(title);
+
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent =
+      "No conversations yet — open the panel to connect with people or create a community.";
+    menu.append(empty);
+  }
+
+  for (const entry of entries.slice(0, 8)) {
+    const row = document.createElement("button");
+    row.className = "chat-row";
+    row.innerHTML = `
+      <span class="tag">${entry.kind === "community" ? "grp" : "dm"}</span>
+      <span class="grow">${entry.label.replace(/</g, "&lt;")}</span>
+      ${entry.unread > 0 ? `<span class="count">${entry.unread > 99 ? "99+" : entry.unread}</span>` : ""}
+    `;
+    row.addEventListener("click", async () => {
+      // The panel reads this on open and jumps straight to the chat.
+      await browser.storage.local.set({
+        "tabcom:open-target": JSON.stringify({
+          kind: entry.kind,
+          id: entry.id,
+        }),
+      });
+      chatMenuOpen = false;
+      root.querySelectorAll(".menu").forEach((el) => el.remove());
+      actionsRef?.openPanel();
+    });
+    menu.append(row);
+  }
+
+  const divider = document.createElement("div");
+  divider.className = "divider";
+  menu.append(divider);
+
+  const openRow = document.createElement("button");
+  openRow.className = "row";
+  openRow.innerHTML = `<span class="grow">Open Tabcom panel</span>`;
+  openRow.addEventListener("click", () => {
+    chatMenuOpen = false;
+    root.querySelectorAll(".menu").forEach((el) => el.remove());
+    actionsRef?.openPanel();
+  });
+  menu.append(openRow);
+
+  root.append(menu);
 }
 
 async function renderMenu(bar: HTMLElement, communities: PillCommunity[]) {
@@ -372,7 +549,12 @@ export function initPagePill(actions: PillActions): void {
   });
 
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && ("tabcom:chat" in changes || "tabcom:profile" in changes)) {
+    if (
+      area === "local" &&
+      ("tabcom:chat" in changes ||
+        "tabcom:profile" in changes ||
+        "tabcom:inbox-buffer" in changes)
+    ) {
       void render();
     }
   });

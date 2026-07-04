@@ -8,6 +8,7 @@ import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
 import {
   getCursorsEnabled,
   onCursorsEnabledChange,
+  onPillEnabledChange,
 } from "../../src/lib/pill-settings";
 
 /**
@@ -950,6 +951,13 @@ export default defineContentScript({
     onCursorsEnabledChange((enabled) => {
       if (!enabled) void syncCursorScope(null);
       else void renderExisting(); // re-arm scope detection
+    });
+
+    // Pill off = offline: this page must also stop holding the
+    // connection open with its cursor stream.
+    onPillEnabledChange((enabled) => {
+      if (!enabled) void syncCursorScope(null);
+      else void renderExisting();
     });
 
     const boot = () => {
