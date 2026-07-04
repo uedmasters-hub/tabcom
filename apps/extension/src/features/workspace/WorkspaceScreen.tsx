@@ -1,5 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { Pin } from "lucide-react";
 import { browser } from "wxt/browser";
+
+import { openPinWindow, pinSupported } from "../../lib/pin-window";
+
+const isStandaloneWindow =
+  typeof window !== "undefined" &&
+  window.location.search.includes("window=1");
 
 import AppShell from "../../components/layout/AppShell";
 import { initRealtime } from "../../lib/realtime";
@@ -29,6 +37,7 @@ const titles = {
  */
 export default function WorkspaceScreen() {
   const tab = useWorkspaceStore((state) => state.tab);
+  const [pinWindow, setPinWindow] = useState<Window | null>(null);
   const ensureSeeded = useChatStore((state) => state.ensureSeeded);
 
   const username = useProfileStore((state) => state.username);
@@ -164,9 +173,9 @@ export default function WorkspaceScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
   }, []);
 
-  return (
+  const workspace = (
     <AppShell>
-      <div className="flex h-full flex-col">
+      <div className="relative flex h-full flex-col">
         <WorkspaceHeader title={titles[tab]} />
 
         <div className="flex min-h-0 flex-1 flex-col">
@@ -177,7 +186,57 @@ export default function WorkspaceScreen() {
         </div>
 
         <TabBar />
+
+        {/* Pin on top — standalone window only (a popup window is a tab
+            context, so Document PiP is available there). */}
+        {isStandaloneWindow && pinSupported() && !pinWindow && (
+          <button
+            type="button"
+            title="Pin on top of all apps"
+            aria-label="Pin on top of all apps"
+            onClick={() => {
+              void openPinWindow({
+                width: 420,
+                height: 640,
+                title: "Tabcom — Pinned",
+                onClosed: () => setPinWindow(null),
+              }).then((win) => {
+                if (win) setPinWindow(win);
+              });
+            }}
+            className="absolute bottom-[70px] right-3 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg transition hover:bg-slate-700"
+          >
+            <Pin size={15} />
+          </button>
+        )}
       </div>
     </AppShell>
   );
+
+  if (pinWindow) {
+    return (
+      <>
+        {createPortal(workspace, pinWindow.document.body)}
+        <AppShell>
+          <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+            <Pin size={22} className="text-blue-600" />
+            <p className="mt-3 text-sm font-semibold">Tabcom is pinned on top</p>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              The app is floating above all your windows. Closing this
+              window closes the pin too.
+            </p>
+            <button
+              type="button"
+              onClick={() => pinWindow.close()}
+              className="mt-4 rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold transition hover:border-slate-300"
+            >
+              Bring it back here
+            </button>
+          </div>
+        </AppShell>
+      </>
+    );
+  }
+
+  return workspace;
 }

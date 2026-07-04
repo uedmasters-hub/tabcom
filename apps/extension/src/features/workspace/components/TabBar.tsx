@@ -48,7 +48,7 @@ export default function TabBar() {
             aria-current={isActive ? "page" : undefined}
             onClick={() => setTab(id)}
             className={cn(
-              "flex flex-col items-center gap-1 py-3 text-[11px] font-medium transition-colors",
+              "flex flex-col items-center gap-0.5 pb-2 pt-2 text-[10.5px] font-medium transition-colors",
               isActive
                 ? "text-slate-900"
                 : "text-slate-400 hover:text-slate-600"

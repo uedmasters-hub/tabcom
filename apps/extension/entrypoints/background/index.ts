@@ -267,7 +267,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
         }
         const win = await browser.windows.create({
-          url: browser.runtime.getURL("/popup.html"),
+          url: browser.runtime.getURL("/popup.html?window=1" as "/popup.html"),
           type: "popup",
           width: 420,
           height: 680,
