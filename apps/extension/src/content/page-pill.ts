@@ -165,6 +165,47 @@ async function readBufferedCounts(): Promise<Record<string, number>> {
   }
 }
 
+async function markConversationRead(entry: ChatEntry): Promise<void> {
+  try {
+    const result = await browser.storage.local.get(["tabcom:chat", "tabcom:inbox-buffer"]);
+
+    const rawChat = result["tabcom:chat"] as string | undefined;
+    if (rawChat && entry.conversationId) {
+      const parsed = JSON.parse(rawChat);
+      const state = parsed.state ?? parsed;
+      state.conversations = (state.conversations ?? []).map(
+        (c: { id: string; unread?: number }) =>
+          c.id === entry.conversationId ? { ...c, unread: 0 } : c
+      );
+      if (parsed.state) parsed.state = state;
+      await browser.storage.local.set({
+        "tabcom:chat": JSON.stringify(parsed.state ? parsed : state),
+      });
+    }
+
+    const rawBuffer = result["tabcom:inbox-buffer"] as string | undefined;
+    if (rawBuffer) {
+      const buffer = JSON.parse(rawBuffer) as Array<{
+        kind: "dm" | "community";
+        communityId?: string;
+        from?: { username: string };
+      }>;
+      const remaining = buffer.filter((item) =>
+        entry.kind === "dm"
+          ? item.kind !== "dm" || item.from?.username !== entry.id
+          : item.kind !== "community" || item.communityId !== entry.id
+      );
+      if (remaining.length !== buffer.length) {
+        await browser.storage.local.set({
+          "tabcom:inbox-buffer": JSON.stringify(remaining),
+        });
+      }
+    }
+  } catch {
+    // best-effort — a stale badge is a cosmetic issue, never worth throwing over
+  }
+}
+
 async function appendMessageLocally(
   conversationId: string,
   message: ThreadMessage
@@ -193,170 +234,182 @@ const STYLES = `
   :host { all: initial; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 
+  @keyframes pill-pop {
+    from { opacity: 0; transform: translateY(8px) scale(.97); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes pill-fade { from { opacity: 0; } to { opacity: 1; } }
+
   /* ---- Collapsed bar ---- */
-  .fab { position: fixed; bottom: 20px; right: 20px; z-index: 2147483600;
-    display: flex; align-items: center; gap: 2px;
-    background: #0B0F19; border-radius: 999px; padding: 6px 8px;
-    box-shadow: 0 10px 30px rgba(2,6,23,.35); }
+  .fab { position: fixed; bottom: 22px; right: 22px; z-index: 2147483600;
+    display: flex; align-items: center; gap: 3px;
+    background: #0B0F19; border-radius: 999px; padding: 8px 10px;
+    box-shadow: 0 10px 30px rgba(2,6,23,.35);
+    animation: pill-fade .18s ease; }
   .fab .status { width: 7px; height: 7px; border-radius: 50%; background: #10B981;
-    margin: 0 6px; flex-shrink: 0; }
-  .fab .ibtn { position: relative; width: 34px; height: 34px; border-radius: 999px;
+    margin: 0 8px; flex-shrink: 0; }
+  .fab .ibtn { position: relative; width: 36px; height: 36px; border-radius: 999px;
     border: none; background: transparent; color: #CBD5E1; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: background .12s ease, color .12s ease; }
+    transition: background .15s ease, color .15s ease; }
   .fab .ibtn:hover { background: rgba(255,255,255,.1); color: #fff; }
   .fab .ibtn.active { background: #fff; color: #0B0F19; }
   .fab .ibtn svg { width: 17px; height: 17px; stroke: currentColor; fill: none;
     stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-  .fab .divider { width: 1px; height: 20px; background: rgba(255,255,255,.14); margin: 0 4px; }
-  .fab .badge { position: absolute; top: 0; right: 0; min-width: 15px; height: 15px;
-    border-radius: 999px; background: #DC2626; color: #fff; font-size: 9px; font-weight: 700;
-    display: flex; align-items: center; justify-content: center; padding: 0 3px;
+  .fab .divider { width: 1px; height: 22px; background: rgba(255,255,255,.14); margin: 0 6px; }
+  .fab .badge { position: absolute; top: -1px; right: -1px; min-width: 16px; height: 16px;
+    border-radius: 999px; background: #DC2626; color: #fff; font-size: 9.5px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
     border: 2px solid #0B0F19; }
 
   /* ---- Typing ambient pill ---- */
-  .typing-pill { position: fixed; bottom: 20px; right: 20px; z-index: 2147483600;
-    display: flex; align-items: center; gap: 8px; background: #0B0F19;
-    border-radius: 999px; padding: 6px 16px 6px 6px; cursor: pointer;
-    box-shadow: 0 10px 30px rgba(2,6,23,.35); }
-  .typing-pill .avatar { width: 24px; height: 24px; border-radius: 50%; color: #fff;
+  .typing-pill { position: fixed; bottom: 22px; right: 22px; z-index: 2147483600;
+    display: flex; align-items: center; gap: 10px; background: #0B0F19;
+    border-radius: 999px; padding: 8px 18px 8px 8px; cursor: pointer;
+    box-shadow: 0 10px 30px rgba(2,6,23,.35); animation: pill-pop .18s ease; }
+  .typing-pill .avatar { width: 26px; height: 26px; border-radius: 50%; color: #fff;
     font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
-  .typing-pill .label { color: #fff; font-size: 12.5px; font-weight: 600; }
+  .typing-pill .label { color: #fff; font-size: 13px; font-weight: 600; }
 
   /* ---- Panel shell ---- */
-  .panel { position: fixed; bottom: 66px; right: 20px; z-index: 2147483600;
-    width: 300px; max-height: 440px; background: #fff; border-radius: 18px;
-    box-shadow: 0 20px 56px rgba(2,6,23,.3); display: flex; flex-direction: column;
-    overflow: hidden; color: #0B0F19; }
-  .panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+  .panel { position: fixed; bottom: 70px; right: 22px; z-index: 2147483600;
+    width: 336px; max-height: 500px; background: #fff; border-radius: 20px;
+    box-shadow: 0 24px 64px rgba(2,6,23,.28); display: flex; flex-direction: column;
+    overflow: hidden; color: #0B0F19; animation: pill-pop .17s cubic-bezier(.2,.7,.3,1); }
+  .panel-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px;
     border-bottom: 1px solid #F1F5F9; flex-shrink: 0; }
-  .panel-head .back { border: none; background: none; cursor: pointer; color: #64748B;
-    display: flex; align-items: center; padding: 2px; }
-  .panel-head .back svg { width: 17px; height: 17px; stroke: currentColor; fill: none;
+  .panel-head .back { border: none; background: none; cursor: pointer; color: #94A3B8;
+    display: flex; align-items: center; padding: 4px; margin-left: -4px; border-radius: 8px;
+    transition: background .12s ease, color .12s ease; }
+  .panel-head .back:hover { background: #F1F5F9; color: #0B0F19; }
+  .panel-head .back svg { width: 18px; height: 18px; stroke: currentColor; fill: none;
     stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .panel-head .avatar { width: 26px; height: 26px; border-radius: 50%; color: #fff;
-    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  .panel-head .avatar { width: 30px; height: 30px; border-radius: 50%; color: #fff;
+    font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; }
-  .panel-head .title { font-size: 13.5px; font-weight: 700; flex: 1; min-width: 0;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .panel-head .sub { font-size: 10.5px; color: #94A3B8; font-weight: 500; }
-  .panel-body { flex: 1; overflow-y: auto; min-height: 0; }
-  .panel-empty { padding: 28px 18px; text-align: center; font-size: 12.5px; color: #94A3B8;
-    line-height: 1.6; }
+  .panel-head .title { font-size: 14.5px; font-weight: 700; flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
+  .panel-head .sub { font-size: 11px; color: #94A3B8; font-weight: 500; margin-top: 1px; }
+  .panel-body { flex: 1; overflow-y: auto; min-height: 0; padding-bottom: 6px; }
+  .panel-empty { padding: 40px 26px; text-align: center; font-size: 13px; color: #94A3B8;
+    line-height: 1.7; }
 
   /* ---- Chat list ---- */
-  .list-group-label { padding: 12px 14px 6px; font-size: 10px; font-weight: 800;
-    text-transform: uppercase; letter-spacing: .06em; color: #94A3B8; }
-  .list-row { display: flex; align-items: center; gap: 10px; width: 100%; border: none;
-    background: none; text-align: left; cursor: pointer; padding: 8px 14px; }
+  .list-group-label { padding: 18px 18px 8px; font-size: 10.5px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: .07em; color: #94A3B8; }
+  .list-row { display: flex; align-items: center; gap: 12px; width: 100%; border: none;
+    background: none; text-align: left; cursor: pointer; padding: 10px 18px; }
   .list-row:hover { background: #F8FAFC; }
-  .list-row .avatar { width: 32px; height: 32px; border-radius: 50%; color: #fff;
-    font-size: 12.5px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  .list-row .avatar { width: 36px; height: 36px; border-radius: 50%; color: #fff;
+    font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center;
     flex-shrink: 0; }
-  .list-row .name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600;
+  .list-row .name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .list-row .count { min-width: 18px; height: 18px; border-radius: 999px; background: #DC2626;
+  .list-row .count { min-width: 19px; height: 19px; border-radius: 999px; background: #DC2626;
     color: #fff; font-size: 10.5px; font-weight: 700; display: flex; align-items: center;
     justify-content: center; padding: 0 5px; flex-shrink: 0; }
 
   /* ---- Thread ---- */
-  .thread-msgs { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+  .thread-msgs { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px 8px; }
   .msg-row { display: flex; }
   .msg-row.mine { justify-content: flex-end; }
-  .msg-bubble { max-width: 78%; border-radius: 14px; padding: 7px 11px; font-size: 12.5px;
-    line-height: 1.5; }
-  .msg-bubble.mine { background: #0B0F19; color: #fff; border-bottom-right-radius: 4px; }
-  .msg-bubble.theirs { background: #F1F5F9; color: #0B0F19; border-bottom-left-radius: 4px; }
-  .msg-author { display: block; font-size: 10px; font-weight: 700; margin-bottom: 2px; }
-  .typing-inline { padding: 2px 14px 8px; font-size: 11px; color: #94A3B8; font-style: italic; }
-  .composer { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid #F1F5F9; flex-shrink: 0; }
+  .msg-bubble { max-width: 78%; border-radius: 16px; padding: 9px 13px; font-size: 13px;
+    line-height: 1.55; }
+  .msg-bubble.mine { background: #0B0F19; color: #fff; border-bottom-right-radius: 5px; }
+  .msg-bubble.theirs { background: #F1F5F9; color: #0B0F19; border-bottom-left-radius: 5px; }
+  .msg-author { display: block; font-size: 10.5px; font-weight: 700; margin-bottom: 3px; }
+  .typing-inline { padding: 4px 18px 12px; font-size: 11.5px; color: #94A3B8; font-style: italic; }
+  .composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #F1F5F9; flex-shrink: 0; }
   .composer input { flex: 1; min-width: 0; border: 1px solid #E2E8F0; border-radius: 999px;
-    padding: 8px 12px; font-size: 12.5px; outline: none; }
+    padding: 9px 14px; font-size: 13px; outline: none; transition: border-color .12s ease; }
   .composer input:focus { border-color: #0B0F19; }
   .composer button { border: none; background: #0B0F19; color: #fff; border-radius: 999px;
-    width: 32px; height: 32px; flex-shrink: 0; cursor: pointer; display: flex;
-    align-items: center; justify-content: center; }
-  .composer button:disabled { background: #CBD5E1; }
+    width: 34px; height: 34px; flex-shrink: 0; cursor: pointer; display: flex;
+    align-items: center; justify-content: center; transition: background .12s ease; }
+  .composer button:disabled { background: #E2E8F0; }
   .composer button svg { width: 14px; height: 14px; }
 
   /* ---- Board / Pins / Highlights ---- */
-  .action-row { padding: 10px 14px; border-bottom: 1px solid #F1F5F9; flex-shrink: 0; }
-  .action-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
-    border: 1px solid #E2E8F0; background: #fff; border-radius: 10px; padding: 8px; cursor: pointer;
-    font-size: 12.5px; font-weight: 600; color: #0B0F19; }
+  .action-row { padding: 14px 18px; border-bottom: 1px solid #F1F5F9; flex-shrink: 0; }
+  .action-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px;
+    border: 1px solid #E2E8F0; background: #fff; border-radius: 12px; padding: 10px; cursor: pointer;
+    font-size: 13px; font-weight: 600; color: #0B0F19; transition: border-color .12s ease; }
   .action-btn:hover { border-color: #0B0F19; }
   .action-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; }
-  .group { border-bottom: 1px solid #F1F5F9; }
-  .group-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px 4px; }
-  .group-head .name { font-size: 12px; font-weight: 700; flex: 1; min-width: 0;
+  .group { border-bottom: 1px solid #F1F5F9; padding-bottom: 8px; }
+  .group-head { display: flex; align-items: center; gap: 8px; padding: 16px 18px 8px; }
+  .group-head .name { font-size: 12.5px; font-weight: 700; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .group-head .site { font-size: 9.5px; font-weight: 700; text-transform: uppercase;
-    color: #94A3B8; letter-spacing: .04em; }
-  .item-row { display: flex; align-items: flex-start; gap: 8px; width: 100%; border: none;
-    background: none; text-align: left; cursor: pointer; padding: 6px 14px 6px 20px; }
+    color: #94A3B8; letter-spacing: .05em; }
+  .item-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; border: none;
+    background: none; text-align: left; cursor: pointer; padding: 8px 18px 8px 22px; border-radius: 10px; }
   .item-row:hover { background: #F8FAFC; }
-  .item-row .ic { flex-shrink: 0; margin-top: 2px; }
+  .item-row .ic { flex-shrink: 0; margin-top: 3px; }
   .item-row .ic svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; }
   .item-row .ic.pin { color: #2563EB; }
   .item-row .ic.hl { color: #D97706; }
   .item-row .body { min-width: 0; flex: 1; }
-  .item-row .text { font-size: 12.5px; line-height: 1.5; color: #0B0F19; }
+  .item-row .text { font-size: 13px; line-height: 1.6; color: #0B0F19; }
   .item-row .text.quote { font-style: italic; color: #334155; }
-  .item-row .meta { font-size: 10.5px; color: #94A3B8; margin-top: 1px; }
-  .item-row .jump { flex-shrink: 0; color: #CBD5E1; margin-top: 2px; }
+  .item-row .meta { font-size: 11px; color: #94A3B8; margin-top: 3px; }
+  .item-row .jump { flex-shrink: 0; color: #CBD5E1; margin-top: 3px; }
   .item-row .jump svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; }
 
-  .board-card { border-bottom: 1px solid #F1F5F9; padding: 10px 14px; }
-  .board-card .thumb { width: 100%; height: 84px; border-radius: 8px; object-fit: cover;
-    background: #F1F5F9; margin-bottom: 8px; }
-  .board-card .title { font-size: 12.5px; font-weight: 700; line-height: 1.4; }
-  .board-card .site { font-size: 10px; color: #94A3B8; margin-top: 2px; }
-  .board-card .row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
-  .board-card .pill-btn { display: flex; align-items: center; gap: 4px; border: 1px solid #E2E8F0;
-    background: #fff; border-radius: 999px; padding: 4px 9px; font-size: 11px; font-weight: 700;
-    cursor: pointer; color: #64748B; }
+  .board-card { border-bottom: 1px solid #F1F5F9; padding: 16px 18px; }
+  .board-card .thumb { width: 100%; height: 96px; border-radius: 10px; object-fit: cover;
+    background: #F1F5F9; margin-bottom: 10px; }
+  .board-card .title { font-size: 13px; font-weight: 700; line-height: 1.5; }
+  .board-card .site { font-size: 10.5px; color: #94A3B8; margin-top: 3px; }
+  .board-card .row { display: flex; align-items: center; gap: 7px; margin-top: 11px; }
+  .board-card .pill-btn { display: flex; align-items: center; gap: 5px; border: 1px solid #E2E8F0;
+    background: #fff; border-radius: 999px; padding: 5px 10px; font-size: 11.5px; font-weight: 700;
+    cursor: pointer; color: #64748B; transition: border-color .12s ease, color .12s ease; }
   .board-card .pill-btn.on { border-color: #0B0F19; color: #0B0F19; }
   .board-card .pill-btn svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; }
   .board-card .spacer { flex: 1; }
   .board-card .icon-btn { border: none; background: none; cursor: pointer; color: #94A3B8;
-    padding: 3px; display: flex; }
+    padding: 4px; display: flex; border-radius: 8px; transition: background .12s ease, color .12s ease; }
+  .board-card .icon-btn:hover { background: #F1F5F9; color: #0B0F19; }
   .board-card .icon-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; }
   .board-card .icon-btn.done { color: #059669; }
-  .board-card .comments { margin-top: 8px; padding-top: 8px; border-top: 1px solid #F8FAFC; }
-  .board-card .comment { font-size: 11.5px; line-height: 1.5; margin-bottom: 4px; }
+  .board-card .comments { margin-top: 11px; padding-top: 11px; border-top: 1px solid #F8FAFC; }
+  .board-card .comment { font-size: 12px; line-height: 1.6; margin-bottom: 6px; }
   .board-card .comment b { font-weight: 700; }
-  .board-card .decided-banner { display: flex; align-items: center; gap: 6px; background: #ECFDF5;
-    color: #059669; font-size: 11px; font-weight: 700; padding: 6px 9px; border-radius: 8px;
-    margin-top: 8px; }
-  .board-card .comment-input { display: flex; gap: 6px; margin-top: 6px; }
+  .board-card .decided-banner { display: flex; align-items: center; gap: 7px; background: #ECFDF5;
+    color: #059669; font-size: 11.5px; font-weight: 700; padding: 8px 11px; border-radius: 10px;
+    margin-top: 11px; }
+  .board-card .comment-input { display: flex; gap: 7px; margin-top: 9px; }
   .board-card .comment-input input { flex: 1; min-width: 0; border: 1px solid #E2E8F0;
-    border-radius: 8px; padding: 5px 8px; font-size: 11.5px; outline: none; }
+    border-radius: 10px; padding: 6px 10px; font-size: 12px; outline: none; }
   .board-card .comment-input button { border: none; background: #0B0F19; color: #fff;
-    border-radius: 8px; width: 26px; flex-shrink: 0; cursor: pointer; }
+    border-radius: 10px; width: 28px; flex-shrink: 0; cursor: pointer; }
 
   /* ---- Settings ---- */
-  .setting-row { display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+  .setting-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
     border-bottom: 1px solid #F1F5F9; }
-  .setting-row .label { flex: 1; font-size: 12.5px; font-weight: 600; }
-  .knob { width: 34px; height: 19px; border-radius: 999px; position: relative;
+  .setting-row .label { flex: 1; font-size: 13px; font-weight: 600; }
+  .knob { width: 36px; height: 20px; border-radius: 999px; position: relative;
     background: #CBD5E1; transition: background .15s ease; flex-shrink: 0; border: none; cursor: pointer; }
   .knob.on { background: #0B0F19; }
-  .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+  .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
     border-radius: 50%; background: #fff; transition: left .15s ease; }
-  .knob.on::after { left: 17px; }
-  .setting-link { display: flex; align-items: center; padding: 11px 14px; border: none;
-    background: none; width: 100%; text-align: left; cursor: pointer; font-size: 12.5px;
-    font-weight: 600; color: #0B0F19; border-bottom: 1px solid #F1F5F9; }
+  .knob.on::after { left: 18px; }
+  .setting-link { display: flex; align-items: center; padding: 14px 18px; border: none;
+    background: none; width: 100%; text-align: left; cursor: pointer; font-size: 13px;
+    font-weight: 600; color: #0B0F19; border-bottom: 1px solid #F1F5F9; transition: background .12s ease; }
+  .setting-link:hover { background: #F8FAFC; }
   .setting-link .grow { flex: 1; }
   .setting-link svg { width: 15px; height: 15px; stroke: #CBD5E1; fill: none; stroke-width: 2; }
   .setting-danger { color: #DC2626; }
   .setting-danger:hover { background: #FEF2F2; }
 
-  .refresh-chip { position: fixed; bottom: 20px; right: 20px; z-index: 2147483600;
-    display: flex; align-items: center; gap: 6px; border: none; cursor: pointer;
-    background: #D97706; color: #fff; font-size: 12px; font-weight: 700;
-    padding: 9px 14px; border-radius: 999px; box-shadow: 0 10px 30px rgba(120,53,15,.35); }
+  .refresh-chip { position: fixed; bottom: 22px; right: 22px; z-index: 2147483600;
+    display: flex; align-items: center; gap: 7px; border: none; cursor: pointer;
+    background: #D97706; color: #fff; font-size: 12.5px; font-weight: 700;
+    padding: 10px 16px; border-radius: 999px; box-shadow: 0 10px 30px rgba(120,53,15,.35); }
 `;
+
 
 const ICONS = {
   chat: '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg>',
@@ -553,28 +606,42 @@ async function handleIncomingLive(
   message: ThreadMessage,
   communityId?: string
 ) {
-  typingFrom = null;
-  if (typingTimer) clearTimeout(typingTimer);
-
-  // If the thread this belongs to is already open, echo it straight into
-  // the visible conversation and clear the peer's typing indicator.
+  // If the thread this belongs to is already open, append it directly
+  // into the live DOM rather than tearing the whole panel down and
+  // rebuilding it — a full re-render here would destroy the composer
+  // input mid-keystroke (losing focus and cursor position) every time
+  // a message arrived while someone was typing a reply.
   if (view.kind === "thread") {
     const matches =
       kind === "dm" ? view.entry.id === from.username : view.entry.id === communityId;
     if (matches) {
+      typingFrom = null;
+      if (typingTimer) clearTimeout(typingTimer);
       threadTypingPeer = false;
       if (threadTypingTimer) clearTimeout(threadTypingTimer);
-      await appendMessageLocally(view.entry.conversationId ?? "", {
+
+      const full: ThreadMessage = {
         ...message,
         authorId: `u-${from.username}`,
         authorName: from.name,
         authorColor: from.color,
-      });
-      void render();
+      };
+      await appendMessageLocally(view.entry.conversationId ?? "", full);
+      await markConversationRead(view.entry); // it's on screen — never unread
+
+      if (activeThreadRefs && activeThreadRefs.conversationId === view.entry.conversationId) {
+        appendBubble(activeThreadRefs.msgsWrap, full, view.entry);
+        activeThreadRefs.typingHost.innerHTML = "";
+        activeThreadRefs.body.scrollTop = activeThreadRefs.body.scrollHeight;
+      } else {
+        void render(); // thread refs missing for some reason — safe fallback
+      }
       return;
     }
   }
 
+  typingFrom = null;
+  if (typingTimer) clearTimeout(typingTimer);
   void render(); // refresh badges/list in the background
 }
 
@@ -584,9 +651,16 @@ function handleTypingLive(from: { username: string; name: string; color: string 
     if (threadTypingTimer) clearTimeout(threadTypingTimer);
     threadTypingTimer = setTimeout(() => {
       threadTypingPeer = false;
-      void render();
+      if (activeThreadRefs) activeThreadRefs.typingHost.innerHTML = "";
+      else void render();
     }, 3000);
-    void render();
+
+    if (activeThreadRefs && activeThreadRefs.conversationId === view.entry.conversationId) {
+      activeThreadRefs.typingHost.className = "typing-inline";
+      activeThreadRefs.typingHost.textContent = `${view.entry.label.split(" ")[0]} is typing…`;
+    } else {
+      void render();
+    }
     return;
   }
 
@@ -603,7 +677,27 @@ function handleTypingLive(from: { username: string; name: string; color: string 
 
 // ---- Root render dispatcher --------------------------------------------------
 
-async function render() {
+let renderInFlight = false;
+let renderQueued = false;
+
+async function render(): Promise<void> {
+  if (renderInFlight) {
+    renderQueued = true;
+    return;
+  }
+  renderInFlight = true;
+  try {
+    await renderInner();
+  } finally {
+    renderInFlight = false;
+    if (renderQueued) {
+      renderQueued = false;
+      void render();
+    }
+  }
+}
+
+async function renderInner() {
   if (invalidated) return;
   if (!extensionAlive()) {
     showRefreshChip();
@@ -668,17 +762,16 @@ function renderTypingPill(
         return contact?.username === from.username;
       });
       const contact = contacts.find((c) => c.username === from.username);
-      setView({
-        kind: "thread",
-        entry: {
-          kind: "dm",
-          id: from.username,
-          conversationId: conversation?.id ?? null,
-          label: contact?.alias || contact?.name || from.name,
-          color: from.color,
-          unread: 0,
-        },
-      });
+      const entry: ChatEntry = {
+        kind: "dm",
+        id: from.username,
+        conversationId: conversation?.id ?? null,
+        label: contact?.alias || contact?.name || from.name,
+        color: from.color,
+        unread: 0,
+      };
+      await markConversationRead(entry);
+      setView({ kind: "thread", entry });
     })
   );
   root.append(pill);
@@ -904,7 +997,10 @@ function chatRow(entry: ChatEntry): HTMLButtonElement {
   }
   row.addEventListener(
     "click",
-    guarded(() => setView({ kind: "thread", entry }))
+    guarded(async () => {
+      await markConversationRead(entry);
+      setView({ kind: "thread", entry });
+    })
   );
   return row;
 }
@@ -914,12 +1010,38 @@ function chatRow(entry: ChatEntry): HTMLButtonElement {
 let threadDraft = "";
 let lastTypingSentAt = 0;
 
+interface ThreadRefs {
+  conversationId: string;
+  msgsWrap: HTMLElement;
+  body: HTMLElement;
+  typingHost: HTMLElement;
+}
+
+let activeThreadRefs: ThreadRefs | null = null;
+
+function appendBubble(msgsWrap: HTMLElement, message: ThreadMessage, entry: ChatEntry) {
+  const mine = message.authorId === "me";
+  const row = document.createElement("div");
+  row.className = mine ? "msg-row mine" : "msg-row";
+  const bubble = document.createElement("div");
+  bubble.className = mine ? "msg-bubble mine" : "msg-bubble theirs";
+  if (!mine && entry.kind === "community" && message.authorName) {
+    bubble.innerHTML = `<span class="msg-author" style="color:${message.authorColor ?? "#64748B"}">${message.authorName.replace(/</g, "&lt;")}</span>`;
+  }
+  bubble.append(document.createTextNode(message.text));
+  row.append(bubble);
+  msgsWrap.append(row);
+}
+
 async function renderThreadPanel(root: ShadowRoot, entry: ChatEntry) {
   const { panel, body } = panelShell({
     title: entry.label,
     subtitle: entry.kind === "dm" ? (threadTypingPeer ? "typing…" : undefined) : "Community",
     avatar: { name: entry.label, color: entry.color },
-    onBack: () => setView({ kind: "chats" }),
+    onBack: () => {
+      activeThreadRefs = null;
+      setView({ kind: "chats" });
+    },
   });
 
   const { messages } = await readChatState();
@@ -931,33 +1053,23 @@ async function renderThreadPanel(root: ShadowRoot, entry: ChatEntry) {
   if (thread.length === 0) {
     emptyState(msgsWrap, "No messages yet — say hello.");
   } else {
-    for (const message of thread) {
-      const mine = message.authorId === "me";
-      const row = document.createElement("div");
-      row.className = mine ? "msg-row mine" : "msg-row";
-      const bubble = document.createElement("div");
-      bubble.className = mine ? "msg-bubble mine" : "msg-bubble theirs";
-      if (!mine && entry.kind === "community" && message.authorName) {
-        bubble.innerHTML = `<span class="msg-author" style="color:${message.authorColor ?? "#64748B"}">${message.authorName.replace(/</g, "&lt;")}</span>`;
-      }
-      bubble.append(document.createTextNode(message.text));
-      row.append(bubble);
-      msgsWrap.append(row);
-    }
+    for (const message of thread) appendBubble(msgsWrap, message, entry);
   }
   body.append(msgsWrap);
 
+  const typingHost = document.createElement("div");
   if (threadTypingPeer) {
-    const typing = document.createElement("div");
-    typing.className = "typing-inline";
-    typing.textContent = `${entry.label.split(" ")[0]} is typing…`;
-    body.append(typing);
+    typingHost.className = "typing-inline";
+    typingHost.textContent = `${entry.label.split(" ")[0]} is typing…`;
   }
+  body.append(typingHost);
 
   panel.append(body);
   requestAnimationFrame(() => {
     body.scrollTop = body.scrollHeight;
   });
+
+  activeThreadRefs = { conversationId: entry.conversationId ?? "", msgsWrap, body, typingHost };
 
   const composer = document.createElement("div");
   composer.className = "composer";
@@ -981,7 +1093,10 @@ async function renderThreadPanel(root: ShadowRoot, entry: ChatEntry) {
       sentAt: Date.now(),
     };
     await appendMessageLocally(entry.conversationId, optimistic);
-    void render();
+    input.value = "";
+    sendButton.disabled = true;
+    appendBubble(msgsWrap, optimistic, entry);
+    body.scrollTop = body.scrollHeight;
 
     if (entry.kind === "dm") {
       await safeSendMessage({
@@ -1339,7 +1454,13 @@ async function renderSettingsPanel(root: ShadowRoot) {
   const openPanelLink = document.createElement("button");
   openPanelLink.className = "setting-link";
   openPanelLink.innerHTML = `<span class="grow">Open Tabcom panel</span>${ICONS.chevron}`;
-  openPanelLink.addEventListener("click", guarded(() => actionsRef?.openPanel()));
+  openPanelLink.addEventListener(
+    "click",
+    guarded(() => {
+      setView({ kind: "collapsed" });
+      actionsRef?.openPanel();
+    })
+  );
   body.append(openPanelLink);
 
   root.append(panel);
