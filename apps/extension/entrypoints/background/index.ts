@@ -251,19 +251,68 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // permits sidePanel.open here because it's in response to a user
   // gesture relayed from the content script (documented pattern).
   if (message?.type === "tabcom:open-panel") {
-    const tabId = sender.tab?.id;
-    if (tabId != null) {
-      // Must be called synchronously to preserve the user gesture.
-      browser.sidePanel
-        .open({ tabId })
-        .then(() => sendResponse({ ok: true }))
-        .catch((error) => {
-          console.log("[tabcom:background] sidePanel.open failed:", error);
-          sendResponse({ ok: false });
+    // Deterministic: a standalone Tabcom window. (sidePanel.open had
+    // nothing to open — there is no side_panel manifest entry — and
+    // action.openPopup is inconsistent across Chrome/Brave.) Focus the
+    // existing window instead of duplicating.
+    void (async () => {
+      try {
+        if (panelWindowId != null) {
+          try {
+            await browser.windows.update(panelWindowId, { focused: true });
+            sendResponse({ ok: true });
+            return;
+          } catch {
+            panelWindowId = null; // window was closed
+          }
+        }
+        const win = await browser.windows.create({
+          url: browser.runtime.getURL("/popup.html"),
+          type: "popup",
+          width: 420,
+          height: 680,
+          focused: true,
         });
-      return true;
-    }
-    sendResponse({ ok: false });
+        panelWindowId = win?.id ?? null;
+        console.log("[tabcom:background] panel window opened:", panelWindowId);
+        sendResponse({ ok: true });
+      } catch (error) {
+        console.log("[tabcom:background] open-panel failed:", error);
+        sendResponse({ ok: false, reason: String(error) });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "tabcom:open-float") {
+    // Floating Chat PiP on a specific conversation.
+    void (async () => {
+      try {
+        if (floatWindowId != null) {
+          try {
+            await browser.windows.remove(floatWindowId);
+          } catch {
+            // already gone
+          }
+          floatWindowId = null;
+        }
+        const win = await browser.windows.create({
+          url: browser.runtime.getURL(
+            `/pip.html?conversation=${encodeURIComponent(message.conversationId ?? "")}` as "/pip.html"
+          ),
+          type: "popup",
+          width: 360,
+          height: 540,
+          focused: true,
+        });
+        floatWindowId = win?.id ?? null;
+        console.log("[tabcom:background] float window opened:", floatWindowId);
+        sendResponse({ ok: true });
+      } catch (error) {
+        console.log("[tabcom:background] open-float failed:", error);
+        sendResponse({ ok: false, reason: String(error) });
+      }
+    })();
     return true;
   }
 
