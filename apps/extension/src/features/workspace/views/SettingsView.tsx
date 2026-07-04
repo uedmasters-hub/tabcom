@@ -1,5 +1,5 @@
-import { Camera, Check, Globe, Lock, LogOut, PictureInPicture2, Sparkles, Trash2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { Camera, Check, CircleDot, Globe, Lock, LogOut, PictureInPicture2, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   Avatar,
@@ -9,6 +9,7 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
+import { getPillEnabled, setPillEnabled } from "../../../lib/pill-settings";
 import {
   disconnectRealtime,
   reannounce,
@@ -80,6 +81,17 @@ export default function SettingsView() {
   const resetChat = useChatStore((state) => state.resetChat);
 
   const [name, setName] = useState(displayName);
+  const [pillEnabled, setPillEnabledState] = useState(true);
+
+  useEffect(() => {
+    void getPillEnabled().then(setPillEnabledState);
+  }, []);
+
+  const togglePill = () => {
+    const next = !pillEnabled;
+    setPillEnabledState(next);
+    void setPillEnabled(next);
+  };
   const fileRef = useRef<HTMLInputElement>(null);
 
   /** Push current profile to the server so others see changes live. */
@@ -237,6 +249,35 @@ export default function SettingsView() {
             className={cn(
               "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
               animations ? "left-[22px]" : "left-0.5"
+            )}
+          />
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={togglePill}
+        className="mt-3 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-4 text-left transition hover:border-slate-300"
+      >
+        <CircleDot size={18} className="shrink-0 text-slate-500" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold">Tabcom pill on pages</span>
+          <span className="mt-0.5 block text-sm text-slate-500">
+            Floating button on every page for quick chat, pin, highlight,
+            and add-to-board. Hiding it from the pill itself lands back
+            here. (Build M14)
+          </span>
+        </span>
+        <span
+          className={cn(
+            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+            pillEnabled ? "bg-slate-900" : "bg-slate-200"
+          )}
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
+              pillEnabled ? "left-[22px]" : "left-0.5"
             )}
           />
         </span>

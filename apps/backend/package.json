@@ -9,7 +9,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "node test/relay.test.mjs"
+    "test": "TABCOM_EPHEMERAL=1 node test/relay.test.mjs"
   },
   "dependencies": {
     "socket.io": "^4.8.3"

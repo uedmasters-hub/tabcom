@@ -16,28 +16,86 @@ import { useState } from "react";
 import { browser } from "wxt/browser";
 
 import { Button, EmptyState } from "../../../../components/ui";
+import { navigateToAnnotation } from "../../../../lib/board-navigation";
 import { cn } from "../../../../lib/cn";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
-import type { BoardItem, Community } from "../../../../types/chat";
+import type {
+  BoardHighlight,
+  BoardItem,
+  BoardPin,
+  Community,
+} from "../../../../types/chat";
 import { formatRelativeTime } from "../../../../utils/time";
 
 /**
- * Shared decision board for a community: add listings from any tab,
- * vote, comment, and let the admin conclude with a decision. This is
- * the "conclude" step most collaborative-browsing tools skip.
+ * Community board, organized as a segmented control:
+ *   Tabs       — every page on the board, with voting/comments/decide
+ *   Pins       — every pin across all pages; click = jump to the exact
+ *                spot on the page (focus-or-open + scroll + pulse)
+ *   Highlights — every highlight across all pages; click = jump + flash
  */
+
+type Section = "tabs" | "pins" | "highlights";
+
 async function sendToActiveTab(message: Record<string, unknown>) {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
   try {
     await browser.tabs.sendMessage(tab.id, message);
   } catch {
-    // content script not present on this page (e.g. chrome://) — ignore
+    // content script not present on this page (e.g. chrome://)
   }
 }
 
 export default function BoardView({ community }: { community: Community }) {
+  const [section, setSection] = useState<Section>("tabs");
+
+  const pinCount = community.board.reduce((n, item) => n + item.pins.length, 0);
+  const highlightCount = community.board.reduce(
+    (n, item) => n + item.highlights.length,
+    0
+  );
+
+  const segments: Array<{ id: Section; label: string; count: number }> = [
+    { id: "tabs", label: "Tabs", count: community.board.length },
+    { id: "pins", label: "Pins", count: pinCount },
+    { id: "highlights", label: "Highlights", count: highlightCount },
+  ];
+
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex gap-1 border-b border-slate-100 px-4 py-2.5">
+        {segments.map((segment) => (
+          <button
+            key={segment.id}
+            type="button"
+            onClick={() => setSection(segment.id)}
+            className={cn(
+              "rounded-full px-3.5 py-1.5 text-xs font-semibold transition",
+              section === segment.id
+                ? "bg-slate-900 text-white"
+                : "text-slate-500 hover:bg-slate-100"
+            )}
+          >
+            {segment.label}
+            {segment.count > 0 && <span className="ml-1.5">· {segment.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-1 flex-col overflow-y-auto">
+        {section === "tabs" && <TabsSection community={community} />}
+        {section === "pins" && <PinsSection community={community} />}
+        {section === "highlights" && <HighlightsSection community={community} />}
+      </div>
+    </div>
+  );
+}
+
+// ---- Tabs ----------------------------------------------------------------
+
+function TabsSection({ community }: { community: Community }) {
   const username = useProfileStore((state) => state.username);
   const addCurrentTabToBoard = useChatStore(
     (state) => state.addCurrentTabToBoard
@@ -47,32 +105,22 @@ export default function BoardView({ community }: { community: Community }) {
   const isAdmin = community.admin === username;
   const decided = community.board.find((item) => item.decided);
 
-  if (community.board.length === 0) {
-    return (
-      <div className="flex flex-1 flex-col">
-        <BoardToolbar
-          communityId={community.id}
-          onAdd={() => void addCurrentTabToBoard(community.id)}
-        />
-        <EmptyState
-          className="flex-1"
-          icon={<ThumbsUp size={24} />}
-          title="No items yet"
-          description="Browse to a listing, then Add, Pin, or Highlight directly on the page — it shows up here for everyone."
-        />
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto">
-      <BoardToolbar
-        communityId={community.id}
-        onAdd={() => void addCurrentTabToBoard(community.id)}
-      />
+    <>
+      <div className="border-b border-slate-100 px-4 py-3">
+        <Button
+          size="md"
+          variant="outline"
+          fullWidth
+          leftIcon={<Plus size={15} />}
+          onClick={() => void addCurrentTabToBoard(community.id)}
+        >
+          Add current tab
+        </Button>
+      </div>
 
       {decided && (
-        <div className="mx-4 mt-1 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+        <div className="mx-4 mt-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
           <Trophy size={16} className="shrink-0 text-emerald-600" />
           <p className="min-w-0 flex-1 truncate text-sm font-semibold text-emerald-700">
             Decided: {decided.title}
@@ -89,67 +137,200 @@ export default function BoardView({ community }: { community: Community }) {
         </div>
       )}
 
-      <ul className="flex flex-col gap-3 px-4 py-4">
-        {community.board.map((item) => (
-          <BoardCard
-            key={item.id}
-            item={item}
-            communityId={community.id}
-            isAdmin={isAdmin}
-            username={username}
-          />
-        ))}
-      </ul>
-    </div>
+      {community.board.length === 0 ? (
+        <EmptyState
+          className="flex-1"
+          icon={<ThumbsUp size={24} />}
+          title="No pages yet"
+          description="Browse to a listing and tap 'Add current tab' — or use the Tabcom pill right on the page."
+        />
+      ) : (
+        <ul className="flex flex-col gap-3 px-4 py-4">
+          {community.board.map((item) => (
+            <BoardCard
+              key={item.id}
+              item={item}
+              communityId={community.id}
+              isAdmin={isAdmin}
+              username={username}
+            />
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
-function BoardToolbar({
-  communityId,
-  onAdd,
+// ---- Pins ------------------------------------------------------------------
+
+function PinsSection({ community }: { community: Community }) {
+  const itemsWithPins = community.board.filter((item) => item.pins.length > 0);
+
+  return (
+    <>
+      <div className="border-b border-slate-100 px-4 py-3">
+        <Button
+          size="md"
+          variant="outline"
+          fullWidth
+          leftIcon={<MapPin size={15} />}
+          onClick={() =>
+            void sendToActiveTab({
+              type: "tabcom:enter-pin-mode",
+              communityId: community.id,
+            })
+          }
+        >
+          Pin a spot on this page
+        </Button>
+      </div>
+
+      {itemsWithPins.length === 0 ? (
+        <EmptyState
+          className="flex-1"
+          icon={<MapPin size={24} />}
+          title="No pins yet"
+          description="Open any page on the board and drop a pin — everyone in the community can jump straight to it from here."
+        />
+      ) : (
+        <div className="flex flex-col gap-4 px-4 py-4">
+          {itemsWithPins.map((item) => (
+            <AnnotationGroup key={item.id} item={item}>
+              {item.pins.map((pin) => (
+                <PinRow key={pin.id} item={item} pin={pin} />
+              ))}
+            </AnnotationGroup>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function PinRow({ item, pin }: { item: BoardItem; pin: BoardPin }) {
+  return (
+    <button
+      type="button"
+      onClick={() => void navigateToAnnotation(item, { kind: "pin", id: pin.id })}
+      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
+      title="Jump to this spot on the page"
+    >
+      <MapPin size={14} className="mt-0.5 shrink-0 text-blue-500" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium leading-snug">
+          {pin.text}
+        </span>
+        <span className="mt-0.5 block text-[11px] text-slate-400">
+          @{pin.author} · {formatRelativeTime(pin.sentAt)}
+        </span>
+      </span>
+      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
+    </button>
+  );
+}
+
+// ---- Highlights -------------------------------------------------------------
+
+function HighlightsSection({ community }: { community: Community }) {
+  const itemsWithHighlights = community.board.filter(
+    (item) => item.highlights.length > 0
+  );
+
+  return (
+    <>
+      <div className="border-b border-slate-100 px-4 py-3">
+        <Button
+          size="md"
+          variant="outline"
+          fullWidth
+          leftIcon={<Pencil size={15} />}
+          onClick={() =>
+            void sendToActiveTab({
+              type: "tabcom:enter-highlight-mode",
+              communityId: community.id,
+            })
+          }
+        >
+          Highlight text on this page
+        </Button>
+      </div>
+
+      {itemsWithHighlights.length === 0 ? (
+        <EmptyState
+          className="flex-1"
+          icon={<Pencil size={24} />}
+          title="No highlights yet"
+          description="Select text on any page on the board and highlight it — everyone can jump straight to the exact sentence from here."
+        />
+      ) : (
+        <div className="flex flex-col gap-4 px-4 py-4">
+          {itemsWithHighlights.map((item) => (
+            <AnnotationGroup key={item.id} item={item}>
+              {item.highlights.map((highlight) => (
+                <HighlightRow key={highlight.id} item={item} highlight={highlight} />
+              ))}
+            </AnnotationGroup>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function HighlightRow({
+  item,
+  highlight,
 }: {
-  communityId: string;
-  onAdd: () => void;
+  item: BoardItem;
+  highlight: BoardHighlight;
 }) {
   return (
-    <div className="flex gap-2 border-b border-slate-100 px-4 py-3">
-      <Button
-        size="md"
-        variant="outline"
-        className="flex-1"
-        leftIcon={<Plus size={14} />}
-        onClick={onAdd}
-      >
-        Add tab
-      </Button>
+    <button
+      type="button"
+      onClick={() =>
+        void navigateToAnnotation(item, { kind: "highlight", id: highlight.id })
+      }
+      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
+      title="Jump to this text on the page"
+    >
+      <Pencil size={14} className="mt-0.5 shrink-0 text-amber-500" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] italic leading-snug text-slate-700">
+          "{highlight.quote.slice(0, 90)}
+          {highlight.quote.length > 90 ? "…" : ""}"
+        </span>
+        <span className="mt-0.5 block text-[11px] text-slate-400">
+          @{highlight.author} · {formatRelativeTime(highlight.sentAt)}
+        </span>
+      </span>
+      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
+    </button>
+  );
+}
 
-      <Button
-        size="md"
-        variant="outline"
-        className="flex-1"
-        leftIcon={<MapPin size={14} />}
-        onClick={() =>
-          void sendToActiveTab({ type: "tabcom:enter-pin-mode", communityId })
-        }
-      >
-        Pin
-      </Button>
+// ---- shared pieces -----------------------------------------------------------
 
-      <Button
-        size="md"
-        variant="outline"
-        className="flex-1"
-        leftIcon={<Pencil size={14} />}
-        onClick={() =>
-          void sendToActiveTab({
-            type: "tabcom:enter-highlight-mode",
-            communityId,
-          })
-        }
-      >
-        Highlight
-      </Button>
-    </div>
+function AnnotationGroup({
+  item,
+  children,
+}: {
+  item: BoardItem;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200">
+      <header className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-3.5 py-2">
+        <p className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-600">
+          {item.title}
+        </p>
+        {item.siteName && (
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-400">
+            {item.siteName}
+          </span>
+        )}
+      </header>
+      <div className="flex flex-col p-1.5">{children}</div>
+    </section>
   );
 }
 
@@ -185,9 +366,7 @@ function BoardCard({
     <li
       className={cn(
         "overflow-hidden rounded-2xl border transition",
-        item.decided
-          ? "border-emerald-300 bg-emerald-50/40"
-          : "border-slate-200"
+        item.decided ? "border-emerald-300 bg-emerald-50/40" : "border-slate-200"
       )}
     >
       <button
@@ -244,20 +423,6 @@ function BoardCard({
         >
           <MessageSquareText size={12} />
           {item.comments.length}
-          {(item.pins.length > 0 || item.highlights.length > 0) && (
-            <span className="ml-1 flex items-center gap-1 text-slate-400">
-              {item.pins.length > 0 && (
-                <span className="flex items-center gap-0.5">
-                  <MapPin size={11} /> {item.pins.length}
-                </span>
-              )}
-              {item.highlights.length > 0 && (
-                <span className="flex items-center gap-0.5">
-                  <Pencil size={11} /> {item.highlights.length}
-                </span>
-              )}
-            </span>
-          )}
           {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </button>
 
@@ -288,40 +453,6 @@ function BoardCard({
 
       {expanded && (
         <div className="border-t border-slate-100 bg-slate-50/60 px-3.5 py-3">
-          {item.pins.length > 0 && (
-            <ul className="mb-2 space-y-1.5">
-              {item.pins.map((pin) => (
-                <li key={pin.id} className="flex items-start gap-1.5 text-xs leading-5">
-                  <MapPin size={12} className="mt-0.5 shrink-0 text-blue-500" />
-                  <span>
-                    <span className="font-semibold">@{pin.author}</span>{" "}
-                    <span className="text-slate-600">{pin.text}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {item.highlights.length > 0 && (
-            <ul className="mb-2 space-y-1.5">
-              {item.highlights.map((highlight) => (
-                <li key={highlight.id} className="flex items-start gap-1.5 text-xs leading-5">
-                  <Pencil size={12} className="mt-0.5 shrink-0 text-amber-500" />
-                  <span>
-                    <span className="font-semibold">@{highlight.author}</span>{" "}
-                    <span className="italic text-slate-500">
-                      "{highlight.quote.slice(0, 60)}
-                      {highlight.quote.length > 60 ? "…" : ""}"
-                    </span>
-                    {highlight.comment && (
-                      <span className="block text-slate-600">{highlight.comment}</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-
           {item.comments.length > 0 && (
             <ul className="mb-2 space-y-2">
               {item.comments.map((comment) => (

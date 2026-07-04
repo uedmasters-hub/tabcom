@@ -1,11 +1,15 @@
 import { browser } from "wxt/browser";
 import {
   addBoardHighlight,
+  addBoardItem,
   addBoardPin,
   disconnectRealtime,
   initRealtime,
   removeBoardHighlight,
   removeBoardPin,
+  sendCommunityMessage,
+  sendCursorLeave,
+  sendCursorMove,
   type WireCommunity,
 } from "../../src/lib/realtime";
 
@@ -36,6 +40,10 @@ const IDLE_DISCONNECT_MS = 5000;
 
 let writeConnected = false;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Tabs currently sharing live cursors: tabId -> scope. While any tab
+ *  is sharing, the connection is kept alive instead of idle-closing. */
+const cursorTabs = new Map<number, { communityId: string; canonicalKey: string }>();
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
   const result = await browser.storage.local.get("tabcom:profile");
@@ -91,6 +99,10 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
 function scheduleIdleDisconnect() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
+    if (cursorTabs.size > 0) {
+      scheduleIdleDisconnect(); // someone is live — check again later
+      return;
+    }
     disconnectRealtime();
     writeConnected = false;
   }, IDLE_DISCONNECT_MS);
@@ -140,6 +152,26 @@ async function ensureWriteConnection(): Promise<boolean> {
               communityId: community.id,
             });
           },
+          onCursorPeer: (peer) => {
+            for (const [tabId, scope] of cursorTabs) {
+              if (scope.canonicalKey !== peer.canonicalKey) continue;
+              if (scope.communityId !== peer.communityId) continue;
+              browser.tabs
+                .sendMessage(tabId, { type: "tabcom:cursor-peer", peer })
+                .catch(() => cursorTabs.delete(tabId));
+            }
+          },
+          onCursorPeerLeave: (payload) => {
+            for (const [tabId, scope] of cursorTabs) {
+              if (scope.canonicalKey !== payload.canonicalKey) continue;
+              browser.tabs
+                .sendMessage(tabId, {
+                  type: "tabcom:cursor-peer-leave",
+                  from: payload.from,
+                })
+                .catch(() => cursorTabs.delete(tabId));
+            }
+          },
           onCommunityInvite: () => {},
           onCommunityDeclined: () => {},
           onCommunityLeft: () => {},
@@ -162,7 +194,69 @@ async function ensureWriteConnection(): Promise<boolean> {
   return writeConnected;
 }
 
-browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Open the side panel for the tab the pill was clicked in. Chrome
+  // permits sidePanel.open here because it's in response to a user
+  // gesture relayed from the content script (documented pattern).
+  if (message?.type === "tabcom:open-panel") {
+    const tabId = sender.tab?.id;
+    if (tabId != null) {
+      // Must be called synchronously to preserve the user gesture.
+      browser.sidePanel
+        .open({ tabId })
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => {
+          console.log("[tabcom:background] sidePanel.open failed:", error);
+          sendResponse({ ok: false });
+        });
+      return true;
+    }
+    sendResponse({ ok: false });
+    return true;
+  }
+
+  if (message?.type === "tabcom:cursor-start") {
+    const tabId = sender.tab?.id;
+    if (tabId != null) {
+      cursorTabs.set(tabId, {
+        communityId: message.communityId,
+        canonicalKey: message.canonicalKey,
+      });
+      void ensureWriteConnection().then((connected) =>
+        sendResponse({ ok: connected })
+      );
+      return true;
+    }
+    sendResponse({ ok: false });
+    return true;
+  }
+
+  if (message?.type === "tabcom:cursor-move") {
+    const tabId = sender.tab?.id;
+    const scope = tabId != null ? cursorTabs.get(tabId) : undefined;
+    if (scope && writeConnected) {
+      sendCursorMove(
+        scope.communityId,
+        scope.canonicalKey,
+        message.xPercent,
+        message.yPercent
+      );
+      scheduleIdleDisconnect();
+    }
+    return undefined; // fire-and-forget
+  }
+
+  if (message?.type === "tabcom:cursor-stop") {
+    const tabId = sender.tab?.id;
+    const scope = tabId != null ? cursorTabs.get(tabId) : undefined;
+    if (tabId != null && scope) {
+      if (writeConnected) sendCursorLeave(scope.communityId, scope.canonicalKey);
+      cursorTabs.delete(tabId);
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message?.type !== "tabcom:board-write") return undefined;
 
   console.log("[tabcom:background] board-write received:", message.action, message.payload);
@@ -191,6 +285,17 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message.payload.itemId,
           message.payload.highlightId
         );
+        break;
+      case "item_add":
+        addBoardItem(message.payload);
+        break;
+      case "community_message":
+        sendCommunityMessage(message.payload.communityId, {
+          id: crypto.randomUUID(),
+          kind: "text",
+          text: String(message.payload.text ?? "").slice(0, 2000),
+          sentAt: Date.now(),
+        });
         break;
     }
 

@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 
@@ -197,6 +199,107 @@ function serializeCommunity(c: Community, forUsername?: string) {
 const pairs = new Map<string, Pair>(); // pairKey -> connection state
 const blocks = new Set<string>(); // "blocker|blocked"
 const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked, messages still flow
+
+// ---- Durable state --------------------------------------------------------
+//
+// The dev server runs under `tsx watch`, which restarts on every file
+// change — with purely in-memory state, every patch applied wiped all
+// communities, connections, and boards, making features appear broken
+// when they were merely orphaned. Relationship state (communities incl.
+// boards/pins/highlights, connections, blocks, presence masks) now
+// snapshots to disk and reloads on boot.
+//
+// Deliberately NOT persisted, by design:
+//   - chat messages (zero-retention privacy guarantee)
+//   - live sessions/presence (users map — sessions are ephemeral)
+//   - cursors (ephemeral relay only, never even held in memory)
+//
+// TABCOM_EPHEMERAL=1 disables persistence entirely (used by tests).
+
+const STATE_FILE = process.env.TABCOM_STATE_FILE ?? "data/tabcom-state.json";
+const EPHEMERAL = process.env.TABCOM_EPHEMERAL === "1";
+
+function saveState(): void {
+  if (EPHEMERAL) return;
+  try {
+    const snapshot = {
+      version: 1,
+      communities: [...communities.values()].map((c) => ({
+        id: c.id,
+        name: c.name,
+        admin: c.admin,
+        members: [...c.members],
+        memberInfo: [...c.memberInfo.entries()],
+        invites: [...c.invites.entries()],
+        board: [...c.board.values()].map((item) => ({
+          ...item,
+          votes: [...item.votes],
+        })),
+        boardDecidedId: c.boardDecidedId,
+      })),
+      pairs: [...pairs.entries()],
+      blocks: [...blocks],
+      presenceHidden: [...presenceHidden],
+    };
+    mkdirSync(dirname(STATE_FILE), { recursive: true });
+    writeFileSync(STATE_FILE, JSON.stringify(snapshot));
+  } catch (error) {
+    console.error("[tabcom] state save failed:", error);
+  }
+}
+
+function loadState(): void {
+  if (EPHEMERAL || !existsSync(STATE_FILE)) return;
+  try {
+    const snapshot = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+
+    for (const c of snapshot.communities ?? []) {
+      communities.set(c.id, {
+        id: c.id,
+        name: c.name,
+        admin: c.admin,
+        members: new Set(c.members),
+        memberInfo: new Map(c.memberInfo),
+        invites: new Map(c.invites),
+        board: new Map(
+          (c.board ?? []).map((item: Record<string, unknown>) => [
+            item.id,
+            {
+              ...item,
+              comments: item.comments ?? [],
+              pins: item.pins ?? [],
+              highlights: item.highlights ?? [],
+              votes: new Set(item.votes as string[]),
+            },
+          ])
+        ),
+        boardDecidedId: c.boardDecidedId,
+      } as Community);
+    }
+    for (const [key, value] of snapshot.pairs ?? []) pairs.set(key, value);
+    for (const key of snapshot.blocks ?? []) blocks.add(key);
+    for (const key of snapshot.presenceHidden ?? []) presenceHidden.add(key);
+
+    console.log(
+      `[tabcom] durable state restored: ${communities.size} communities, ${pairs.size} connections`
+    );
+  } catch (error) {
+    console.error("[tabcom] state load failed (starting fresh):", error);
+  }
+}
+
+// Snapshot every 2s (small data, unconditional) and on shutdown — no
+// per-mutation bookkeeping to forget in a future handler.
+loadState();
+if (!EPHEMERAL) {
+  setInterval(saveState, 2000);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      saveState();
+      process.exit(0);
+    });
+  }
+}
 
 function sanitizeVisibility(value: unknown): Visibility {
   return value === "private" ? "private" : "public";
@@ -947,6 +1050,61 @@ io.on("connection", (socket) => {
       for (const member of community.members) {
         notify(member, "community_update", {
           community: serializeCommunity(community),
+        });
+      }
+    }
+  );
+
+  // ---- Live cursors (ephemeral presence, zero retention) ----------------
+  //
+  // Relayed only to members of the same community who are on the same
+  // page (matched by canonicalKey client-side). Nothing is stored —
+  // a cursor position exists only in flight.
+
+  socket.on(
+    "cursor_move",
+    ({
+      communityId,
+      canonicalKey,
+      xPercent,
+      yPercent,
+    }: {
+      communityId: string;
+      canonicalKey: string;
+      xPercent: number;
+      yPercent: number;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !canonicalKey) return;
+      if (!community.members.has(me.username)) return;
+
+      for (const member of community.members) {
+        if (member === me.username) continue;
+        notify(member, "cursor_peer", {
+          communityId,
+          canonicalKey,
+          from: { username: me.username, name: me.name, color: me.color },
+          xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
+          yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "cursor_leave",
+    ({ communityId, canonicalKey }: { communityId: string; canonicalKey: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !community.members.has(me.username)) return;
+
+      for (const member of community.members) {
+        if (member === me.username) continue;
+        notify(member, "cursor_peer_leave", {
+          communityId,
+          canonicalKey,
+          from: me.username,
         });
       }
     }

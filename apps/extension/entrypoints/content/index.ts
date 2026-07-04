@@ -3,6 +3,7 @@ import { browser } from "wxt/browser";
 import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
+import { initPagePill, refreshPagePill } from "../../src/content/page-pill";
 
 /**
  * On-page annotation overlay.
@@ -107,6 +108,20 @@ function ensureShadowRoot(): ShadowRoot {
     .highlight-btn { position: fixed; pointer-events: auto; background: #0F172A; color: white;
       border: none; border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600;
       cursor: pointer; z-index: 2147483001; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+
+    @keyframes tabcom-pulse { 0%,100% { transform: rotate(-45deg) scale(1); }
+      50% { transform: rotate(-45deg) scale(1.45); } }
+    .pin.pulsing .pin-dot { animation: tabcom-pulse .7s ease 3; }
+
+    .flash-box { position: absolute; pointer-events: none; z-index: 2147483001;
+      border: 2.5px solid #2563EB; border-radius: 6px; background: rgba(37,99,235,.14);
+      transition: opacity .5s ease; }
+
+    .peer-cursor { position: absolute; pointer-events: none; z-index: 2147483001;
+      transition: left .09s linear, top .09s linear; }
+    .peer-cursor svg { display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.3)); }
+    .peer-cursor .plabel { margin: 2px 0 0 12px; padding: 2px 7px; border-radius: 999px;
+      color: white; font-size: 10px; font-weight: 700; white-space: nowrap; width: fit-content; }
   `;
   shadowRoot.append(style);
 
@@ -155,6 +170,8 @@ async function renderExisting() {
 
   removeHighlightStyle();
   const ranges: Range[] = [];
+  highlightRanges.clear();
+  let boardScope: { communityId: string; canonicalKey: string } | null = null;
 
   for (const community of Object.values(communities)) {
     const isMember = community.members.some((m) => m.username === profile.username);
@@ -169,9 +186,15 @@ async function renderExisting() {
       "highlights:", item.highlights.length
     );
 
+    // This page is on a board — live cursors are in scope here.
+    if (!boardScope) {
+      boardScope = { communityId: community.id, canonicalKey: anchor.canonicalKey };
+    }
+
     for (const pin of item.pins) {
       const marker = document.createElement("div");
       marker.className = "pin";
+      marker.dataset.pinId = pin.id;
       marker.style.left = `${pin.xPercent}%`;
       marker.style.top = `${pin.yPercent}%`;
       marker.innerHTML = `<div class="pin-dot"><span>${pin.author.charAt(0).toUpperCase()}</span></div>`;
@@ -186,9 +209,19 @@ async function renderExisting() {
 
     for (const highlight of item.highlights) {
       const range = resolveTextQuote(highlight);
-      if (range) ranges.push(range);
+      if (range) {
+        ranges.push(range);
+        highlightRanges.set(highlight.id, range);
+      }
     }
   }
+
+  // Cursor sharing follows board scope: on when this page is on a board
+  // the user's community tracks, off otherwise.
+  void syncCursorScope(boardScope);
+
+  // A navigation may be waiting for this page (panel click-through).
+  void consumePendingNavigation(anchor.canonicalKey);
 
   if (ranges.length > 0 && "highlights" in CSS) {
     injectHighlightStyle();
@@ -249,7 +282,12 @@ function showPinPopover(
 // serves every tab from one connection — so writes are relayed there.
 
 async function boardWrite(
-  action: "pin_add" | "pin_remove" | "highlight_add" | "highlight_remove",
+  action:
+    | "pin_add"
+    | "pin_remove"
+    | "highlight_add"
+    | "highlight_remove"
+    | "item_add",
   payload: Record<string, unknown>
 ): Promise<boolean> {
   try {
@@ -315,8 +353,9 @@ function handlePinClick(event: MouseEvent) {
   event.stopPropagation();
   console.debug("[tabcom] dropping pin at", event.pageX, event.pageY);
 
-  const xPercent = (event.pageX / document.documentElement.scrollWidth) * 100;
-  const yPercent = (event.pageY / documentHeight()) * 100;
+  const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const xPercent = Math.min(100, (event.pageX / pageWidth) * 100) || 0;
+  const yPercent = Math.min(100, (event.pageY / documentHeight()) * 100) || 0;
 
   showComposer(event.clientX, event.clientY, async (text) => {
     const anchor = readPageAnchor();
@@ -386,23 +425,31 @@ function handleSelectionChange(event: Event) {
   const rect = range.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return;
 
+  // CRITICAL: serialize the selection NOW, while it exists. Clicking
+  // the button collapses the selection on mousedown — before the click
+  // handler runs — so serializing at click time reads an empty
+  // selection and silently fails.
+  const capturedQuote = serializeSelection();
+  if (!capturedQuote) return;
+
   const button = document.createElement("button");
   button.className = "highlight-btn";
   button.textContent = "✎ Highlight this";
   button.style.left = `${rect.left + rect.width / 2 - 60}px`;
   button.style.top = `${Math.max(8, rect.top - 38)}px`;
 
+  // Keep the page selection alive through the button press.
+  button.addEventListener("mousedown", (e) => e.preventDefault());
+
   button.addEventListener("click", async (event) => {
     event.stopPropagation();
-    const quoteSelector = serializeSelection();
-    console.debug("[tabcom] highlight submit, quote:", quoteSelector);
-    if (!quoteSelector) return;
+    console.debug("[tabcom] highlight submit, quote:", capturedQuote.quote);
 
     const anchor = readPageAnchor();
     const ok = await boardWrite("highlight_add", {
       communityId: activeMode!.communityId,
       ...anchor,
-      ...quoteSelector,
+      ...capturedQuote,
     });
     console.debug("[tabcom] highlight_add result:", ok);
     button.remove();
@@ -410,6 +457,185 @@ function handleSelectionChange(event: Event) {
   });
 
   root.append(button);
+}
+
+function enterPinMode(communityId: string) {
+  exitMode();
+  activeMode = { kind: "pin", communityId };
+  showModeBar("Click anywhere on the page to drop a pin");
+  document.addEventListener("click", handlePinClick, true);
+}
+
+function enterHighlightMode(communityId: string) {
+  exitMode();
+  activeMode = { kind: "highlight", communityId };
+  showModeBar("Select any text to highlight it");
+  document.addEventListener("mouseup", handleSelectionChange);
+}
+
+// ---- Click-to-anchor navigation ----------------------------------------
+
+const highlightRanges = new Map<string, Range>();
+
+function pulsePin(pinId: string) {
+  const marker = layerEl().querySelector(`[data-pin-id="${pinId}"]`) as HTMLElement | null;
+  if (!marker) return false;
+  marker.scrollIntoView({ behavior: "smooth", block: "center" });
+  marker.classList.add("pulsing");
+  setTimeout(() => marker.classList.remove("pulsing"), 2400);
+  return true;
+}
+
+function flashHighlight(highlightId: string) {
+  const range = highlightRanges.get(highlightId);
+  if (!range) return false;
+
+  const rect = range.getBoundingClientRect();
+  window.scrollTo({
+    top: rect.top + window.scrollY - window.innerHeight / 2,
+    behavior: "smooth",
+  });
+
+  const box = document.createElement("div");
+  box.className = "flash-box";
+  box.style.left = `${rect.left + window.scrollX - 4}px`;
+  box.style.top = `${rect.top + window.scrollY - 4}px`;
+  box.style.width = `${rect.width + 8}px`;
+  box.style.height = `${rect.height + 8}px`;
+  layerEl().append(box);
+  setTimeout(() => (box.style.opacity = "0"), 2000);
+  setTimeout(() => box.remove(), 2600);
+  return true;
+}
+
+function performNavigation(target: { kind: "pin" | "highlight"; id: string }) {
+  const attempt = () => {
+    try {
+      return target.kind === "pin" ? pulsePin(target.id) : flashHighlight(target.id);
+    } catch {
+      return false; // never let a hostile/odd page break navigation
+    }
+  };
+  if (!attempt()) {
+    // Annotations render after load; retry once they likely exist.
+    setTimeout(attempt, 1200);
+  }
+}
+
+/** The panel stores a pending target before opening/focusing the tab. */
+async function consumePendingNavigation(canonicalKey: string) {
+  try {
+    const result = await browser.storage.local.get("tabcom:pending-nav");
+    const raw = result["tabcom:pending-nav"] as string | undefined;
+    if (!raw) return;
+    const pending = JSON.parse(raw);
+    if (pending.canonicalKey !== canonicalKey) return;
+    if (Date.now() - pending.ts > 60_000) return;
+    await browser.storage.local.remove("tabcom:pending-nav");
+    performNavigation(pending);
+  } catch {
+    // ignore
+  }
+}
+
+// ---- Live peer cursors (only on pages that are on a board) --------------
+
+const peerCursors = new Map<
+  string,
+  { el: HTMLDivElement; expireTimer: ReturnType<typeof setTimeout> }
+>();
+let cursorScope: { communityId: string; canonicalKey: string } | null = null;
+let lastCursorSent = 0;
+
+async function syncCursorScope(
+  next: { communityId: string; canonicalKey: string } | null
+) {
+  const same =
+    (!next && !cursorScope) ||
+    (next &&
+      cursorScope &&
+      next.communityId === cursorScope.communityId &&
+      next.canonicalKey === cursorScope.canonicalKey);
+  if (same) return;
+
+  if (cursorScope) {
+    document.removeEventListener("mousemove", handleCursorMove);
+    void browser.runtime.sendMessage({ type: "tabcom:cursor-stop" }).catch(() => {});
+    for (const [username, entry] of peerCursors) {
+      clearTimeout(entry.expireTimer);
+      entry.el.remove();
+      peerCursors.delete(username);
+    }
+  }
+
+  cursorScope = next;
+  if (!next) return;
+
+  const response = await browser.runtime
+    .sendMessage({
+      type: "tabcom:cursor-start",
+      communityId: next.communityId,
+      canonicalKey: next.canonicalKey,
+    })
+    .catch(() => ({ ok: false }));
+
+  if (response?.ok) {
+    document.addEventListener("mousemove", handleCursorMove);
+    console.debug("[tabcom] live cursors ON for", next.canonicalKey);
+  } else {
+    cursorScope = null;
+  }
+}
+
+function handleCursorMove(event: MouseEvent) {
+  const now = Date.now();
+  if (now - lastCursorSent < 90) return; // ~11 updates/sec max
+  lastCursorSent = now;
+
+  browser.runtime
+    .sendMessage({
+      type: "tabcom:cursor-move",
+      xPercent:
+        Math.min(100, (event.pageX / Math.max(document.documentElement.scrollWidth, 1)) * 100) || 0,
+      yPercent: Math.min(100, (event.pageY / documentHeight()) * 100) || 0,
+    })
+    .catch(() => {});
+}
+
+function upsertPeerCursor(peer: {
+  from: { username: string; name: string; color: string };
+  xPercent: number;
+  yPercent: number;
+}) {
+  let entry = peerCursors.get(peer.from.username);
+
+  if (!entry) {
+    const el = document.createElement("div");
+    el.className = "peer-cursor";
+    el.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16">
+        <path d="M2 1 L14 8 L8.5 9.5 L6 15 Z" fill="${peer.from.color}" stroke="white" stroke-width="1.2"/>
+      </svg>
+      <div class="plabel" style="background:${peer.from.color}">${peer.from.name.replace(/</g, "&lt;")}</div>
+    `;
+    layerEl().append(el);
+    entry = { el, expireTimer: setTimeout(() => {}, 0) };
+    peerCursors.set(peer.from.username, entry);
+  }
+
+  entry.el.style.left = `${peer.xPercent}%`;
+  entry.el.style.top = `${peer.yPercent}%`;
+
+  clearTimeout(entry.expireTimer);
+  entry.expireTimer = setTimeout(() => removePeerCursor(peer.from.username), 4000);
+}
+
+function removePeerCursor(username: string) {
+  const entry = peerCursors.get(username);
+  if (!entry) return;
+  clearTimeout(entry.expireTimer);
+  entry.el.remove();
+  peerCursors.delete(username);
 }
 
 // ---- Messages from the side panel --------------------------------------
@@ -425,19 +651,13 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "tabcom:enter-pin-mode") {
-    exitMode();
-    activeMode = { kind: "pin", communityId: message.communityId };
-    showModeBar("Click anywhere on the page to drop a pin");
-    document.addEventListener("click", handlePinClick, true);
+    enterPinMode(message.communityId);
     sendResponse({ ok: true });
     return true;
   }
 
   if (message?.type === "tabcom:enter-highlight-mode") {
-    exitMode();
-    activeMode = { kind: "highlight", communityId: message.communityId };
-    showModeBar("Select any text to highlight it");
-    document.addEventListener("mouseup", handleSelectionChange);
+    enterHighlightMode(message.communityId);
     sendResponse({ ok: true });
     return true;
   }
@@ -450,6 +670,23 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "tabcom:community-updated") {
     void renderExisting();
+    refreshPagePill();
+    return undefined;
+  }
+
+  if (message?.type === "tabcom:navigate-to") {
+    performNavigation(message);
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "tabcom:cursor-peer") {
+    upsertPeerCursor(message.peer);
+    return undefined;
+  }
+
+  if (message?.type === "tabcom:cursor-peer-leave") {
+    removePeerCursor(message.from);
     return undefined;
   }
 
@@ -460,11 +697,30 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && activeMode) exitMode();
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") void syncCursorScope(null);
+  else void renderExisting(); // re-detect scope + re-render
+});
+
 export default defineContentScript({
   matches: ["<all_urls>"],
   main() {
-    if (document.readyState === "complete") void renderExisting();
-    else window.addEventListener("load", () => void renderExisting());
+    const boot = () => {
+      void renderExisting();
+      initPagePill({
+        enterPinMode,
+        enterHighlightMode,
+        addCurrentPage: async (communityId) => {
+          const anchor = readPageAnchor();
+          return boardWrite("item_add", { communityId, ...anchor });
+        },
+        openPanel: () => {
+          void browser.runtime.sendMessage({ type: "tabcom:open-panel" });
+        },
+      });
+    };
+    if (document.readyState === "complete") boot();
+    else window.addEventListener("load", boot);
 
     // Re-render on SPA navigations (Airbnb, Amazon are client-routed).
     let lastHref = window.location.href;

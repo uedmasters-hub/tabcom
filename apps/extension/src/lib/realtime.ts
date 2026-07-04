@@ -142,6 +142,12 @@ export interface RealtimeHandlers {
     username: string;
     reason: CommunityErrorReason;
   }) => void;
+  onCursorPeer?: (peer: CursorPeer) => void;
+  onCursorPeerLeave?: (payload: {
+    communityId: string;
+    canonicalKey: string;
+    from: string;
+  }) => void;
 }
 
 let socket: Socket | null = null;
@@ -153,6 +159,10 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
     reconnectionAttempts: 5,
     reconnectionDelay: 2000,
     timeout: 4000,
+    // Polling (the default first transport) uses XMLHttpRequest, which
+    // does not exist in MV3 service workers — the background relay
+    // could never connect. WebSocket works in every context we run in.
+    transports: ["websocket"],
   });
 
   socket.on("connect", () => {
@@ -244,6 +254,16 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
   socket.on("community_error", (payload) =>
     handlers.onCommunityError(payload)
   );
+
+  socket.on("cursor_peer", (peer: CursorPeer) =>
+    handlers.onCursorPeer?.(peer)
+  );
+
+  socket.on(
+    "cursor_peer_leave",
+    (payload: { communityId: string; canonicalKey: string; from: string }) =>
+      handlers.onCursorPeerLeave?.(payload)
+  );
 }
 
 /** Re-announce profile changes (name, color, photo) mid-session. */
@@ -311,6 +331,27 @@ export function decideBoardItem(
   itemId: string | null
 ): void {
   socket?.emit("board_decide", { communityId, itemId });
+}
+
+export interface CursorPeer {
+  communityId: string;
+  canonicalKey: string;
+  from: { username: string; name: string; color: string };
+  xPercent: number;
+  yPercent: number;
+}
+
+export function sendCursorMove(
+  communityId: string,
+  canonicalKey: string,
+  xPercent: number,
+  yPercent: number
+): void {
+  socket?.emit("cursor_move", { communityId, canonicalKey, xPercent, yPercent });
+}
+
+export function sendCursorLeave(communityId: string, canonicalKey: string): void {
+  socket?.emit("cursor_leave", { communityId, canonicalKey });
 }
 
 export interface BoardAnchorInput {

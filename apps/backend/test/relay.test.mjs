@@ -804,7 +804,66 @@ let pinItemId, pinId;
 
 zed.disconnect(); amy.disconnect(); bob2.disconnect();
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/27)`);
+
+// TEST 28: cursor relay — same community receives, non-member never does
+{
+  const cur1 = await connect({ username: "cur1", name: "Cur1", color: "#2563EB", visibility: "public" });
+  const cur2 = await connect({ username: "cur2", name: "Cur2", color: "#059669", visibility: "public" });
+  const cur3 = await connect({ username: "cur3", name: "Cur3", color: "#7C3AED", visibility: "public" });
+  await sleep(200);
+
+  const req = new Promise((r) => cur2.once("connect_request", r));
+  cur1.emit("connect_request", { to: "cur2" });
+  await req;
+  const ok = new Promise((r) => cur1.once("connect_update", r));
+  cur2.emit("connect_response", { to: "cur1", action: "accept" });
+  await ok;
+
+  const created = new Promise((r) => cur1.once("community_update", r));
+  cur1.emit("community_create", { name: "Cursor Squad" });
+  const { community } = await created;
+
+  const invited = new Promise((r) => cur2.once("community_invite", r));
+  cur1.emit("community_invite", { communityId: community.id, username: "cur2" });
+  await invited;
+  const joined = new Promise((r) => {
+    const h = ({ community: c }) => {
+      if (c.members.some((m) => m.username === "cur2")) { cur1.off("community_update", h); r(); }
+    };
+    cur1.on("community_update", h);
+  });
+  cur2.emit("community_invite_response", { communityId: community.id, action: "accept" });
+  await joined;
+
+  let leaked = false;
+  cur3.once("cursor_peer", () => (leaked = true));
+
+  const received = new Promise((r) => cur2.once("cursor_peer", r));
+  cur1.emit("cursor_move", {
+    communityId: community.id,
+    canonicalKey: "airbnb:777",
+    xPercent: 33.3,
+    yPercent: 66.6,
+  });
+  const peer = await Promise.race([
+    received,
+    new Promise((_, rej) => setTimeout(() => rej(new Error("cursor not relayed")), 2000)),
+  ]);
+  if (peer.from.username !== "cur1") fail("cursor from wrong user");
+  if (peer.canonicalKey !== "airbnb:777") fail("cursor canonicalKey wrong");
+
+  const left = new Promise((r) => cur2.once("cursor_peer_leave", r));
+  cur1.emit("cursor_leave", { communityId: community.id, canonicalKey: "airbnb:777" });
+  await left;
+
+  await sleep(300);
+  if (leaked) fail("cursor leaked to a non-member");
+  pass("cursors: relayed to community members only, leave propagates, zero retention");
+
+  cur1.disconnect(); cur2.disconnect(); cur3.disconnect();
+}
+
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/28)`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);

@@ -1036,6 +1036,10 @@ export const useChatStore = create<ChatState>()(
         conversations: state.conversations,
         messages: state.messages,
         muted: state.muted,
+        // Communities carry board data (items/pins/highlights) which the
+        // content script reads passively from storage on page load —
+        // without persisting them, on-page annotations cannot render.
+        communities: state.communities,
       }),
       migrate: (persisted: unknown, version) => {
         const state = persisted as {
