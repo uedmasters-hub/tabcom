@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { extensionStorage } from "../lib/extension-storage";
+import { useProfileStore } from "./profile.store";
 import {
   addBoardItem,
   blockUser,
@@ -11,6 +12,11 @@ import {
   createCommunity as rtCreateCommunity,
   inviteToCommunity as rtInviteToCommunity,
   leaveCommunity as rtLeaveCommunity,
+  removeCommunityMember as rtRemoveCommunityMember,
+  cancelCommunityInvite as rtCancelCommunityInvite,
+  renameCommunity as rtRenameCommunity,
+  transferCommunityAdmin as rtTransferCommunityAdmin,
+  deleteCommunity as rtDeleteCommunity,
   reportUser,
   respondToCommunityInvite,
   respondToConnectRequest,
@@ -21,6 +27,13 @@ import {
   decideBoardItem,
   sendConnectRequest,
   sendDm,
+  editDm,
+  deleteDm,
+  reactToDm,
+  markDmRead,
+  editCommunityMessage,
+  deleteCommunityMessage,
+  reactToCommunityMessage,
   unblockUser,
   type CommunityErrorReason,
   type ConnectionStatus,
@@ -33,6 +46,7 @@ import type {
   Contact,
   Conversation,
   Message,
+  MessageReaction,
 } from "../types/chat";
 import { readPageAnchor } from "../lib/anchor";
 
@@ -122,7 +136,36 @@ interface ChatState {
   startConversation: (contactId: string) => string;
   openCommunityConversation: (communityId: string) => string;
 
-  sendText: (conversationId: string, text: string) => void;
+  sendText: (conversationId: string, text: string, replyToId?: string) => void;
+  editMessage: (conversationId: string, messageId: string, text: string) => void;
+  deleteMessage: (conversationId: string, messageId: string) => void;
+  reactToMessage: (conversationId: string, messageId: string, emoji: string) => void;
+  markMessageRead: (conversationId: string, messageId: string) => void;
+  replyTargets: Record<string, string | null>;
+  setReplyTarget: (conversationId: string, messageId: string | null) => void;
+
+  receiveDmEdited: (fromUsername: string, messageId: string, text: string, editedAt: number) => void;
+  receiveDmDeleted: (fromUsername: string, messageId: string) => void;
+  receiveDmReaction: (fromUsername: string, messageId: string, emoji: string) => void;
+  receiveDmReadReceipt: (fromUsername: string, messageId: string, readAt: number) => void;
+  receiveCommunityMessageEdited: (
+    communityId: string,
+    fromUsername: string,
+    messageId: string,
+    text: string,
+    editedAt: number
+  ) => void;
+  receiveCommunityMessageDeleted: (
+    communityId: string,
+    fromUsername: string,
+    messageId: string
+  ) => void;
+  receiveCommunityReaction: (
+    communityId: string,
+    fromUsername: string,
+    messageId: string,
+    emoji: string
+  ) => void;
   shareCurrentTab: (conversationId: string) => Promise<void>;
 
   toggleMute: (targetId: string) => void;
@@ -130,6 +173,7 @@ interface ChatState {
 
   // contact management
   addContactByUsername: (username: string) => void;
+  receiveConnectRequestError: (username: string, reason: string) => void;
   renameContact: (contactId: string, alias: string) => void;
   removeContact: (contactId: string) => void;
   toggleHidePresence: (contact: Contact) => void;
@@ -164,6 +208,12 @@ interface ChatState {
     action: "accept" | "decline"
   ) => void;
   leaveCommunity: (communityId: string) => void;
+  removeCommunityMember: (communityId: string, username: string) => void;
+  cancelCommunityInvite: (communityId: string, username: string) => void;
+  renameCommunity: (communityId: string, name: string) => void;
+  transferCommunityAdmin: (communityId: string, username: string) => void;
+  deleteCommunity: (communityId: string) => void;
+  receiveCommunityDeleted: (communityId: string) => void;
 
   // boards
   addCurrentTabToBoard: (communityId: string) => Promise<void>;
@@ -186,6 +236,7 @@ interface ChatState {
     barred: boolean;
   }) => void;
   receiveCommunityLeft: (communityId: string) => void;
+  receiveCommunityInviteCancelled: (communityId: string) => void;
   receiveCommunityMessage: (
     communityId: string,
     from: WireUser,
@@ -207,6 +258,7 @@ function toCommunity(wire: WireCommunity): Community {
     admin: wire.admin,
     members: wire.members,
     pendingForMe: wire.pendingForMe,
+    pendingInvites: wire.pendingInvites ?? [],
     board: (wire.board ?? []).map((item) => ({
       ...item,
       pins: item.pins ?? [],
@@ -368,6 +420,7 @@ export const useChatStore = create<ChatState>()(
           text: message.text,
           url: message.url,
           sentAt: message.sentAt,
+          replyToId: message.replyToId,
         };
 
         if (conversation.kind === "community" && conversation.communityId) {
@@ -385,6 +438,73 @@ export const useChatStore = create<ChatState>()(
         } else {
           scheduleReply(conversationId, contact.id);
         }
+      };
+
+      /** Resolve a conversation to where its mutations (edit/delete/
+       *  react/read) should be sent — same routing deliver() uses. */
+      const resolveTarget = (
+        conversationId: string
+      ): { kind: "community"; communityId: string } | { kind: "dm"; username: string } | null => {
+        const conversation = get().conversations.find(
+          (item) => item.id === conversationId
+        );
+        if (!conversation) return null;
+
+        if (conversation.kind === "community" && conversation.communityId) {
+          return { kind: "community", communityId: conversation.communityId };
+        }
+
+        const contact = get().contacts.find(
+          (item) => item.id === conversation.contactId
+        );
+        if (!contact || !contact.id.startsWith("u-")) return null; // demo contacts have no live peer
+        return { kind: "dm", username: contact.username };
+      };
+
+      /** Apply a mutation to one message across every store update path —
+       *  local optimistic edits AND incoming events use the same shape. */
+      const mutateMessage = (
+        conversationId: string,
+        messageId: string,
+        mutate: (message: Message) => Message
+      ) => {
+        set((state) => {
+          const thread = state.messages[conversationId];
+          if (!thread) return state;
+          const index = thread.findIndex((m) => m.id === messageId);
+          if (index === -1) return state;
+
+          const nextThread = [...thread];
+          nextThread[index] = mutate(nextThread[index]);
+          return {
+            messages: { ...state.messages, [conversationId]: nextThread },
+          };
+        });
+      };
+
+      /** Toggle one user's reaction — the exact same logic runs whether
+       *  it's MY reaction (optimistic, local username) or an incoming
+       *  event (their username) so both sides converge identically. */
+      const toggleReaction = (
+        reactions: MessageReaction[] | undefined,
+        username: string,
+        emoji: string
+      ): MessageReaction[] => {
+        const list = reactions ?? [];
+        const existing = list.find((r) => r.emoji === emoji);
+
+        if (!existing) {
+          return [...list, { emoji, usernames: [username] }];
+        }
+        if (existing.usernames.includes(username)) {
+          const usernames = existing.usernames.filter((u) => u !== username);
+          return usernames.length === 0
+            ? list.filter((r) => r.emoji !== emoji)
+            : list.map((r) => (r.emoji === emoji ? { ...r, usernames } : r));
+        }
+        return list.map((r) =>
+          r.emoji === emoji ? { ...r, usernames: [...r.usernames, username] } : r
+        );
       };
 
       return {
@@ -461,7 +581,7 @@ export const useChatStore = create<ChatState>()(
           return conversation.id;
         },
 
-        sendText: (conversationId, text) => {
+        sendText: (conversationId, text, replyToId) => {
           const trimmed = text.trim();
           if (!trimmed) return;
 
@@ -471,10 +591,150 @@ export const useChatStore = create<ChatState>()(
             kind: "text",
             text: trimmed,
             sentAt: Date.now(),
+            status: get().live ? "sent" : "failed",
+            replyToId,
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
           deliver(conversationId, message);
+        },
+
+        editMessage: (conversationId, messageId, text) => {
+          const trimmed = text.trim();
+          if (!trimmed) return;
+          const target = resolveTarget(conversationId);
+          if (!target) return;
+
+          const editedAt = Date.now();
+          mutateMessage(conversationId, messageId, (message) =>
+            message.authorId === ME
+              ? { ...message, text: trimmed, editedAt }
+              : message
+          );
+
+          if (target.kind === "community") {
+            editCommunityMessage(target.communityId, messageId, trimmed);
+          } else {
+            editDm(target.username, messageId, trimmed);
+          }
+        },
+
+        deleteMessage: (conversationId, messageId) => {
+          const target = resolveTarget(conversationId);
+          if (!target) return;
+
+          mutateMessage(conversationId, messageId, (message) =>
+            message.authorId === ME
+              ? { ...message, deletedAt: Date.now(), text: "" }
+              : message
+          );
+
+          if (target.kind === "community") {
+            deleteCommunityMessage(target.communityId, messageId);
+          } else {
+            deleteDm(target.username, messageId);
+          }
+        },
+
+        reactToMessage: (conversationId, messageId, emoji) => {
+          const target = resolveTarget(conversationId);
+          if (!target) return;
+          const myUsername = useProfileStore.getState().username;
+          if (!myUsername) return;
+
+          mutateMessage(conversationId, messageId, (message) => ({
+            ...message,
+            reactions: toggleReaction(message.reactions, myUsername, emoji),
+          }));
+
+          if (target.kind === "community") {
+            reactToCommunityMessage(target.communityId, messageId, emoji);
+          } else {
+            reactToDm(target.username, messageId, emoji);
+          }
+        },
+
+        markMessageRead: (conversationId, messageId) => {
+          const target = resolveTarget(conversationId);
+          if (!target || target.kind !== "dm") return; // DM read receipts only, this pass
+          markDmRead(target.username, messageId);
+        },
+
+        replyTargets: {},
+        setReplyTarget: (conversationId, messageId) =>
+          set((state) => ({
+            replyTargets: { ...state.replyTargets, [conversationId]: messageId },
+          })),
+
+        receiveDmEdited: (fromUsername, messageId, text, editedAt) => {
+          const conversation = ensureConversation(
+            { contactId: `u-${fromUsername}` },
+            editedAt
+          );
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            text,
+            editedAt,
+          }));
+        },
+
+        receiveDmDeleted: (fromUsername, messageId) => {
+          const conversation = ensureConversation(
+            { contactId: `u-${fromUsername}` },
+            Date.now()
+          );
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            deletedAt: Date.now(),
+            text: "",
+          }));
+        },
+
+        receiveDmReaction: (fromUsername, messageId, emoji) => {
+          const conversation = ensureConversation(
+            { contactId: `u-${fromUsername}` },
+            Date.now()
+          );
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            reactions: toggleReaction(message.reactions, fromUsername, emoji),
+          }));
+        },
+
+        receiveDmReadReceipt: (fromUsername, messageId, readAt) => {
+          const conversation = ensureConversation(
+            { contactId: `u-${fromUsername}` },
+            readAt
+          );
+          mutateMessage(conversation.id, messageId, (message) =>
+            message.authorId === ME ? { ...message, readAt } : message
+          );
+        },
+
+        receiveCommunityMessageEdited: (communityId, _fromUsername, messageId, text, editedAt) => {
+          const conversation = ensureConversation({ communityId }, editedAt);
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            text,
+            editedAt,
+          }));
+        },
+
+        receiveCommunityMessageDeleted: (communityId, _fromUsername, messageId) => {
+          const conversation = ensureConversation({ communityId }, Date.now());
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            deletedAt: Date.now(),
+            text: "",
+          }));
+        },
+
+        receiveCommunityReaction: (communityId, fromUsername, messageId, emoji) => {
+          const conversation = ensureConversation({ communityId }, Date.now());
+          mutateMessage(conversation.id, messageId, (message) => ({
+            ...message,
+            reactions: toggleReaction(message.reactions, fromUsername, emoji),
+          }));
         },
 
         shareCurrentTab: async (conversationId) => {
@@ -532,6 +792,17 @@ export const useChatStore = create<ChatState>()(
 
           get().requestConnect(contact);
           get().startConversation(contactId);
+        },
+
+        receiveConnectRequestError: (username, reason) => {
+          const contactId = `u-${username}`;
+          systemNotice(
+            { contactId },
+            reason === "unavailable"
+              ? `@${username} couldn't be reached — check the username, or they may be offline/private.`
+              : `Request to @${username} failed.`,
+            false
+          );
         },
 
         renameContact: (contactId, alias) =>
@@ -801,6 +1072,7 @@ export const useChatStore = create<ChatState>()(
             text: message.text,
             url: message.url,
             sentAt: message.sentAt,
+            replyToId: message.replyToId,
           };
 
           set((state) => {
@@ -868,6 +1140,26 @@ export const useChatStore = create<ChatState>()(
         },
 
         leaveCommunity: (communityId) => rtLeaveCommunity(communityId),
+        removeCommunityMember: (communityId, username) =>
+          rtRemoveCommunityMember(communityId, username),
+        cancelCommunityInvite: (communityId, username) =>
+          rtCancelCommunityInvite(communityId, username),
+        renameCommunity: (communityId, name) =>
+          rtRenameCommunity(communityId, name),
+        transferCommunityAdmin: (communityId, username) =>
+          rtTransferCommunityAdmin(communityId, username),
+        deleteCommunity: (communityId) => rtDeleteCommunity(communityId),
+
+        receiveCommunityDeleted: (communityId) =>
+          set((state) => {
+            const { [communityId]: _removed, ...rest } = state.communities;
+            return {
+              communities: rest,
+              conversations: state.conversations.filter(
+                (c) => c.communityId !== communityId
+              ),
+            };
+          }),
 
         // ---- boards ---------------------------------------------------
 
@@ -985,6 +1277,14 @@ export const useChatStore = create<ChatState>()(
           });
         },
 
+        receiveCommunityInviteCancelled: (communityId) => {
+          set((state) => {
+            const communityInvites = { ...state.communityInvites };
+            delete communityInvites[communityId];
+            return { communityInvites };
+          });
+        },
+
         receiveCommunityMessage: (communityId, from, message) => {
           if (messageIdExists(get().messages, message.id)) return;
 
@@ -1005,6 +1305,7 @@ export const useChatStore = create<ChatState>()(
             text: message.text,
             url: message.url,
             sentAt: message.sentAt,
+            replyToId: message.replyToId,
           };
 
           set((state) => {

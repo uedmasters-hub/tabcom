@@ -26,6 +26,12 @@ interface ProfileState {
   hasHydrated: boolean;
 
   isComplete: boolean;
+  /** Set once a magic link is verified — the bearer credential that
+   *  authenticates every socket connection from here on. Undefined
+   *  means "not signed in", regardless of what isComplete says. */
+  sessionToken?: string;
+  email?: string;
+  verified: boolean;
   visibility: ProfileVisibility;
   displayName: string;
   username: string;
@@ -47,12 +53,17 @@ interface ProfileState {
   setAnimations: (animations: boolean) => void;
   setPresence: (presence: "online" | "away" | "busy" | "offline") => void;
   setPipEnabled: (pipEnabled: boolean) => void;
+  setSession: (sessionToken: string, email: string) => void;
+  setVerified: (verified: boolean) => void;
   completeProfile: () => void;
   resetProfile: () => void;
 }
 
 const initialProfile = {
   isComplete: false,
+  sessionToken: undefined as string | undefined,
+  email: undefined as string | undefined,
+  verified: false,
   visibility: "public" as ProfileVisibility,
   displayName: "",
   username: "",
@@ -86,6 +97,10 @@ export const useProfileStore = create<ProfileState>()(
 
       setPipEnabled: (pipEnabled) => set({ pipEnabled }),
 
+      setSession: (sessionToken, email) => set({ sessionToken, email }),
+
+      setVerified: (verified) => set({ verified }),
+
       completeProfile: () => set({ isComplete: true }),
 
       resetProfile: () => set({ ...initialProfile }),
@@ -95,6 +110,9 @@ export const useProfileStore = create<ProfileState>()(
       storage: createJSONStorage(() => extensionStorage),
       partialize: (state) => ({
         isComplete: state.isComplete,
+        sessionToken: state.sessionToken,
+        email: state.email,
+        verified: state.verified,
         visibility: state.visibility,
         displayName: state.displayName,
         username: state.username,

@@ -5,16 +5,9 @@ import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
 import { anchorForPoint } from "../../src/lib/element-anchor";
 import {
-  extensionAlive,
-  initPagePill,
-  refreshPagePill,
-  showRefreshChip,
-} from "../../src/content/page-pill";
-import {
   getCursorsEnabled,
   onCursorsEnabledChange,
-  onPillEnabledChange,
-} from "../../src/lib/pill-settings";
+} from "../../src/lib/cursor-settings";
 
 /**
  * On-page annotation overlay.
@@ -336,6 +329,39 @@ function showPinPopover(
 // direct WebSocket connection on a strict site. The background service
 // worker is an extension page, never subject to any website's CSP, and
 // serves every tab from one connection — so writes are relayed there.
+
+// ---- Orphan detection ------------------------------------------------
+//
+// Reloading the extension leaves content scripts already injected into
+// open tabs running as zombies — every browser.* call throws "Extension
+// context invalidated". This predates and is independent of the pill;
+// the annotation overlay (pin/highlight/cursor writes below) needs it
+// on its own.
+
+function extensionAlive(): boolean {
+  try {
+    return !!browser.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
+let refreshChipShown = false;
+
+function showRefreshChip(): void {
+  if (refreshChipShown) return;
+  refreshChipShown = true;
+
+  const chip = document.createElement("button");
+  chip.textContent = "↻ Tabcom was updated — click to refresh this page";
+  chip.style.cssText =
+    "position:fixed;bottom:20px;right:20px;z-index:2147483647;" +
+    "background:#D97706;color:#fff;border:none;border-radius:999px;" +
+    "padding:10px 16px;font:600 12.5px -apple-system,sans-serif;" +
+    "cursor:pointer;box-shadow:0 10px 30px rgba(120,53,15,.35);";
+  chip.addEventListener("click", () => window.location.reload());
+  document.documentElement.append(chip);
+}
 
 function orphanCheck(): boolean {
   if (extensionAlive()) return false;
@@ -934,7 +960,6 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "tabcom:community-updated") {
     void renderExisting();
-    refreshPagePill();
     return undefined;
   }
 
@@ -974,47 +999,8 @@ export default defineContentScript({
       else void renderExisting(); // re-arm scope detection
     });
 
-    // Pill off = offline: this page must also stop holding the
-    // connection open with its cursor stream.
-    onPillEnabledChange((enabled) => {
-      if (!enabled) void syncCursorScope(null);
-      else void renderExisting();
-    });
-
     const boot = () => {
       void renderExisting();
-      initPagePill({
-        enterPinMode,
-        enterHighlightMode,
-        addCurrentPage: async (communityId) => {
-          const anchor = readPageAnchor();
-          return boardWrite("item_add", { communityId, ...anchor });
-        },
-        openPanel: () => {
-          browser.runtime
-            .sendMessage({ type: "tabcom:open-panel" })
-            .catch((error) => {
-              if (String(error).includes("context invalidated")) {
-                showRefreshChip();
-              }
-            });
-        },
-        navigateToAnnotation: (item, target) => {
-          browser.runtime
-            .sendMessage({
-              type: "tabcom:navigate-to-annotation",
-              url: item.url,
-              canonicalKey: item.canonicalKey,
-              kind: target.kind,
-              id: target.id,
-            })
-            .catch((error) => {
-              if (String(error).includes("context invalidated")) {
-                showRefreshChip();
-              }
-            });
-        },
-      });
     };
     if (document.readyState === "complete") boot();
     else window.addEventListener("load", boot);

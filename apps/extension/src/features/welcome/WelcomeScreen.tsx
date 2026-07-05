@@ -37,10 +37,10 @@ export default function WelcomeScreen() {
 
         <div className="mt-10">
           <Button
-            onClick={() => setScreen("signin")}
+            onClick={() => setScreen("register")}
             rightIcon={<ArrowRight size={16} />}
           >
-            Continue
+            Get started
           </Button>
         </div>
       </section>

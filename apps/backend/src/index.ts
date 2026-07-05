@@ -1,7 +1,19 @@
+import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
+
+import {
+  claimUsername,
+  checkUsernameAvailable,
+  pollLoginRequest,
+  registerAccount,
+  requestMagicLink,
+  sendVerificationEmail,
+  validateSession,
+  verifyMagicLink,
+} from "./auth/service";
 
 /**
  * Tabcom realtime server — privacy-first relay with consent-based contact.
@@ -31,6 +43,10 @@ export interface WireUser {
   presence: Presence;
   /** Optional small avatar photo (data URL, capped). */
   photo?: string;
+  /** True once the account's email is confirmed. False for lean-
+   *  onboarding accounts that haven't verified yet — surfaced to
+   *  people they contact, not just to the account itself. */
+  verified?: boolean;
 }
 
 function sanitizePresence(value: unknown): Presence {
@@ -53,7 +69,206 @@ interface Pair {
   requester: string; // username that initiated
 }
 
-const httpServer = createServer((_req, res) => {
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3001}`;
+
+// Serverless Postgres providers (Neon, etc.) auto-suspend their
+// compute after a period of inactivity to save cost — the free tier's
+// whole value proposition. That's correct behavior, not a bug, but it
+// means the FIRST query after suspension pays a cold-start delay. This
+// doesn't eliminate that (nothing running client-side can), it just
+// makes it far less frequent DURING an active session by keeping the
+// compute from ever going idle long enough to suspend in the first
+// place. Only runs when DATABASE_URL is actually configured — auth is
+// additive, plenty of setups run this server without it at all.
+if (process.env.DATABASE_URL) {
+  const KEEP_ALIVE_MS = 4 * 60 * 1000; // well under typical 5min auto-suspend thresholds
+  setInterval(() => {
+    import("./db/client")
+      .then(({ db, schema }) => db.select().from(schema.users).limit(1))
+      .catch(() => {}); // best-effort — a failed ping just means the next real query pays the cold start
+  }, KEEP_ALIVE_MS);
+}
+
+function readJsonBody(req: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
+const httpServer = createServer((req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", PUBLIC_BASE_URL);
+
+  if (req.method === "POST" && url.pathname === "/auth/request-link") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await requestMagicLink(String(body.email ?? ""), PUBLIC_BASE_URL);
+        res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] request-link failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/verify") {
+    const token = url.searchParams.get("token") ?? "";
+    const errorPage = `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
+              <h2>Something went wrong</h2>
+              <p style="color:#64748B;">Go back to Tabcom and request a new link.</p>
+            </body></html>`;
+    void verifyMagicLink(token)
+      .then((result) => {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(
+          result.ok
+            ? `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
+                <h2>You're signed in ✓</h2>
+                <p style="color:#64748B;">You can close this tab and return to Tabcom.</p>
+              </body></html>`
+            : `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
+                <h2>This link has expired or was already used</h2>
+                <p style="color:#64748B;">Go back to Tabcom and request a new one.</p>
+              </body></html>`
+        );
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] verify failed:", error);
+        res.writeHead(503, { "Content-Type": "text/html" });
+        res.end(errorPage);
+      });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/poll") {
+    const pollId = url.searchParams.get("pollId") ?? "";
+    void pollLoginRequest(pollId)
+      .then((result) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] poll failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "expired" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/claim-username") {
+    void readJsonBody(req).then(async (body) => {
+      try {
+      const sessionToken = String(body.sessionToken ?? "");
+      const user = await validateSession(sessionToken);
+      if (!user) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "invalid_session" }));
+        return;
+      }
+      const result = await claimUsername(
+        user.id,
+        String(body.username ?? ""),
+        String(body.displayName ?? ""),
+        String(body.avatarColor ?? "#2563EB")
+      );
+      res.writeHead(result.ok ? 200 : 409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error("[tabcom:auth] claim-username failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/check-username") {
+    const username = url.searchParams.get("username") ?? "";
+    checkUsernameAvailable(username)
+      .then((result) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] check-username failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/register") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await registerAccount(
+          String(body.email ?? ""),
+          String(body.username ?? ""),
+          String(body.displayName ?? ""),
+          String(body.avatarColor ?? "#2563EB")
+        );
+        res.writeHead(result.ok ? 200 : 409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] register failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/send-verification") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await sendVerificationEmail(
+          String(body.sessionToken ?? ""),
+          PUBLIC_BASE_URL
+        );
+        res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] send-verification failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/me") {
+    const sessionToken = url.searchParams.get("sessionToken") ?? "";
+    validateSession(sessionToken)
+      .then((user) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(user ? { ok: true, user } : { ok: false }));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] me failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false }));
+      });
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true, service: "tabcom-realtime" }));
 });
@@ -185,6 +400,8 @@ function ensureBoardItem(
 
 function serializeCommunity(c: Community, forUsername?: string) {
   const invite = forUsername ? c.invites.get(forUsername) : undefined;
+  const isAdmin = forUsername === c.admin;
+
   return {
     id: c.id,
     name: c.name,
@@ -194,6 +411,16 @@ function serializeCommunity(c: Community, forUsername?: string) {
       ...(c.memberInfo.get(username) ?? { name: username, color: "#334155" }),
     })),
     pendingForMe: invite?.pending ?? false,
+    // Only the admin can see who's been invited and hasn't responded —
+    // it's membership-management info, not something every member needs.
+    pendingInvites: isAdmin
+      ? [...c.invites.entries()]
+          .filter(([, state]) => state.pending)
+          .map(([username, state]) => ({
+            username,
+            attemptsLeft: Math.max(0, MAX_INVITE_ATTEMPTS - state.attempts),
+          }))
+      : [],
     board: [...c.board.values()]
       .sort((a, b) => b.votes.size - a.votes.size || b.addedAt - a.addedAt)
       .map(serializeBoardItem),
@@ -411,33 +638,63 @@ function notify(username: string, event: string, payload: unknown): void {
 }
 
 io.on("connection", (socket) => {
+  // Authentication is additive, not required — this keeps every
+  // existing (pre-auth) client working exactly as before while
+  // giving authenticated clients a REAL, server-verified identity
+  // instead of a self-declared username. socket.io's own connection
+  // handshake carries the token, so it's validated before any message
+  // handler runs.
+  const sessionToken = socket.handshake.auth?.sessionToken as string | undefined;
+
   socket.on("hello", (raw: Partial<WireUser>) => {
-    if (!raw?.username) return;
+    void (sessionToken ? validateSession(sessionToken) : Promise.resolve(null)).then(
+      (authedUser) => {
+        // Re-checked on every "hello", not cached once at connection
+        // time — verified status (and in principle the username too)
+        // can change while a socket stays open (e.g. clicking the
+        // verification link in another tab without reconnecting), and
+        // a stale cached value would silently hide that from everyone
+        // else until the person happened to reconnect.
+        const authedUsername = authedUser?.username ?? null;
+        const authedVerified = authedUser?.verified ?? false;
 
-    const user: WireUser = {
-      username: String(raw.username).slice(0, 20).toLowerCase(),
-      name: String(raw.name ?? raw.username).slice(0, 40),
-      color: String(raw.color ?? "#2563EB").slice(0, 9),
-      visibility: sanitizeVisibility(raw.visibility),
-      presence: sanitizePresence(raw.presence),
-      photo:
-        typeof raw.photo === "string" && raw.photo.startsWith("data:image/")
-          ? raw.photo.slice(0, 60000)
-          : undefined,
-    };
+        // If this socket authenticated with a real session AND that
+        // account has claimed a username, the account's username wins —
+        // a client cannot impersonate anyone else's authenticated
+        // identity by simply typing a different name in "hello".
+        const claimedUsername = authedUsername ?? raw?.username;
+        if (!claimedUsername) return;
 
-    users.set(socket.id, user);
-    broadcastRoster();
-    sendConnections(socket.id, user.username);
+        const user: WireUser = {
+          username: String(claimedUsername).slice(0, 20).toLowerCase(),
+          name: String(raw?.name ?? claimedUsername).slice(0, 40),
+          color: String(raw?.color ?? "#2563EB").slice(0, 9),
+          visibility: sanitizeVisibility(raw?.visibility),
+          presence: sanitizePresence(raw?.presence),
+          photo:
+            typeof raw?.photo === "string" && raw.photo.startsWith("data:image/")
+              ? raw.photo.slice(0, 60000)
+              : undefined,
+          // Same trust boundary as the username: only an authenticated
+          // session can claim to be verified. An unauthenticated "hello"
+          // (the pre-auth demo/dev path) is never marked verified,
+          // regardless of what it sends.
+          verified: authedUsername ? authedVerified : false,
+        };
 
-    const mine = [...communities.values()]
-      .filter(
-        (c) =>
-          c.members.has(user.username) ||
-          c.invites.get(user.username)?.pending
-      )
-      .map((c) => serializeCommunity(c, user.username));
-    socket.emit("communities", mine);
+        users.set(socket.id, user);
+        broadcastRoster();
+        sendConnections(socket.id, user.username);
+
+        const mine = [...communities.values()]
+          .filter(
+            (c) =>
+              c.members.has(user.username) ||
+              c.invites.get(user.username)?.pending
+          )
+        .map((c) => serializeCommunity(c, user.username));
+      socket.emit("communities", mine);
+    });
   });
 
   socket.on("visibility", (raw: unknown) => {
@@ -509,7 +766,12 @@ io.on("connection", (socket) => {
 
     const targets = publicSocketIdsFor(to);
     if (targets.length === 0) {
-      socket.emit("connect_error", { to, reason: "unavailable" });
+      // NOTE: "connect_error" is a Socket.IO RESERVED event name — the
+      // server throws if it's emitted with a custom payload, which
+      // crashed the entire process for every connected user any time
+      // someone requested an offline/unknown/mistyped username. Renamed
+      // to a namespaced, non-reserved event.
+      socket.emit("connect_request_error", { to, reason: "unavailable" });
       return;
     }
 
@@ -601,7 +863,7 @@ io.on("connection", (socket) => {
     };
     communities.set(community.id, community);
     notify(me.username, "community_update", {
-      community: serializeCommunity(community),
+      community: serializeCommunity(community, me.username),
     });
   });
 
@@ -661,7 +923,7 @@ io.on("connection", (socket) => {
         attempt: invite.attempts,
       });
       socket.emit("community_update", {
-        community: serializeCommunity(community),
+        community: serializeCommunity(community, me.username),
       });
     }
   );
@@ -691,7 +953,7 @@ io.on("connection", (socket) => {
         });
         for (const member of community.members) {
           notify(member, "community_update", {
-            community: serializeCommunity(community),
+            community: serializeCommunity(community, member),
           });
         }
       } else {
@@ -737,11 +999,122 @@ io.on("connection", (socket) => {
 
     for (const member of community.members) {
       notify(member, "community_update", {
-        community: serializeCommunity(community),
+        community: serializeCommunity(community, member),
       });
     }
     notify(me.username, "community_left", { communityId });
   });
+
+  socket.on(
+    "community_remove_member",
+    ({ communityId, username }: { communityId: string; username: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin only
+      if (username === me.username) return; // use community_leave for self
+      if (!community.members.has(username)) return;
+
+      community.members.delete(username);
+      community.memberInfo.delete(username);
+
+      // A removal counts as a strike, same as declining or leaving —
+      // consistent with the existing 3-strike re-invite protection.
+      const invite = community.invites.get(username) ?? {
+        attempts: 0,
+        pending: false,
+      };
+      community.invites.set(username, {
+        attempts: invite.attempts + 1,
+        pending: false,
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+      // The removed member's client drops the community the same way
+      // it does for a voluntary leave.
+      notify(username, "community_left", { communityId });
+    }
+  );
+
+  socket.on(
+    "community_invite_cancel",
+    ({ communityId, username }: { communityId: string; username: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin only
+
+      const invite = community.invites.get(username);
+      if (!invite?.pending) return;
+      invite.pending = false;
+
+      notify(username, "community_invite_cancelled", { communityId });
+      notify(me.username, "community_update", {
+        community: serializeCommunity(community, me.username),
+      });
+    }
+  );
+
+  socket.on(
+    "community_rename",
+    ({ communityId, name }: { communityId: string; name: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin only
+
+      const trimmed = String(name ?? "").trim().slice(0, 60);
+      if (!trimmed) return;
+      community.name = trimmed;
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "community_transfer_admin",
+    ({ communityId, username }: { communityId: string; username: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // current admin only
+      if (username === me.username) return;
+      if (!community.members.has(username)) return; // must be a member
+
+      community.admin = username;
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "community_delete",
+    ({ communityId }: { communityId: string }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin only
+
+      const members = [...community.members];
+      communities.delete(communityId);
+
+      for (const member of members) {
+        notify(member, "community_deleted", { communityId });
+      }
+    }
+  );
 
   socket.on(
     "community_message",
@@ -799,7 +1172,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -827,7 +1200,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -861,7 +1234,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -884,7 +1257,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -936,7 +1309,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -966,7 +1339,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -1005,7 +1378,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -1035,7 +1408,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -1068,7 +1441,7 @@ io.on("connection", (socket) => {
 
       for (const member of community.members) {
         notify(member, "community_update", {
-          community: serializeCommunity(community),
+          community: serializeCommunity(community, member),
         });
       }
     }
@@ -1178,6 +1551,183 @@ io.on("connection", (socket) => {
 
       for (const id of targets) {
         io.to(id).emit("dm", { from, message });
+      }
+    }
+  );
+
+  // ---- Message mutation events (edit/delete/react/read) -----------------
+  //
+  // No server-side message store exists (zero retention), so these are
+  // pure relays — each client independently builds its local view from
+  // the stream of events it receives, the same way message delivery
+  // already works. The server re-applies the SAME consent/visibility
+  // gates as sending a message, so a mutation can only ever reach
+  // someone already inside that conversation.
+  //
+  // Known, accepted trade-off: because nothing is stored, the server
+  // cannot verify a client's claim to have authored the message it's
+  // editing/deleting — that trust is bounded by the same consent
+  // relationship (accepted contact / community membership) that already
+  // governs everything else here, not a new exposure.
+
+  socket.on(
+    "dm_edit",
+    ({ to, messageId, text }: { to: string; messageId: string; text: string }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !messageId || !text?.trim()) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) return;
+
+      for (const id of publicSocketIdsFor(to)) {
+        io.to(id).emit("dm_edited", {
+          from: from.username,
+          messageId,
+          text: String(text).trim().slice(0, 2000),
+          editedAt: Date.now(),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "dm_delete",
+    ({ to, messageId }: { to: string; messageId: string }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !messageId) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) return;
+
+      for (const id of publicSocketIdsFor(to)) {
+        io.to(id).emit("dm_deleted", { from: from.username, messageId });
+      }
+    }
+  );
+
+  socket.on(
+    "dm_react",
+    ({ to, messageId, emoji }: { to: string; messageId: string; emoji: string }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !messageId || !emoji) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) return;
+
+      for (const id of publicSocketIdsFor(to)) {
+        io.to(id).emit("dm_reaction", {
+          from: from.username,
+          messageId,
+          emoji: String(emoji).slice(0, 8),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "dm_read",
+    ({ to, messageId }: { to: string; messageId: string }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !messageId) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) return;
+
+      for (const id of publicSocketIdsFor(to)) {
+        io.to(id).emit("dm_read_receipt", {
+          from: from.username,
+          messageId,
+          readAt: Date.now(),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "community_message_edit",
+    ({
+      communityId,
+      messageId,
+      text,
+    }: {
+      communityId: string;
+      messageId: string;
+      text: string;
+    }) => {
+      const from = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!from || !community || !messageId || !text?.trim()) return;
+      if (from.visibility === "private") return;
+      if (!community.members.has(from.username)) return;
+
+      for (const member of community.members) {
+        if (member === from.username) continue;
+        for (const id of publicSocketIdsFor(member)) {
+          io.to(id).emit("community_message_edited", {
+            communityId,
+            from: from.username,
+            messageId,
+            text: String(text).trim().slice(0, 2000),
+            editedAt: Date.now(),
+          });
+        }
+      }
+    }
+  );
+
+  socket.on(
+    "community_message_delete",
+    ({ communityId, messageId }: { communityId: string; messageId: string }) => {
+      const from = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!from || !community || !messageId) return;
+      if (from.visibility === "private") return;
+      if (!community.members.has(from.username)) return;
+
+      for (const member of community.members) {
+        if (member === from.username) continue;
+        for (const id of publicSocketIdsFor(member)) {
+          io.to(id).emit("community_message_deleted", {
+            communityId,
+            from: from.username,
+            messageId,
+          });
+        }
+      }
+    }
+  );
+
+  socket.on(
+    "community_message_react",
+    ({
+      communityId,
+      messageId,
+      emoji,
+    }: {
+      communityId: string;
+      messageId: string;
+      emoji: string;
+    }) => {
+      const from = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!from || !community || !messageId || !emoji) return;
+      if (from.visibility === "private") return;
+      if (!community.members.has(from.username)) return;
+
+      for (const member of community.members) {
+        if (member === from.username) continue;
+        for (const id of publicSocketIdsFor(member)) {
+          io.to(id).emit("community_reaction", {
+            communityId,
+            from: from.username,
+            messageId,
+            emoji: String(emoji).slice(0, 8),
+          });
+        }
       }
     }
   );

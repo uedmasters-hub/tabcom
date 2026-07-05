@@ -26,6 +26,7 @@ export interface WireUser {
   visibility: Visibility;
   presence?: WirePresence;
   photo?: string;
+  verified?: boolean;
 }
 
 export interface WireBoardComment {
@@ -79,6 +80,7 @@ export interface WireCommunity {
   admin: string;
   members: Array<{ username: string; name: string; color: string }>;
   pendingForMe: boolean;
+  pendingInvites: Array<{ username: string; attemptsLeft: number }>;
   board: WireBoardItem[];
   boardDecidedId?: string;
 }
@@ -94,6 +96,7 @@ export interface WireMessage {
   text: string;
   url?: string;
   sentAt: number;
+  replyToId?: string;
 }
 
 export type DmErrorReason =
@@ -113,6 +116,28 @@ export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;
   onRoster: (users: WireUser[]) => void;
   onDm: (from: WireUser, message: WireMessage) => void;
+  onDmEdited?: (from: string, messageId: string, text: string, editedAt: number) => void;
+  onDmDeleted?: (from: string, messageId: string) => void;
+  onDmReaction?: (from: string, messageId: string, emoji: string) => void;
+  onDmReadReceipt?: (from: string, messageId: string, readAt: number) => void;
+  onCommunityMessageEdited?: (
+    communityId: string,
+    from: string,
+    messageId: string,
+    text: string,
+    editedAt: number
+  ) => void;
+  onCommunityMessageDeleted?: (
+    communityId: string,
+    from: string,
+    messageId: string
+  ) => void;
+  onCommunityReaction?: (
+    communityId: string,
+    from: string,
+    messageId: string,
+    emoji: string
+  ) => void;
   onTyping: (fromUsername: string) => void;
   onDmError: (toUsername: string, reason: DmErrorReason) => void;
   onConnections: (
@@ -120,6 +145,7 @@ export interface RealtimeHandlers {
   ) => void;
   onConnectRequest: (from: WireUser) => void;
   onConnectUpdate: (username: string, status: ConnectionStatus) => void;
+  onConnectRequestError?: (username: string, reason: string) => void;
   onCommunities: (communities: WireCommunity[]) => void;
   onCommunityUpdate: (community: WireCommunity) => void;
   onCommunityInvite: (
@@ -135,6 +161,8 @@ export interface RealtimeHandlers {
     barred: boolean;
   }) => void;
   onCommunityLeft: (communityId: string) => void;
+  onCommunityDeleted?: (communityId: string) => void;
+  onCommunityInviteCancelled?: (communityId: string) => void;
   onCommunityMessage: (
     communityId: string,
     from: WireUser,
@@ -155,7 +183,11 @@ export interface RealtimeHandlers {
 
 let socket: Socket | null = null;
 
-export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
+export function initRealtime(
+  me: WireUser,
+  handlers: RealtimeHandlers,
+  sessionToken?: string
+): void {
   if (socket) return;
 
   socket = io(REALTIME_URL, {
@@ -166,6 +198,11 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
     // does not exist in MV3 service workers — the background relay
     // could never connect. WebSocket works in every context we run in.
     transports: ["websocket"],
+    // Read by the server BEFORE any "hello" arrives — if this is a
+    // valid, non-expired session for an account with a claimed
+    // username, the server uses THAT username, no matter what the
+    // "hello" payload below claims. See index.ts's connection handler.
+    auth: sessionToken ? { sessionToken } : undefined,
   });
 
   socket.on("connect", () => {
@@ -176,12 +213,108 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
   socket.on("disconnect", () => handlers.onConnectionChange(false));
   socket.on("connect_error", () => handlers.onConnectionChange(false));
 
+  socket.on("connect_request_error", ({ to, reason }: { to: string; reason: string }) =>
+    handlers.onConnectRequestError?.(to, reason)
+  );
+
   socket.on("roster", (users: WireUser[]) => handlers.onRoster(users));
 
   socket.on(
     "dm",
     ({ from, message }: { from: WireUser; message: WireMessage }) =>
       handlers.onDm(from, message)
+  );
+
+  socket.on(
+    "dm_edited",
+    ({
+      from,
+      messageId,
+      text,
+      editedAt,
+    }: {
+      from: string;
+      messageId: string;
+      text: string;
+      editedAt: number;
+    }) => handlers.onDmEdited?.(from, messageId, text, editedAt)
+  );
+
+  socket.on(
+    "dm_deleted",
+    ({ from, messageId }: { from: string; messageId: string }) =>
+      handlers.onDmDeleted?.(from, messageId)
+  );
+
+  socket.on(
+    "dm_reaction",
+    ({
+      from,
+      messageId,
+      emoji,
+    }: {
+      from: string;
+      messageId: string;
+      emoji: string;
+    }) => handlers.onDmReaction?.(from, messageId, emoji)
+  );
+
+  socket.on(
+    "dm_read_receipt",
+    ({
+      from,
+      messageId,
+      readAt,
+    }: {
+      from: string;
+      messageId: string;
+      readAt: number;
+    }) => handlers.onDmReadReceipt?.(from, messageId, readAt)
+  );
+
+  socket.on(
+    "community_message_edited",
+    ({
+      communityId,
+      from,
+      messageId,
+      text,
+      editedAt,
+    }: {
+      communityId: string;
+      from: string;
+      messageId: string;
+      text: string;
+      editedAt: number;
+    }) => handlers.onCommunityMessageEdited?.(communityId, from, messageId, text, editedAt)
+  );
+
+  socket.on(
+    "community_message_deleted",
+    ({
+      communityId,
+      from,
+      messageId,
+    }: {
+      communityId: string;
+      from: string;
+      messageId: string;
+    }) => handlers.onCommunityMessageDeleted?.(communityId, from, messageId)
+  );
+
+  socket.on(
+    "community_reaction",
+    ({
+      communityId,
+      from,
+      messageId,
+      emoji,
+    }: {
+      communityId: string;
+      from: string;
+      messageId: string;
+      emoji: string;
+    }) => handlers.onCommunityReaction?.(communityId, from, messageId, emoji)
   );
 
   socket.on("typing", ({ from }: { from: string }) =>
@@ -241,6 +374,16 @@ export function initRealtime(me: WireUser, handlers: RealtimeHandlers): void {
     handlers.onCommunityLeft(communityId)
   );
 
+  socket.on("community_deleted", ({ communityId }: { communityId: string }) =>
+    handlers.onCommunityDeleted?.(communityId)
+  );
+
+  socket.on(
+    "community_invite_cancelled",
+    ({ communityId }: { communityId: string }) =>
+      handlers.onCommunityInviteCancelled?.(communityId)
+  );
+
   socket.on(
     "community_message",
     ({
@@ -291,6 +434,26 @@ export function respondToCommunityInvite(
 
 export function leaveCommunity(communityId: string): void {
   socket?.emit("community_leave", { communityId });
+}
+
+export function removeCommunityMember(communityId: string, username: string): void {
+  socket?.emit("community_remove_member", { communityId, username });
+}
+
+export function cancelCommunityInvite(communityId: string, username: string): void {
+  socket?.emit("community_invite_cancel", { communityId, username });
+}
+
+export function renameCommunity(communityId: string, name: string): void {
+  socket?.emit("community_rename", { communityId, name });
+}
+
+export function transferCommunityAdmin(communityId: string, username: string): void {
+  socket?.emit("community_transfer_admin", { communityId, username });
+}
+
+export function deleteCommunity(communityId: string): void {
+  socket?.emit("community_delete", { communityId });
 }
 
 export function sendCommunityMessage(
@@ -445,6 +608,42 @@ export function updateVisibility(visibility: Visibility): void {
 
 export function sendDm(toUsername: string, message: WireMessage): void {
   socket?.emit("dm", { to: toUsername, message });
+}
+
+export function editDm(toUsername: string, messageId: string, text: string): void {
+  socket?.emit("dm_edit", { to: toUsername, messageId, text });
+}
+
+export function deleteDm(toUsername: string, messageId: string): void {
+  socket?.emit("dm_delete", { to: toUsername, messageId });
+}
+
+export function reactToDm(toUsername: string, messageId: string, emoji: string): void {
+  socket?.emit("dm_react", { to: toUsername, messageId, emoji });
+}
+
+export function markDmRead(toUsername: string, messageId: string): void {
+  socket?.emit("dm_read", { to: toUsername, messageId });
+}
+
+export function editCommunityMessage(
+  communityId: string,
+  messageId: string,
+  text: string
+): void {
+  socket?.emit("community_message_edit", { communityId, messageId, text });
+}
+
+export function deleteCommunityMessage(communityId: string, messageId: string): void {
+  socket?.emit("community_message_delete", { communityId, messageId });
+}
+
+export function reactToCommunityMessage(
+  communityId: string,
+  messageId: string,
+  emoji: string
+): void {
+  socket?.emit("community_message_react", { communityId, messageId, emoji });
 }
 
 export function sendTyping(toUsername: string): void {

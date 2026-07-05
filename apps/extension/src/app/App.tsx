@@ -4,11 +4,7 @@ import WelcomeScreen from "../features/welcome";
 import SignInScreen from "../features/signin";
 import WorkspaceScreen from "../features/workspace";
 
-import {
-  VisibilityScreen,
-  IdentityScreen,
-  AvatarScreen,
-} from "../features/onboarding";
+import { DoneScreen, ProfileScreen, RegisterScreen, SetupScreen } from "../features/onboarding";
 
 import { useAppStore } from "../stores/app.store";
 import { useProfileStore } from "../stores/profile.store";
@@ -20,7 +16,11 @@ export default function App() {
   const hasHydrated = useProfileStore((state) => state.hasHydrated);
   const isComplete = useProfileStore((state) => state.isComplete);
 
-  // Returning users skip onboarding once storage has hydrated.
+  // Returning users skip onboarding once storage has hydrated. The
+  // socket's own session validation (server-side) is the real gate —
+  // if a stored session has expired, connecting simply falls back to
+  // the pre-auth trust model rather than hard-locking someone out of
+  // an extension they already set up.
   useEffect(() => {
     if (hasHydrated && isComplete) {
       setScreen("workspace");
@@ -39,14 +39,17 @@ export default function App() {
     case "signin":
       return <SignInScreen />;
 
-    case "visibility":
-      return <VisibilityScreen />;
+    case "register":
+      return <RegisterScreen />;
 
-    case "identity":
-      return <IdentityScreen />;
+    case "profile":
+      return <ProfileScreen />;
 
-    case "avatar":
-      return <AvatarScreen />;
+    case "done":
+      return <DoneScreen />;
+
+    case "setup":
+      return <SetupScreen />;
 
     case "workspace":
       return <WorkspaceScreen />;

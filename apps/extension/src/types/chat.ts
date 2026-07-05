@@ -18,6 +18,17 @@ export function contactLabel(contact: Contact): string {
 
 export type MessageKind = "text" | "link" | "system";
 
+/** Only meaningful for messages authored by "me" — a fire-and-forget
+ *  socket emit doesn't give a real delivery guarantee, so this is a
+ *  best-effort signal: sending while offline is the one case we can
+ *  detect for certain. */
+export type MessageStatus = "sending" | "sent" | "failed";
+
+export interface MessageReaction {
+  emoji: string;
+  usernames: string[];
+}
+
 export interface Message {
   id: string;
   authorId: string; // "me", "system", or a contact id
@@ -28,6 +39,18 @@ export interface Message {
   /** Community messages carry author display info. */
   authorName?: string;
   authorColor?: string;
+  status?: MessageStatus;
+  editedAt?: number;
+  /** Tombstone — the message is gone, but we keep the row so the
+   *  conversation doesn't jump and the other person isn't confused by
+   *  a message vanishing with no explanation. */
+  deletedAt?: number;
+  /** Inline reply reference — the id of the message being replied to. */
+  replyToId?: string;
+  reactions?: MessageReaction[];
+  /** DM read receipts only for this pass — when the OTHER person read
+   *  this message (only ever set on messages authored by "me"). */
+  readAt?: number;
 }
 
 export interface CommunityMember {
@@ -81,6 +104,11 @@ export interface BoardItem {
   decided: boolean;
 }
 
+export interface PendingInvite {
+  username: string;
+  attemptsLeft: number;
+}
+
 export interface Community {
   id: string;
   name: string;
@@ -88,6 +116,8 @@ export interface Community {
   members: CommunityMember[];
   pendingForMe: boolean;
   invitedBy?: string;
+  /** Admin-only visibility — empty array for everyone else. */
+  pendingInvites: PendingInvite[];
   board: BoardItem[];
   boardDecidedId?: string;
 }

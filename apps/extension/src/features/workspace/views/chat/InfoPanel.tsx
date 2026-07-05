@@ -1,19 +1,25 @@
 import {
   BellOff,
   Bell,
+  Check,
+  Crown,
   EyeOff,
   Eye,
   ExternalLink,
   Flag,
   LogOut,
+  Pencil,
   ShieldBan,
   Trash2,
+  UserMinus,
   UserPlus,
   X,
 } from "lucide-react";
+import { useState } from "react";
 import { browser } from "wxt/browser";
 
 import { Avatar, Button, SectionLabel } from "../../../../components/ui";
+import { cn } from "../../../../lib/cn";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import { contactLabel } from "../../../../types/chat";
@@ -59,6 +65,17 @@ export default function InfoPanel({
   const report = useChatStore((state) => state.report);
   const inviteToCommunity = useChatStore((state) => state.inviteToCommunity);
   const leaveCommunity = useChatStore((state) => state.leaveCommunity);
+  const removeCommunityMember = useChatStore(
+    (state) => state.removeCommunityMember
+  );
+  const cancelCommunityInvite = useChatStore(
+    (state) => state.cancelCommunityInvite
+  );
+  const renameCommunity = useChatStore((state) => state.renameCommunity);
+  const transferCommunityAdmin = useChatStore(
+    (state) => state.transferCommunityAdmin
+  );
+  const deleteCommunity = useChatStore((state) => state.deleteCommunity);
   const closeConversation = useChatStore((state) => state.closeConversation);
 
   const community = conversation.communityId
@@ -130,30 +147,58 @@ export default function InfoPanel({
         ) : null}
       </div>
 
-      {/* Community members + admin invite manager */}
+      {/* Community name — admin can rename inline */}
+      {community && community.admin === username && (
+        <CommunityNameEditor
+          community={community}
+          onRename={(name) => renameCommunity(community.id, name)}
+        />
+      )}
+
+      {/* Members, with admin-only remove/promote controls */}
       {community && (
         <>
-          <SectionLabel className="px-6">Members</SectionLabel>
+          <SectionLabel className="px-6">
+            Members · {community.members.length}
+          </SectionLabel>
           <ul className="mt-2">
-            {community.members.map((member) => (
-              <li
-                key={member.username}
-                className="flex items-center gap-3 px-6 py-2.5"
-              >
-                <Avatar name={member.name} color={member.color} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                  {member.name}
-                  <span className="ml-1.5 text-xs font-normal text-slate-400">
-                    @{member.username}
+            {community.members.map((member) => {
+              const isAdmin = member.username === community.admin;
+              const isSelf = member.username === username;
+              const iAmAdmin = community.admin === username;
+
+              return (
+                <li
+                  key={member.username}
+                  className="flex items-center gap-3 px-6 py-2.5"
+                >
+                  <Avatar name={member.name} color={member.color} size="sm" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {member.name}
+                    <span className="ml-1.5 text-xs font-normal text-slate-400">
+                      @{member.username}
+                    </span>
                   </span>
-                </span>
-                {member.username === community.admin && (
-                  <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-400">
-                    Admin
-                  </span>
-                )}
-              </li>
-            ))}
+
+                  {isAdmin && (
+                    <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-400">
+                      Admin
+                    </span>
+                  )}
+
+                  {iAmAdmin && !isAdmin && !isSelf && (
+                    <MemberActions
+                      onPromote={() =>
+                        transferCommunityAdmin(community.id, member.username)
+                      }
+                      onRemove={() =>
+                        removeCommunityMember(community.id, member.username)
+                      }
+                    />
+                  )}
+                </li>
+              );
+            })}
           </ul>
 
           {community.admin === username && (
@@ -169,6 +214,9 @@ export default function InfoPanel({
                       connections[c.username] === "accepted" &&
                       !community.members.some(
                         (m) => m.username === c.username
+                      ) &&
+                      !community.pendingInvites.some(
+                        (p) => p.username === c.username
                       )
                   )
                   .map((c) => (
@@ -203,6 +251,42 @@ export default function InfoPanel({
                 revoked invites they can no longer be added to this
                 community.
               </p>
+
+              {community.pendingInvites.length > 0 && (
+                <>
+                  <SectionLabel className="mt-6 px-6">
+                    Pending invites · {community.pendingInvites.length}
+                  </SectionLabel>
+                  <ul className="mt-2">
+                    {community.pendingInvites.map((invite) => (
+                      <li
+                        key={invite.username}
+                        className="flex items-center gap-3 px-6 py-2.5"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-500">
+                          @{invite.username}
+                          <span className="ml-1.5 text-xs font-normal text-slate-400">
+                            waiting to respond
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          title="Cancel invite"
+                          onClick={() =>
+                            cancelCommunityInvite(
+                              community.id,
+                              invite.username
+                            )
+                          }
+                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                        >
+                          <X size={15} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </>
           )}
         </>
@@ -342,7 +426,169 @@ export default function InfoPanel({
             Leave community
           </button>
         )}
+
+        {community && community.admin === username && (
+          <DeleteCommunityButton
+            actionRow={actionRow}
+            onDelete={() => {
+              deleteCommunity(community.id);
+              closeConversation();
+            }}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+function CommunityNameEditor({
+  community,
+  onRename,
+}: {
+  community: { id: string; name: string };
+  onRename: (name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(community.name);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(community.name);
+          setEditing(true);
+        }}
+        className="mx-6 mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-400 transition hover:text-slate-600"
+      >
+        <Pencil size={12} />
+        Rename community
+      </button>
+    );
+  }
+
+  const submit = () => {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== community.name) onRename(trimmed);
+    setEditing(false);
+  };
+
+  return (
+    <div className="mx-6 mt-1 flex items-center gap-2">
+      <input
+        autoFocus
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") submit();
+          if (event.key === "Escape") setEditing(false);
+        }}
+        className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 px-2.5 text-sm outline-none focus:border-blue-500"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white"
+      >
+        <Check size={14} />
+      </button>
+    </div>
+  );
+}
+
+function MemberActions({
+  onPromote,
+  onRemove,
+}: {
+  onPromote: () => void;
+  onRemove: () => void;
+}) {
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+
+  if (confirmingRemove) {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => {
+            onRemove();
+            setConfirmingRemove(false);
+          }}
+          className="rounded-lg bg-red-600 px-2 py-1 text-[11px] font-semibold text-white"
+        >
+          Remove?
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmingRemove(false)}
+          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        title="Make admin"
+        onClick={onPromote}
+        className="rounded-lg p-1.5 text-slate-400 transition hover:bg-amber-50 hover:text-amber-600"
+      >
+        <Crown size={15} />
+      </button>
+      <button
+        type="button"
+        title="Remove from community"
+        onClick={() => setConfirmingRemove(true)}
+        className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+      >
+        <UserMinus size={15} />
+      </button>
+    </div>
+  );
+}
+
+function DeleteCommunityButton({
+  actionRow,
+  onDelete,
+}: {
+  actionRow: string;
+  onDelete: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (confirming) {
+    return (
+      <div className="flex gap-2 px-6 py-2">
+        <button
+          type="button"
+          onClick={onDelete}
+          className="flex-1 rounded-xl bg-red-600 py-2.5 text-sm font-semibold text-white"
+        >
+          Confirm delete — this can't be undone
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="rounded-xl border border-slate-200 px-4 text-sm font-medium text-slate-500"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className={cn(actionRow, "text-red-600")}
+      onClick={() => setConfirming(true)}
+    >
+      <Trash2 size={17} />
+      Delete community
+    </button>
   );
 }

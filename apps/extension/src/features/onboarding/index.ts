@@ -1,3 +1,4 @@
-export { default as VisibilityScreen } from "./VisibilityScreen";
-export { default as IdentityScreen } from "./IdentityScreen";
-export { default as AvatarScreen } from "./AvatarScreen";
+export { default as SetupScreen } from "./SetupScreen";
+export { default as RegisterScreen } from "./RegisterScreen";
+export { default as ProfileScreen } from "./ProfileScreen";
+export { default as DoneScreen } from "./DoneScreen";

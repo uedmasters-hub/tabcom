@@ -9,13 +9,24 @@
     "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "TABCOM_EPHEMERAL=1 node test/relay.test.mjs"
+    "test": "TABCOM_EPHEMERAL=1 node test/relay.test.mjs && pnpm run test:community && pnpm run test:messages",
+    "test:community": "node test/community.test.mjs",
+    "test:messages": "node test/message-features.test.mjs",
+    "test:auth": "node --import tsx test-auth-service.mjs && node test/auth-socket.test.mjs",
+    "db:migrate": "drizzle-kit push",
+    "test:extension-auth": "node test/extension-auth-flow.test.mjs",
+    "test:lean-onboarding": "node test/lean-onboarding.test.mjs"
   },
   "dependencies": {
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
+    "resend": "^6.17.1",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.9",
+    "drizzle-kit": "^0.31.10",
     "socket.io-client": "^4.8.3",
     "tsx": "^4.21.1",
     "typescript": "^5.9.3"
