@@ -31,6 +31,17 @@ export default function WorkspaceScreen() {
   const tab = useWorkspaceStore((state) => state.tab);
   const ensureSeeded = useChatStore((state) => state.ensureSeeded);
 
+  // Drilling into a conversation replaces the shell chrome rather than
+  // stacking on top of it: the thread's own header (back arrow + name)
+  // takes over from the workspace header, and the bottom tab bar hides
+  // since the back arrow is the way out — same pattern as WhatsApp,
+  // Telegram, and Slack threads. This alone reclaims ~130-170px of a
+  // ~600px-tall popup that was previously spent on duplicate chrome.
+  const activeConversationId = useChatStore(
+    (state) => state.activeConversationId
+  );
+  const inThread = tab === "inbox" && !!activeConversationId;
+
   const username = useProfileStore((state) => state.username);
   const displayName = useProfileStore((state) => state.displayName);
   const avatarColor = useProfileStore((state) => state.avatarColor);
@@ -155,7 +166,7 @@ export default function WorkspaceScreen() {
   return (
     <AppShell>
       <div className="flex h-full flex-col">
-        <WorkspaceHeader title={titles[tab]} />
+        {!inThread && <WorkspaceHeader title={titles[tab]} />}
 
         <div className="flex min-h-0 flex-1 flex-col">
           {tab === "inbox" && <InboxView />}
@@ -164,7 +175,7 @@ export default function WorkspaceScreen() {
           {tab === "settings" && <SettingsView />}
         </div>
 
-        <TabBar />
+        {!inThread && <TabBar />}
       </div>
     </AppShell>
   );

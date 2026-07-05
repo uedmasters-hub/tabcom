@@ -467,41 +467,68 @@ export default function ChatView({
           <ArrowLeft size={18} />
         </button>
 
-        <button
-          type="button"
-          onClick={() => setShowInfo(true)}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
-        >
-          {community ? (
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
-              {community.name.charAt(0).toUpperCase()}
-            </span>
-          ) : (
-            <Avatar
-              name={contact!.name}
-              color={contact!.color}
-              photo={contact!.photo}
-              size="sm"
-            />
-          )}
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => setShowInfo(true)}
+            className="flex min-w-0 items-center gap-3 text-left"
+          >
+            {community ? (
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
+                {community.name.charAt(0).toUpperCase()}
+              </span>
+            ) : (
+              <Avatar
+                name={contact!.name}
+                color={contact!.color}
+                photo={contact!.photo}
+                size="sm"
+              />
+            )}
 
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold leading-tight">
+            <span className="min-w-0 truncate text-sm font-semibold leading-tight">
               {title}
             </span>
-            <span className="flex items-center gap-1.5 text-xs text-slate-500">
-              {!community && (
-                <span
+          </button>
+
+          {/* Second row: for communities this IS the Chat/Board switch —
+              no separate full-width bar underneath. For 1:1 chats it's
+              the presence/typing subtitle, same as before. */}
+          {community ? (
+            <div className="flex gap-1 pl-11" role="tablist" aria-label="View">
+              {(["chat", "board"] as const).map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === id}
+                  onClick={() => setTab(id)}
                   className={cn(
-                    "h-1.5 w-1.5 rounded-full",
-                    presenceColors[contact!.presence]
+                    "rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize transition",
+                    tab === id
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-500 hover:bg-slate-100"
                   )}
-                />
-              )}
+                >
+                  {id === "board" ? "Board" : "Chat"}
+                  {id === "board" && community.board.length > 0 && (
+                    <span className="ml-1">· {community.board.length}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="flex items-center gap-1.5 pl-11 text-xs text-slate-500">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  presenceColors[contact!.presence]
+                )}
+              />
               {subtitle}
             </span>
-          </span>
-        </button>
+          )}
+        </div>
 
         {pipEnabled && (
           <button
@@ -533,29 +560,6 @@ export default function ChatView({
           <Info size={18} />
         </button>
       </div>
-
-      {isCommunity && (
-        <div className="flex gap-1 border-b border-slate-100 px-4 py-2.5">
-          {(["chat", "board"] as const).map((id) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={cn(
-                "rounded-full px-4 py-1.5 text-xs font-semibold capitalize transition",
-                tab === id
-                  ? "bg-slate-900 text-white"
-                  : "text-slate-500 hover:bg-slate-100"
-              )}
-            >
-              {id === "board" ? "Board" : "Chat"}
-              {id === "board" && community && community.board.length > 0 && (
-                <span className="ml-1.5">· {community.board.length}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
 
       {isCommunity && tab === "board" && community ? (
         <BoardView community={community} />

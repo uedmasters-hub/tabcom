@@ -62,21 +62,27 @@ export default function BoardView({ community }: { community: Community }) {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex gap-1 border-b border-slate-100 px-4 py-2.5">
+      <div
+        className="flex gap-4 border-b border-slate-100 px-4"
+        role="tablist"
+        aria-label="Board filter"
+      >
         {segments.map((segment) => (
           <button
             key={segment.id}
             type="button"
+            role="tab"
+            aria-selected={section === segment.id}
             onClick={() => setSection(segment.id)}
             className={cn(
-              "rounded-full px-3.5 py-1.5 text-xs font-semibold transition",
+              "border-b-2 py-2 text-xs font-semibold transition",
               section === segment.id
-                ? "bg-slate-900 text-white"
-                : "text-slate-500 hover:bg-slate-100"
+                ? "border-slate-900 text-slate-900"
+                : "border-transparent text-slate-400 hover:text-slate-600"
             )}
           >
             {segment.label}
-            {segment.count > 0 && <span className="ml-1.5">· {segment.count}</span>}
+            {segment.count > 0 && <span className="ml-1">· {segment.count}</span>}
           </button>
         ))}
       </div>
