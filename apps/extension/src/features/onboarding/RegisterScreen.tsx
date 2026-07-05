@@ -1,10 +1,10 @@
-import { ArrowRight, Check, Loader2, X } from "lucide-react";
+import { ArrowRight, Check, Loader2, Ticket, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import AppShell from "../../components/layout/AppShell";
 import ScreenHeader from "../../components/layout/ScreenHeader";
 import { Button, Input, SectionLabel } from "../../components/ui";
-import { checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
+import { checkInvite, checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
 
@@ -16,11 +16,20 @@ type UsernameState =
   | { status: "invalid" }
   | { status: "unreachable" };
 
+type InviteState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "valid" }
+  | { status: "invalid" }
+  | { status: "unreachable" };
+
 /**
- * The lean onboarding entry point: name + username + email, account
- * usable immediately. No click-a-link wait — see profile.store's
- * sessionToken/verified split and Settings' unverified nudge for how
- * verification happens later instead of gating this screen.
+ * The lean onboarding entry point: invite code + name + username +
+ * email, account usable immediately. No click-a-link wait — see
+ * profile.store's sessionToken/verified split and Settings' unverified
+ * nudge for how verification happens later instead of gating this
+ * screen. Tabcom is invite-only: the code gate is the one hard
+ * requirement here, everything else stays lean.
  */
 export default function RegisterScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
@@ -28,15 +37,55 @@ export default function RegisterScreen() {
   const setVerified = useProfileStore((state) => state.setVerified);
   const setIdentity = useProfileStore((state) => state.setIdentity);
 
+  const [inviteCode, setInviteCode] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [inviteState, setInviteState] = useState<InviteState>({ status: "idle" });
   const [usernameState, setUsernameState] = useState<UsernameState>({ status: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestCheckId = useRef(0);
+  const inviteDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestInviteCheckId = useRef(0);
+
+  useEffect(() => {
+    if (inviteDebounceRef.current) clearTimeout(inviteDebounceRef.current);
+
+    const candidate = inviteCode.trim().toUpperCase();
+    if (!candidate) {
+      setInviteState({ status: "idle" });
+      return;
+    }
+    // Don't ping the server on every keystroke of a partial code —
+    // codes are TAB-XXXX-XXXX (12+ chars), so wait for a plausible length.
+    if (candidate.length < 10) {
+      setInviteState({ status: "idle" });
+      return;
+    }
+
+    setInviteState({ status: "checking" });
+    const checkId = ++latestInviteCheckId.current;
+
+    inviteDebounceRef.current = setTimeout(async () => {
+      const result = await checkInvite(candidate);
+      if (checkId !== latestInviteCheckId.current) return;
+
+      if (result.ok) {
+        setInviteState({ status: "valid" });
+      } else if (result.reason === "unreachable") {
+        setInviteState({ status: "unreachable" });
+      } else {
+        setInviteState({ status: "invalid" });
+      }
+    }, 400);
+
+    return () => {
+      if (inviteDebounceRef.current) clearTimeout(inviteDebounceRef.current);
+    };
+  }, [inviteCode]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -75,6 +124,7 @@ export default function RegisterScreen() {
   }, [username]);
 
   const canSubmit =
+    (inviteState.status === "valid" || inviteState.status === "unreachable") &&
     displayName.trim().length >= 2 &&
     (usernameState.status === "available" || usernameState.status === "unreachable") &&
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -88,13 +138,16 @@ export default function RegisterScreen() {
       email.trim().toLowerCase(),
       username.trim().toLowerCase(),
       displayName.trim(),
-      "#2563EB" // finalized on the next screen
+      "#2563EB", // finalized on the next screen
+      inviteCode.trim().toUpperCase()
     );
 
     setSubmitting(false);
 
     if (!result.ok) {
-      if (result.reason === "username_taken") {
+      if (result.reason === "invalid_invite") {
+        setInviteState({ status: "invalid" });
+      } else if (result.reason === "username_taken") {
         setUsernameState({ status: "taken", suggestions: [] });
       } else if (result.reason === "unreachable") {
         setError("Couldn't reach Tabcom's server. Make sure it's running, then try again.");
@@ -118,17 +171,52 @@ export default function RegisterScreen() {
         <section className="flex flex-1 flex-col overflow-y-auto px-6">
           <SectionLabel>Create your account</SectionLabel>
           <h1 className="mt-3 text-2xl font-bold tracking-tight">
-            You're two fields away.
+            You're invited — almost in.
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            We'll ask you to confirm your email later — start using Tabcom right away.
+            Tabcom is invite-only right now. Enter your invitation code to
+            create an account — we'll ask you to confirm your email later.
           </p>
 
           <div className="mt-8 space-y-4">
+            <div>
+              <Input
+                label="Invitation code"
+                placeholder="TAB-XXXX-XXXX"
+                autoFocus
+                autoComplete="off"
+                value={inviteCode}
+                onChange={(event) =>
+                  setInviteCode(event.target.value.toUpperCase())
+                }
+              />
+              <div className="mt-1.5 min-h-[18px] text-xs">
+                {inviteState.status === "checking" && (
+                  <span className="flex items-center gap-1.5 text-slate-400">
+                    <Loader2 size={11} className="animate-spin" /> Checking your invitation…
+                  </span>
+                )}
+                {inviteState.status === "valid" && (
+                  <span className="flex items-center gap-1.5 font-medium text-emerald-600">
+                    <Ticket size={12} /> Invitation accepted — welcome aboard
+                  </span>
+                )}
+                {inviteState.status === "invalid" && (
+                  <span className="flex items-center gap-1.5 text-red-500">
+                    <X size={12} /> That code isn't valid or was already used.
+                  </span>
+                )}
+                {inviteState.status === "unreachable" && (
+                  <span className="text-amber-600">
+                    Couldn't verify right now — it'll be checked when you continue.
+                  </span>
+                )}
+              </div>
+            </div>
+
             <Input
               label="Display Name"
               placeholder="Ramesh Mandal"
-              autoFocus
               autoComplete="name"
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}

@@ -54,6 +54,34 @@ export const loginRequests = pgTable("login_requests", {
     .defaultNow(),
 });
 
+/**
+ * Single-use invitation codes — Tabcom is invite-only. Every new
+ * account is granted a fixed allowance of codes to hand out (see
+ * INVITES_PER_USER in auth/invites.ts), forming a simple invite tree.
+ *
+ * The master code is deliberately NOT in this table: it lives in the
+ * TABCOM_MASTER_INVITE env var, is multi-use, and grants the operator
+ * a way in that can't be consumed or leaked via a database dump.
+ */
+export const invites = pgTable("invites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  /** Human-shareable code, e.g. TAB-7F3K-Q2ND — uppercase, no
+   *  ambiguous characters (0/O, 1/I/L are excluded). */
+  code: text("code").notNull().unique(),
+  createdBy: uuid("created_by")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** Null until redeemed. Set atomically at registration so a code
+   *  can never admit two people, even in a race. */
+  usedBy: uuid("used_by").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const sessions = pgTable("sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")

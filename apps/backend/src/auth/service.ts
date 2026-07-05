@@ -1,6 +1,7 @@
 import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 
 import { db, schema } from "../db/client";
+import { checkInvite, consumeInvite, grantInvites } from "./invites";
 import { sendMagicLinkEmail } from "./mailer";
 import { generateToken, hashToken } from "./tokens";
 
@@ -258,7 +259,7 @@ export async function suggestUsernames(base: string): Promise<string[]> {
 
 export type RegisterResult =
   | { ok: true; sessionToken: string; user: AuthenticatedUser }
-  | { ok: false; reason: "invalid_email" | "invalid_username" | "username_taken" };
+  | { ok: false; reason: "invalid_email" | "invalid_username" | "username_taken" | "invalid_invite" };
 
 /**
  * The lean onboarding path: create a usable, fully-functional account
@@ -266,12 +267,19 @@ export type RegisterResult =
  * in the way. Email verification becomes a background upgrade the
  * person can complete whenever — see sendVerificationEmail below —
  * not a gate between signing up and using the product.
+ *
+ * Tabcom is invite-only: a valid invitation code (single-use, or the
+ * operator's master code) is required to create a NEW account. People
+ * re-registering with an email that already has an account skip the
+ * gate — their seat was already claimed, re-entry shouldn't burn a
+ * second code.
  */
 export async function registerAccount(
   rawEmail: string,
   rawUsername: string,
   displayName: string,
-  avatarColor: string
+  avatarColor: string,
+  rawInviteCode: string
 ): Promise<RegisterResult> {
   const email = rawEmail.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -292,6 +300,13 @@ export async function registerAccount(
     .where(eq(schema.users.email, email))
     .limit(1);
 
+  // Invite gate — new accounts only. Fail BEFORE creating anything so
+  // a rejected registration leaves no trace.
+  if (!existingByEmail) {
+    const gate = await checkInvite(rawInviteCode);
+    if (!gate.ok) return { ok: false, reason: "invalid_invite" };
+  }
+
   const [usernameTaken] = await db
     .select({ id: schema.users.id })
     .from(schema.users)
@@ -309,6 +324,18 @@ export async function registerAccount(
         .values({ email, username, displayName, avatarColor })
         .returning()
     )[0]!;
+
+  if (!existingByEmail) {
+    // Atomic claim — the pre-check above can race, this can't. If the
+    // code was snatched between the two, the account row is harmless
+    // (registerAccount is idempotent by email) and the person can
+    // retry with a fresh code.
+    const claimed = await consumeInvite(rawInviteCode, user.id);
+    if (!claimed.ok) return { ok: false, reason: "invalid_invite" };
+
+    // Every new member gets their own allowance to hand out.
+    await grantInvites(user.id);
+  }
 
   if (existingByEmail && existingByEmail.username !== username) {
     await db

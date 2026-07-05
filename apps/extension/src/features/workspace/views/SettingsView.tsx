@@ -1,4 +1,4 @@
-import { Camera, Check, Globe, Lock, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Trash2 } from "lucide-react";
+import { Camera, Check, Copy, Globe, Lock, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Ticket, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -9,7 +9,7 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
-import { sendVerificationEmail } from "../../../lib/auth-client";
+import { fetchInvites, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
 import { reannounce, updateVisibility } from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
@@ -135,6 +135,24 @@ export default function SettingsView() {
   const [verificationSent, setVerificationSent] = useState(false);
   const [sendingVerification, setSendingVerification] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+
+  // Invitations — signed-in accounts each hold 5 single-use codes.
+  const [invites, setInvites] = useState<InviteSummary[] | null>(null);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sessionToken) return;
+    void fetchInvites(sessionToken).then((result) => {
+      if (result.ok) setInvites(result.invites);
+    });
+  }, [sessionToken]);
+
+  const copyInvite = (code: string) => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopiedCode(code);
+      setTimeout(() => setCopiedCode((current) => (current === code ? null : current)), 1500);
+    });
+  };
 
   const sendVerification = async () => {
     if (!sessionToken) return;
@@ -345,6 +363,81 @@ export default function SettingsView() {
           />
         ))}
       </div>
+
+      {/* Invitations — Tabcom is invite-only; these are this account's
+          codes to hand out. Guests don't have server accounts, so the
+          section only exists when signed in. */}
+      {sessionToken && (
+        <>
+          <SectionLabel className="mt-8">Invitations</SectionLabel>
+
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            Tabcom is invite-only. Share these codes to bring people in —
+            each works exactly once.
+          </p>
+
+          <div className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-200">
+            {invites === null ? (
+              <p className="px-4 py-3 text-xs text-slate-400">
+                Loading your invitations…
+              </p>
+            ) : invites.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-slate-400">
+                No invitation codes on this account yet.
+              </p>
+            ) : (
+              invites.map((invite) => (
+                <div
+                  key={invite.code}
+                  className="flex items-center gap-3 px-4 py-2.5"
+                >
+                  <Ticket
+                    size={15}
+                    className={cn(
+                      "shrink-0",
+                      invite.used ? "text-slate-300" : "text-blue-600"
+                    )}
+                  />
+                  <code
+                    className={cn(
+                      "min-w-0 flex-1 truncate font-mono text-xs font-semibold tracking-wide",
+                      invite.used
+                        ? "text-slate-300 line-through"
+                        : "text-slate-700"
+                    )}
+                  >
+                    {invite.code}
+                  </code>
+                  {invite.used ? (
+                    <span className="shrink-0 text-[11px] font-medium text-slate-400">
+                      Used
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => copyInvite(invite.code)}
+                      aria-label={`Copy ${invite.code}`}
+                      className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      {copiedCode === invite.code ? (
+                        <>
+                          <Check size={12} className="text-emerald-600" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={12} />
+                          Copy
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
 
       {/* Preferences — flat list, matches the status-menu pattern */}
       <SectionLabel className="mt-8">Preferences</SectionLabel>

@@ -131,21 +131,51 @@ export async function checkUsernameAvailable(username: string): Promise<Username
 
 export type RegisterResult =
   | { ok: true; sessionToken: string; user: AuthenticatedUser }
-  | { ok: false; reason: "invalid_email" | "invalid_username" | "username_taken" | "unreachable" };
+  | { ok: false; reason: "invalid_email" | "invalid_username" | "username_taken" | "invalid_invite" | "unreachable" };
 
 /** The lean onboarding path — creates a fully usable account and
- *  session in one call, no click-a-link wait. */
+ *  session in one call, no click-a-link wait. Invite-gated: a valid
+ *  invitation code is required for new accounts. */
 export async function registerAccount(
   email: string,
   username: string,
   displayName: string,
-  avatarColor: string
+  avatarColor: string,
+  inviteCode: string
 ): Promise<RegisterResult> {
   return authFetch<RegisterResult>("/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, username, displayName, avatarColor }),
+    body: JSON.stringify({ email, username, displayName, avatarColor, inviteCode }),
   });
+}
+
+export type InviteCheckResult =
+  | { ok: true }
+  | { ok: false; reason: "invalid_invite" | "unreachable" };
+
+/** Non-consuming pre-check for the register gate's live feedback. */
+export async function checkInvite(code: string): Promise<InviteCheckResult> {
+  return authFetch<InviteCheckResult>("/auth/check-invite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+}
+
+export interface InviteSummary {
+  code: string;
+  used: boolean;
+  usedAt: string | null;
+}
+
+/** The 5 codes this account can hand out, with redemption status. */
+export async function fetchInvites(
+  sessionToken: string
+): Promise<{ ok: true; invites: InviteSummary[] } | { ok: false; reason?: string }> {
+  return authFetch<{ ok: true; invites: InviteSummary[] } | { ok: false; reason?: string }>(
+    `/auth/invites?sessionToken=${encodeURIComponent(sessionToken)}`
+  );
 }
 
 export async function sendVerificationEmail(

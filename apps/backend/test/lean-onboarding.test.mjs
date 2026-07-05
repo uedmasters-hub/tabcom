@@ -11,6 +11,9 @@ import { io } from "socket.io-client";
 const PORT = 5817;
 const URL = `http://localhost:${PORT}`;
 
+/** Multi-use operator code, injected via env for this test server. */
+const MASTER_INVITE = "TAB-MASTER-TEST-CODE";
+
 // Unique per run — this suite runs against a real, persistent database
 // (not a disposable local one), so hardcoded emails/usernames would
 // mean a second run finds accounts with state left over from the
@@ -25,6 +28,7 @@ const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
     TABCOM_EPHEMERAL: "1",
     DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:devpass@localhost:5432/tabcom_dev",
     PUBLIC_BASE_URL: `http://localhost:${PORT}`,
+    TABCOM_MASTER_INVITE: MASTER_INVITE,
   },
   stdio: "pipe",
 });
@@ -53,12 +57,16 @@ await new Promise((resolve) => {
   });
 });
 
-async function register(email, username, displayName) {
+async function register(email, username, displayName, inviteCode = MASTER_INVITE) {
   const res = await fetch(`${URL}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, username, displayName, avatarColor: "#2563EB" }),
+    body: JSON.stringify({ email, username, displayName, avatarColor: "#2563EB", inviteCode }),
   });
+  return res.json();
+}
+async function myInvites(sessionToken) {
+  const res = await fetch(`${URL}/auth/invites?sessionToken=${encodeURIComponent(sessionToken)}`);
   return res.json();
 }
 async function checkUsername(username) {
@@ -84,6 +92,37 @@ if (!reg1.ok) fail("register failed: " + JSON.stringify(reg1));
 if (reg1.user.verified !== false) fail("freshly registered account should be unverified");
 if (!reg1.sessionToken) fail("register did not return a usable session token immediately");
 pass("register: creates a usable, unverified account with an immediate session — no click-a-link gate");
+
+// TEST 1b: the invite gate — no code / bad code means no account
+const gateMissing = await register(`gate1+${runId}@example.com`, `gate1${runId}`, "No Code", "");
+if (gateMissing.ok || gateMissing.reason !== "invalid_invite") fail("register without an invite code should fail with invalid_invite");
+const gateBad = await register(`gate2+${runId}@example.com`, `gate2${runId}`, "Bad Code", "TAB-ZZZZ-ZZZZ");
+if (gateBad.ok || gateBad.reason !== "invalid_invite") fail("register with a nonexistent code should fail with invalid_invite");
+pass("invite gate: registration is refused without a valid invitation code");
+
+// TEST 1c: a new account is granted 5 single-use codes
+const inv1 = await myInvites(reg1.sessionToken);
+if (!inv1.ok) fail("could not list invites: " + JSON.stringify(inv1));
+if (inv1.invites.length !== 5) fail(`expected 5 granted invites, got ${inv1.invites.length}`);
+if (inv1.invites.some((i) => i.used)) fail("freshly granted invites should all be unused");
+pass("invite grant: every new account receives 5 unused invitation codes");
+
+// TEST 1d: a granted code admits exactly one person, then dies
+const sharedCode = inv1.invites[0].code;
+const friend = await register(`friend+${runId}@example.com`, `friend${runId}`, "Invited Friend", sharedCode);
+if (!friend.ok) fail("registering with a freshly granted code failed: " + JSON.stringify(friend));
+const reuse = await register(`reuse+${runId}@example.com`, `reuse${runId}`, "Second Try", sharedCode);
+if (reuse.ok || reuse.reason !== "invalid_invite") fail("a used invite code must not admit a second account");
+const inv1After = await myInvites(reg1.sessionToken);
+const spent = inv1After.invites.find((i) => i.code === sharedCode);
+if (!spent?.used) fail("the redeemed code should now be marked used in the inviter's list");
+pass("invite consumption: each code is single-use and shows as used to its owner");
+
+// TEST 1e: re-registering an existing email does NOT need (or burn) a code
+const rereg = await register(`lean1+${runId}@example.com`, `leanuser${runId}`, "Lean User", "");
+if (!rereg.ok) fail("re-register with existing email should skip the invite gate: " + JSON.stringify(rereg));
+pass("invite gate: existing accounts can re-register without a code — the seat is already theirs");
+
 
 // TEST 2: username availability + real suggestions when taken
 const takenCheck = await checkUsername(`leanuser${runId}`);

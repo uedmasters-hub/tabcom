@@ -14,6 +14,7 @@ import {
   validateSession,
   verifyMagicLink,
 } from "./auth/service";
+import { checkInvite, listInvites } from "./auth/invites";
 
 /**
  * Tabcom realtime server — privacy-first relay with consent-based contact.
@@ -223,13 +224,50 @@ const httpServer = createServer((req, res) => {
           String(body.email ?? ""),
           String(body.username ?? ""),
           String(body.displayName ?? ""),
-          String(body.avatarColor ?? "#2563EB")
+          String(body.avatarColor ?? "#2563EB"),
+          String(body.inviteCode ?? "")
         );
         res.writeHead(result.ok ? 200 : 409, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       })
       .catch((error) => {
         console.error("[tabcom:auth] register failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/check-invite") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await checkInvite(String(body.code ?? ""));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] check-invite failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/invites") {
+    const sessionToken = url.searchParams.get("sessionToken") ?? "";
+    validateSession(sessionToken)
+      .then(async (user) => {
+        if (!user) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, reason: "invalid_session" }));
+          return;
+        }
+        const invites = await listInvites(user.id);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, invites }));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] invites failed:", error);
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, reason: "server_error" }));
       });
