@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { io } from "socket.io-client";
 
-const PORT = 3199;
+const PORT = 5827;
 const URL = `http://localhost:${PORT}`;
 
 const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
@@ -742,7 +742,7 @@ let pinCommunityId;
 }
 
 // TEST 26: highlight implicitly attaches to the SAME item via canonicalKey
-let pinItemId, pinId;
+let pinItemId, pinId, highlightId;
 {
   const snap = await new Promise((r) => {
     zed.emit("hello", { username: "zed", name: "Zed", color: "#2563EB", visibility: "public" });
@@ -771,7 +771,138 @@ let pinItemId, pinId;
   });
   const item = await highlighted;
   if (item.highlights[0].author !== "amy") fail("highlight author wrong");
+  highlightId = item.highlights[0].id;
   pass("highlight: attaches to the same item via canonicalKey, no duplicate item created");
+}
+
+// TEST 26b: comment thread on a specific PIN — scoped to that pin, not
+// the item, and not leaked to non-members
+{
+  let leaked = false;
+  bob2.once("community_update", () => (leaked = true));
+
+  const commented = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      const pin = item?.pins.find((p) => p.id === pinId);
+      if (pin?.comments.length === 1) { amy.off("community_update", h); r(pin); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_pin_comment", {
+    communityId: pinCommunityId,
+    itemId: pinItemId,
+    pinId,
+    text: "great spot, agreed",
+  });
+  const pin = await commented;
+  if (pin.comments[0].author !== "zed") fail("pin comment author wrong");
+  if (pin.comments[0].text !== "great spot, agreed") fail("pin comment text wrong");
+
+  await sleep(300);
+  if (leaked) fail("pin comment leaked to non-member");
+  pass("pin comment: threaded on the specific pin, delivered to members only");
+}
+
+// TEST 26c: comment thread on a specific HIGHLIGHT — same scoping,
+// and the highlight's OWN initial comment (from creation) is still
+// there as the first entry, not overwritten
+{
+  const commented = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      const highlight = item?.highlights.find((hl) => hl.id === highlightId);
+      if (highlight?.comments.length === 2) { zed.off("community_update", h); r(highlight); }
+    };
+    zed.on("community_update", h);
+  });
+  amy.emit("board_highlight_comment", {
+    communityId: pinCommunityId,
+    itemId: pinItemId,
+    highlightId,
+    text: "adding more context here",
+  });
+  const highlight = await commented;
+  if (highlight.comments[0].text !== "this matters") fail("original creation-time comment was lost");
+  if (highlight.comments[1].author !== "amy") fail("new highlight comment author wrong");
+  pass("highlight comment: threads onto the highlight, preserving the original note as entry one");
+}
+
+// TEST 26d: area (drag-rectangle) annotation — create, comment, remove
+let areaId;
+{
+  const created = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      if (item?.areas.length === 1) { amy.off("community_update", h); r(item); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_area_add", {
+    communityId: pinCommunityId,
+    url: "https://example.com/page",
+    canonicalKey: "example:page",
+    title: "Example Page",
+    text: "look at this whole section",
+    xPercent: 20,
+    yPercent: 30,
+    widthPercent: 15,
+    heightPercent: 10,
+  });
+  const item = await created;
+  if (item.areas[0].author !== "zed") fail("area author wrong");
+  if (item.areas[0].widthPercent !== 15 || item.areas[0].heightPercent !== 10) {
+    fail("area dimensions not stored correctly");
+  }
+  areaId = item.areas[0].id;
+  pass("area: click-and-drag rectangle creates a new annotation type, distinct from pins/highlights");
+}
+
+{
+  const commented = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      const area = item?.areas.find((a) => a.id === areaId);
+      if (area?.comments.length === 1) { zed.off("community_update", h); r(area); }
+    };
+    zed.on("community_update", h);
+  });
+  amy.emit("board_area_comment", {
+    communityId: pinCommunityId,
+    itemId: pinItemId,
+    areaId,
+    text: "agreed, this needs work",
+  });
+  const area = await commented;
+  if (area.comments[0].author !== "amy") fail("area comment author wrong");
+  pass("area comment: threads onto the area annotation, same as pins/highlights");
+}
+
+{
+  let stillThere = true;
+  const attempt = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      stillThere = item.areas.some((a) => a.id === areaId);
+      r();
+    };
+    amy.on("community_update", h);
+    setTimeout(r, 400);
+  });
+  amy.emit("board_area_remove", { communityId: pinCommunityId, itemId: pinItemId, areaId }); // amy is not author, not admin
+  await attempt;
+  if (!stillThere) fail("non-admin, non-author removed someone else's area");
+
+  const removed = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.id === pinItemId);
+      if (!item.areas.some((a) => a.id === areaId)) { zed.off("community_update", h); r(); }
+    };
+    zed.on("community_update", h);
+  });
+  zed.emit("board_area_remove", { communityId: pinCommunityId, itemId: pinItemId, areaId }); // zed is admin AND author
+  await removed;
+  pass("area removal: restricted to admin or original author, same as pins");
 }
 
 // TEST 27: pin/highlight removal restricted to admin or original author
@@ -863,7 +994,7 @@ zed.disconnect(); amy.disconnect(); bob2.disconnect();
   cur1.disconnect(); cur2.disconnect(); cur3.disconnect();
 }
 
-console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/28)`);
+console.log(`\nALL PRIVACY TESTS PASSED (${passed.length}/${passed.length})`);
 alice.disconnect(); bob.disconnect(); mallory.disconnect();
 server.kill();
 process.exit(0);

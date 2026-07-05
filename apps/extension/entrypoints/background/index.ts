@@ -3,10 +3,11 @@ import {
   addBoardHighlight,
   addBoardItem,
   addBoardPin,
-  disconnectRealtime,
+  addBoardArea,
   initRealtime,
   removeBoardHighlight,
   removeBoardPin,
+  removeBoardArea,
   sendCommunityMessage,
   sendCursorLeave,
   sendCursorMove,
@@ -14,19 +15,28 @@ import {
 } from "../../src/lib/realtime";
 
 /**
- * Board write relay.
+ * Board write relay AND live-update receiver.
  *
  * Content scripts (which run inside a webpage's context and can be
  * subject to that page's Content-Security-Policy) never open their own
  * network connection. Instead they send a runtime message here — the
  * background service worker is an extension page, never subject to any
- * website's CSP, and serves every tab from a single on-demand
- * connection instead of one per tab.
+ * website's CSP, and serves every tab from a single shared connection
+ * instead of one per tab.
  *
- * Flow: content script -> runtime message -> background connects (if
- * needed) -> emits to the relay server -> server confirms via
- * community_update -> written to storage -> broadcast to all tabs so
- * their overlays re-render immediately.
+ * This connection is established proactively (not just when this user
+ * writes something) and kept open, because it's also how OTHER
+ * people's board changes reach this browser at all — a write-only,
+ * idle-disconnecting connection can only ever reflect this user's own
+ * actions, never a teammate's.
+ *
+ * Flow: content script -> runtime message -> background emits to the
+ * relay server -> server confirms via community_update -> written to
+ * storage -> broadcast to all tabs so their overlays re-render
+ * immediately. The same storage write happens on the full "communities"
+ * snapshot every (re)connection sends, so a service-worker restart
+ * (MV3 can suspend these independent of anything this code does)
+ * always catches up on anything missed while it was down.
  */
 
 interface StoredProfile {
@@ -36,13 +46,21 @@ interface StoredProfile {
   photo?: string;
 }
 
-const IDLE_DISCONNECT_MS = 5000;
-
+// Previously disconnected after 5s of write-inactivity to avoid
+// holding an idle connection per user. That optimization directly
+// broke real-time collaboration: this connection is also how OTHER
+// people's pins/highlights/board changes reach this browser at all,
+// and it was disconnected the vast majority of the time, so updates
+// were missed unless something else (page reload, SPA nav) happened
+// to trigger a fresh fetch. A single persistent connection per
+// browser session is cheap; a collaborative board that only updates
+// on refresh is the actual cost of getting this "optimization" wrong.
 let writeConnected = false;
-let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Tabs currently sharing live cursors: tabId -> scope. While any tab
- *  is sharing, the connection is kept alive instead of idle-closing. */
+/** Tabs currently sharing live cursors: tabId -> scope. Used to target
+ *  cursor-move broadcasts to only the tabs actually viewing that page —
+ *  unrelated to connection lifecycle now that the connection stays open
+ *  regardless. */
 const cursorTabs = new Map<number, { communityId: string; canonicalKey: string }>();
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
@@ -96,18 +114,6 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
   }
 }
 
-function scheduleIdleDisconnect() {
-  if (idleTimer) clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    if (cursorTabs.size > 0) {
-      scheduleIdleDisconnect(); // someone is live — check again later
-      return;
-    }
-    disconnectRealtime();
-    writeConnected = false;
-  }, IDLE_DISCONNECT_MS);
-}
-
 async function ensureWriteConnection(): Promise<boolean> {
   const profile = await readStoredProfile();
   if (!profile) return false;
@@ -140,7 +146,18 @@ async function ensureWriteConnection(): Promise<boolean> {
           onConnections: () => {},
           onConnectRequest: () => {},
           onConnectUpdate: () => {},
-          onCommunities: () => {},
+          onCommunities: (list) => {
+            console.log(
+              "[tabcom:background] communities snapshot received on connect:",
+              list.length
+            );
+            void (async () => {
+              for (const community of list) {
+                await writeStoredCommunity(community);
+              }
+              await broadcastToAllTabs({ type: "tabcom:community-updated" });
+            })();
+          },
           onCommunityUpdate: (community) => {
             console.log(
               "[tabcom:background] community_update received, board items:",
@@ -190,7 +207,6 @@ async function ensureWriteConnection(): Promise<boolean> {
     });
   }
 
-  scheduleIdleDisconnect();
   return writeConnected;
 }
 
@@ -222,7 +238,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         elXPercent: message.elXPercent,
         elYPercent: message.elYPercent,
       });
-      scheduleIdleDisconnect();
     }
     return undefined; // fire-and-forget
   }
@@ -257,6 +272,16 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "pin_remove":
         removeBoardPin(message.payload.communityId, message.payload.itemId, message.payload.pinId);
         break;
+      case "area_add":
+        addBoardArea(message.payload);
+        break;
+      case "area_remove":
+        removeBoardArea(
+          message.payload.communityId,
+          message.payload.itemId,
+          message.payload.areaId
+        );
+        break;
       case "highlight_add":
         addBoardHighlight(message.payload);
         break;
@@ -289,8 +314,28 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(async () => {
+    // NOTE: this call is currently a no-op. The UI entrypoint is
+    // entrypoints/popup, which makes WXT generate action.default_popup
+    // in the manifest — and Chrome's rule is that default_popup wins
+    // outright over setPanelBehavior, silently, with no error anywhere.
+    // To actually get a persistent side panel (stays open while
+    // interacting with the page, rather than closing on every outside
+    // click), rename entrypoints/popup -> entrypoints/sidepanel and
+    // this call starts working immediately, unchanged. Left in place
+    // on purpose rather than removed, since the sidePanel permission
+    // is also already declared in wxt.config.ts for the same reason —
+    // this was the original intent, reverted back to a popup on
+    // request, not abandoned.
     await browser.sidePanel.setPanelBehavior({
       openPanelOnActionClick: true,
     });
   });
+
+  // Connect as soon as the background script starts (extension load,
+  // browser start, or MV3 waking the service worker back up) rather
+  // than waiting for this user's first write — this is what lets
+  // teammates' pins/highlights/messages actually reach an open tab
+  // without that person having to do anything first themselves.
+  void ensureWriteConnection();
+  browser.runtime.onStartup.addListener(() => void ensureWriteConnection());
 });

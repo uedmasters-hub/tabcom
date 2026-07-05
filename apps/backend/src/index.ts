@@ -297,19 +297,47 @@ interface BoardPin {
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
+  /** A genuine discussion thread ON this specific pin — separate from
+   *  `text` (the pin's own caption, set once at creation). */
+  comments: BoardComment[];
 }
 
 interface BoardHighlight {
   id: string;
   author: string;
   sentAt: number;
-  comment?: string;
   /** Text Quote Selector (Web Annotation-style): the exact selected text
    *  plus surrounding context, re-found by search rather than DOM path —
    *  survives markup changes that would break an element-path anchor. */
   quote: string;
   prefix: string;
   suffix: string;
+  /** A genuine discussion thread on this specific highlight. The
+   *  optional note given at creation time (if any) becomes the first
+   *  entry rather than living in a separate field. */
+  comments: BoardComment[];
+}
+
+/** A rectangular region on the page, drawn by dragging — the "click and
+ *  drag" half of the unified pin/area annotate tool. Works over ANY
+ *  content (images, mixed layouts), unlike text-quote highlights which
+ *  only apply to selectable text. Position is a percentage of the full
+ *  document, same convention as BoardPin, plus a size. */
+interface BoardArea {
+  id: string;
+  author: string;
+  sentAt: number;
+  text: string;
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent: number;
+  /** Element anchor for the top-left corner — same reasoning as pins:
+   *  sticks to CONTENT rather than a raw coordinate as the page reshapes. */
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+  comments: BoardComment[];
 }
 
 interface BoardItem {
@@ -325,6 +353,7 @@ interface BoardItem {
   comments: BoardComment[];
   pins: BoardPin[];
   highlights: BoardHighlight[];
+  areas: BoardArea[];
   votes: Set<string>; // usernames who voted this item up
   decided: boolean;
 }
@@ -356,9 +385,10 @@ function serializeBoardItem(item: BoardItem) {
     siteName: item.siteName,
     addedBy: item.addedBy,
     addedAt: item.addedAt,
-    comments: item.comments,
-    pins: item.pins,
-    highlights: item.highlights,
+    comments: item.comments ?? [],
+    pins: item.pins ?? [],
+    highlights: item.highlights ?? [],
+    areas: item.areas ?? [],
     votes: [...item.votes],
     decided: item.decided,
   };
@@ -391,6 +421,7 @@ function ensureBoardItem(
     comments: [],
     pins: [],
     highlights: [],
+    areas: [],
     votes: new Set(),
     decided: false,
   };
@@ -498,8 +529,24 @@ function loadState(): void {
             {
               ...item,
               comments: item.comments ?? [],
-              pins: item.pins ?? [],
-              highlights: item.highlights ?? [],
+              // Pins/highlights created before comment threads existed
+              // are missing this field entirely in the persisted file —
+              // backfill it here rather than crash the client trying to
+              // read .comments.length on old data.
+              pins: ((item.pins as Record<string, unknown>[]) ?? []).map((pin) => ({
+                ...pin,
+                comments: pin.comments ?? [],
+              })),
+              highlights: ((item.highlights as Record<string, unknown>[]) ?? []).map(
+                (highlight) => ({
+                  ...highlight,
+                  comments: highlight.comments ?? [],
+                })
+              ),
+              areas: ((item.areas as Record<string, unknown>[]) ?? []).map((area) => ({
+                ...area,
+                comments: area.comments ?? [],
+              })),
               votes: new Set(item.votes as string[]),
             },
           ])
@@ -1241,6 +1288,80 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "board_pin_comment",
+    ({
+      communityId,
+      itemId,
+      pinId,
+      text,
+    }: {
+      communityId: string;
+      itemId: string;
+      pinId: string;
+      text: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = community.board.get(itemId);
+      const pin = item?.pins.find((p) => p.id === pinId);
+      if (!pin) return;
+
+      pin.comments.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        text: String(text).trim().slice(0, 500),
+        sentAt: Date.now(),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_highlight_comment",
+    ({
+      communityId,
+      itemId,
+      highlightId,
+      text,
+    }: {
+      communityId: string;
+      itemId: string;
+      highlightId: string;
+      text: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = community.board.get(itemId);
+      const highlight = item?.highlights.find((h) => h.id === highlightId);
+      if (!highlight) return;
+
+      highlight.comments.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        text: String(text).trim().slice(0, 500),
+        sentAt: Date.now(),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
     "board_vote",
     ({ communityId, itemId }: { communityId: string; itemId: string }) => {
       const me = users.get(socket.id);
@@ -1291,6 +1412,7 @@ io.on("connection", (socket) => {
         author: me.username,
         text: String(input.text).trim().slice(0, 300),
         sentAt: Date.now(),
+        comments: [],
         xPercent: Math.max(0, Math.min(100, Number(input.xPercent) || 0)),
         yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
         anchorSelector:
@@ -1346,6 +1468,130 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "board_area_add",
+    (input: {
+      communityId: string;
+      url: string;
+      canonicalKey: string;
+      title: string;
+      image?: string;
+      siteName?: string;
+      text: string;
+      xPercent: number;
+      yPercent: number;
+      widthPercent: number;
+      heightPercent: number;
+      anchorSelector?: string;
+      elXPercent?: number;
+      elYPercent?: number;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(input?.communityId);
+      if (!me || !community || !input?.canonicalKey || !input?.text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = ensureBoardItem(community, me, input);
+
+      item.areas.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        sentAt: Date.now(),
+        text: String(input.text).trim().slice(0, 300),
+        xPercent: Math.max(0, Math.min(100, Number(input.xPercent) || 0)),
+        yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
+        widthPercent: Math.max(0.5, Math.min(100, Number(input.widthPercent) || 0.5)),
+        heightPercent: Math.max(0.5, Math.min(100, Number(input.heightPercent) || 0.5)),
+        anchorSelector:
+          typeof input.anchorSelector === "string"
+            ? input.anchorSelector.slice(0, 500)
+            : undefined,
+        elXPercent:
+          input.elXPercent != null
+            ? Math.max(0, Math.min(100, Number(input.elXPercent) || 0))
+            : undefined,
+        elYPercent:
+          input.elYPercent != null
+            ? Math.max(0, Math.min(100, Number(input.elYPercent) || 0))
+            : undefined,
+        comments: [],
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_area_remove",
+    ({
+      communityId,
+      itemId,
+      areaId,
+    }: {
+      communityId: string;
+      itemId: string;
+      areaId: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      const item = community?.board.get(itemId);
+      if (!me || !community || !item) return;
+
+      const area = item.areas.find((a) => a.id === areaId);
+      if (!area) return;
+      if (community.admin !== me.username && area.author !== me.username) return;
+
+      item.areas = item.areas.filter((a) => a.id !== areaId);
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
+    "board_area_comment",
+    ({
+      communityId,
+      itemId,
+      areaId,
+      text,
+    }: {
+      communityId: string;
+      itemId: string;
+      areaId: string;
+      text: string;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !text?.trim()) return;
+      if (!community.members.has(me.username)) return;
+
+      const item = community.board.get(itemId);
+      const area = item?.areas.find((a) => a.id === areaId);
+      if (!area) return;
+
+      area.comments.push({
+        id: crypto.randomUUID(),
+        author: me.username,
+        text: String(text).trim().slice(0, 500),
+        sentAt: Date.now(),
+      });
+
+      for (const member of community.members) {
+        notify(member, "community_update", {
+          community: serializeCommunity(community, member),
+        });
+      }
+    }
+  );
+
+  socket.on(
     "board_highlight_add",
     (input: {
       communityId: string;
@@ -1370,7 +1616,16 @@ io.on("connection", (socket) => {
         id: crypto.randomUUID(),
         author: me.username,
         sentAt: Date.now(),
-        comment: input.comment ? String(input.comment).trim().slice(0, 300) : undefined,
+        comments: input.comment?.trim()
+          ? [
+              {
+                id: crypto.randomUUID(),
+                author: me.username,
+                text: String(input.comment).trim().slice(0, 300),
+                sentAt: Date.now(),
+              },
+            ]
+          : [],
         quote: String(input.quote).slice(0, 500),
         prefix: String(input.prefix ?? "").slice(0, 60),
         suffix: String(input.suffix ?? "").slice(0, 60),

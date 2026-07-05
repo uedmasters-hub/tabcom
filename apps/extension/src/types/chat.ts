@@ -76,16 +76,32 @@ export interface BoardPin {
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
+  comments: BoardComment[];
 }
 
 export interface BoardHighlight {
   id: string;
   author: string;
   sentAt: number;
-  comment?: string;
   quote: string;
   prefix: string;
   suffix: string;
+  comments: BoardComment[];
+}
+
+export interface BoardArea {
+  id: string;
+  author: string;
+  sentAt: number;
+  text: string;
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+  comments: BoardComment[];
 }
 
 export interface BoardItem {
@@ -100,6 +116,7 @@ export interface BoardItem {
   comments: BoardComment[];
   pins: BoardPin[];
   highlights: BoardHighlight[];
+  areas: BoardArea[];
   votes: string[];
   decided: boolean;
 }

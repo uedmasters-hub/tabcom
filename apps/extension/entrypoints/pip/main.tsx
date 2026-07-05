@@ -153,10 +153,17 @@ function FloatApp() {
     if (found) useChatStore.getState().openConversation(found);
   }, [hasHydrated, conversations, conversationId]);
 
-  if (!hasHydrated || !profileHydrated) return null;
-
+  // These MUST be called unconditionally, before any early return below —
+  // React requires the exact same hooks, in the exact same order, on
+  // every render. Calling them after "if (...) return null" meant they
+  // were skipped entirely on the first render (before hydration) and
+  // only started being called once hydration finished, which is exactly
+  // the kind of hook-count mismatch that crashes a component outright.
   const [pinWindow, setPinWindow] = useState<Window | null>(null);
   const popupWindowId = useRef<number | null>(null);
+
+  if (!hasHydrated || !profileHydrated) return null;
+
   const pinSupported =
     typeof window !== "undefined" && !!window.documentPictureInPicture;
 

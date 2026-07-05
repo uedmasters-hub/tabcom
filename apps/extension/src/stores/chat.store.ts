@@ -23,6 +23,9 @@ import {
   sendCommunityMessage,
   removeBoardItem,
   commentOnBoardItem,
+  commentOnPin,
+  commentOnHighlight,
+  commentOnArea,
   voteOnBoardItem,
   decideBoardItem,
   sendConnectRequest,
@@ -219,6 +222,19 @@ interface ChatState {
   addCurrentTabToBoard: (communityId: string) => Promise<void>;
   removeBoardItem: (communityId: string, itemId: string) => void;
   commentOnBoardItem: (communityId: string, itemId: string, text: string) => void;
+  commentOnPin: (communityId: string, itemId: string, pinId: string, text: string) => void;
+  commentOnHighlight: (
+    communityId: string,
+    itemId: string,
+    highlightId: string,
+    text: string
+  ) => void;
+  commentOnArea: (
+    communityId: string,
+    itemId: string,
+    areaId: string,
+    text: string
+  ) => void;
   voteOnBoardItem: (communityId: string, itemId: string) => void;
   decideBoardItem: (communityId: string, itemId: string | null) => void;
   receiveCommunities: (list: WireCommunity[]) => void;
@@ -1206,6 +1222,21 @@ export const useChatStore = create<ChatState>()(
         commentOnBoardItem: (communityId, itemId, text) => {
           if (!text.trim()) return;
           commentOnBoardItem(communityId, itemId, text.trim());
+        },
+
+        commentOnPin: (communityId, itemId, pinId, text) => {
+          if (!text.trim()) return;
+          commentOnPin(communityId, itemId, pinId, text.trim());
+        },
+
+        commentOnHighlight: (communityId, itemId, highlightId, text) => {
+          if (!text.trim()) return;
+          commentOnHighlight(communityId, itemId, highlightId, text.trim());
+        },
+
+        commentOnArea: (communityId, itemId, areaId, text) => {
+          if (!text.trim()) return;
+          commentOnArea(communityId, itemId, areaId, text.trim());
         },
 
         voteOnBoardItem: (communityId, itemId) =>

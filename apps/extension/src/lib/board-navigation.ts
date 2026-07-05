@@ -11,7 +11,7 @@ import { browser } from "wxt/browser";
  */
 
 export interface AnnotationTarget {
-  kind: "pin" | "highlight";
+  kind: "pin" | "highlight" | "area";
   id: string;
 }
 

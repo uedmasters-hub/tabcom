@@ -5,9 +5,9 @@ import {
   ExternalLink,
   MapPin,
   MessageSquareText,
-  Pencil,
   Plus,
   Send,
+  Square,
   ThumbsUp,
   Trash2,
   Trophy,
@@ -21,7 +21,7 @@ import { cn } from "../../../../lib/cn";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import type {
-  BoardHighlight,
+  BoardArea,
   BoardItem,
   BoardPin,
   Community,
@@ -36,7 +36,7 @@ import { formatRelativeTime } from "../../../../utils/time";
  *   Highlights — every highlight across all pages; click = jump + flash
  */
 
-type Section = "tabs" | "pins" | "highlights";
+type Section = "tabs" | "pins" | "areas";
 
 async function sendToActiveTab(message: Record<string, unknown>) {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -51,16 +51,13 @@ async function sendToActiveTab(message: Record<string, unknown>) {
 export default function BoardView({ community }: { community: Community }) {
   const [section, setSection] = useState<Section>("tabs");
 
-  const pinCount = community.board.reduce((n, item) => n + item.pins.length, 0);
-  const highlightCount = community.board.reduce(
-    (n, item) => n + item.highlights.length,
-    0
-  );
+  const pinCount = community.board.reduce((n, item) => n + (item.pins ?? []).length, 0);
+  const areaCount = community.board.reduce((n, item) => n + (item.areas ?? []).length, 0);
 
   const segments: Array<{ id: Section; label: string; count: number }> = [
     { id: "tabs", label: "Tabs", count: community.board.length },
     { id: "pins", label: "Pins", count: pinCount },
-    { id: "highlights", label: "Highlights", count: highlightCount },
+    { id: "areas", label: "Areas", count: areaCount },
   ];
 
   return (
@@ -87,7 +84,7 @@ export default function BoardView({ community }: { community: Community }) {
       <div className="flex flex-1 flex-col overflow-y-auto">
         {section === "tabs" && <TabsSection community={community} />}
         {section === "pins" && <PinsSection community={community} />}
-        {section === "highlights" && <HighlightsSection community={community} />}
+        {section === "areas" && <AreasSection community={community} />}
       </div>
     </div>
   );
@@ -164,7 +161,7 @@ function TabsSection({ community }: { community: Community }) {
 // ---- Pins ------------------------------------------------------------------
 
 function PinsSection({ community }: { community: Community }) {
-  const itemsWithPins = community.board.filter((item) => item.pins.length > 0);
+  const itemsWithPins = community.board.filter((item) => (item.pins ?? []).length > 0);
 
   return (
     <>
@@ -176,12 +173,12 @@ function PinsSection({ community }: { community: Community }) {
           leftIcon={<MapPin size={15} />}
           onClick={() =>
             void sendToActiveTab({
-              type: "tabcom:enter-pin-mode",
+              type: "tabcom:enter-annotate-mode",
               communityId: community.id,
             })
           }
         >
-          Pin a spot on this page
+          Annotate this page — click to pin, drag to select an area
         </Button>
       </div>
 
@@ -196,8 +193,8 @@ function PinsSection({ community }: { community: Community }) {
         <div className="flex flex-col gap-4 px-4 py-4">
           {itemsWithPins.map((item) => (
             <AnnotationGroup key={item.id} item={item}>
-              {item.pins.map((pin) => (
-                <PinRow key={pin.id} item={item} pin={pin} />
+              {(item.pins ?? []).map((pin) => (
+                <PinRow key={pin.id} item={item} pin={pin} communityId={community.id} />
               ))}
             </AnnotationGroup>
           ))}
@@ -207,34 +204,98 @@ function PinsSection({ community }: { community: Community }) {
   );
 }
 
-function PinRow({ item, pin }: { item: BoardItem; pin: BoardPin }) {
+function PinRow({
+  item,
+  pin,
+  communityId,
+}: {
+  item: BoardItem;
+  pin: BoardPin;
+  communityId: string;
+}) {
+  const commentOnPin = useChatStore((state) => state.commentOnPin);
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const submit = () => {
+    if (!draft.trim()) return;
+    commentOnPin(communityId, item.id, pin.id, draft);
+    setDraft("");
+  };
+
   return (
-    <button
-      type="button"
-      onClick={() => void navigateToAnnotation(item, { kind: "pin", id: pin.id })}
-      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
-      title="Jump to this spot on the page"
-    >
-      <MapPin size={14} className="mt-0.5 shrink-0 text-blue-500" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] font-medium leading-snug">
-          {pin.text}
-        </span>
-        <span className="mt-0.5 block text-[11px] text-slate-400">
-          @{pin.author} · {formatRelativeTime(pin.sentAt)}
-        </span>
-      </span>
-      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
-    </button>
+    <div className="overflow-hidden rounded-xl border border-transparent transition hover:border-slate-100">
+      <div className="flex w-full items-start gap-2.5 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={() => void navigateToAnnotation(item, { kind: "pin", id: pin.id })}
+          className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
+          title="Jump to this spot on the page"
+        >
+          <MapPin size={14} className="mt-0.5 shrink-0 text-blue-500" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-medium leading-snug">
+              {pin.text}
+            </span>
+            <span className="mt-0.5 block text-[11px] text-slate-400">
+              @{pin.author} · {formatRelativeTime(pin.sentAt)}
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:bg-slate-50"
+        >
+          <MessageSquareText size={11} />
+          {(pin.comments ?? []).length}
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-slate-100 bg-slate-50/60 px-3 py-2.5">
+          {(pin.comments ?? []).length > 0 && (
+            <ul className="mb-2 space-y-1.5">
+              {(pin.comments ?? []).map((comment) => (
+                <li key={comment.id} className="text-xs leading-5">
+                  <span className="font-semibold">@{comment.author}</span>{" "}
+                  <span className="text-slate-600">{comment.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submit();
+              }}
+              placeholder="Reply to this pin…"
+              className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!draft.trim()}
+              aria-label="Send comment"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white disabled:bg-slate-300"
+            >
+              <Send size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
-// ---- Highlights -------------------------------------------------------------
+// ---- Areas -------------------------------------------------------------
 
-function HighlightsSection({ community }: { community: Community }) {
-  const itemsWithHighlights = community.board.filter(
-    (item) => item.highlights.length > 0
-  );
+function AreasSection({ community }: { community: Community }) {
+  const itemsWithAreas = community.board.filter((item) => (item.areas ?? []).length > 0);
 
   return (
     <>
@@ -243,31 +304,31 @@ function HighlightsSection({ community }: { community: Community }) {
           size="md"
           variant="outline"
           fullWidth
-          leftIcon={<Pencil size={15} />}
+          leftIcon={<Square size={15} />}
           onClick={() =>
             void sendToActiveTab({
-              type: "tabcom:enter-highlight-mode",
+              type: "tabcom:enter-annotate-mode",
               communityId: community.id,
             })
           }
         >
-          Highlight text on this page
+          Annotate this page — click to pin, drag to select an area
         </Button>
       </div>
 
-      {itemsWithHighlights.length === 0 ? (
+      {itemsWithAreas.length === 0 ? (
         <EmptyState
           className="flex-1"
-          icon={<Pencil size={24} />}
-          title="No highlights yet"
-          description="Select text on any page on the board and highlight it — everyone can jump straight to the exact sentence from here."
+          icon={<Square size={24} />}
+          title="No areas yet"
+          description="Click and drag over any part of a page on the board — works over images and mixed content, not just text."
         />
       ) : (
         <div className="flex flex-col gap-4 px-4 py-4">
-          {itemsWithHighlights.map((item) => (
+          {itemsWithAreas.map((item) => (
             <AnnotationGroup key={item.id} item={item}>
-              {item.highlights.map((highlight) => (
-                <HighlightRow key={highlight.id} item={item} highlight={highlight} />
+              {(item.areas ?? []).map((area) => (
+                <AreaRow key={area.id} item={item} area={area} communityId={community.id} />
               ))}
             </AnnotationGroup>
           ))}
@@ -277,34 +338,91 @@ function HighlightsSection({ community }: { community: Community }) {
   );
 }
 
-function HighlightRow({
+function AreaRow({
   item,
-  highlight,
+  area,
+  communityId,
 }: {
   item: BoardItem;
-  highlight: BoardHighlight;
+  area: BoardArea;
+  communityId: string;
 }) {
+  const commentOnArea = useChatStore((state) => state.commentOnArea);
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const submit = () => {
+    if (!draft.trim()) return;
+    commentOnArea(communityId, item.id, area.id, draft);
+    setDraft("");
+  };
+
   return (
-    <button
-      type="button"
-      onClick={() =>
-        void navigateToAnnotation(item, { kind: "highlight", id: highlight.id })
-      }
-      className="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
-      title="Jump to this text on the page"
-    >
-      <Pencil size={14} className="mt-0.5 shrink-0 text-amber-500" />
-      <span className="min-w-0 flex-1">
-        <span className="block text-[13px] italic leading-snug text-slate-700">
-          "{highlight.quote.slice(0, 90)}
-          {highlight.quote.length > 90 ? "…" : ""}"
-        </span>
-        <span className="mt-0.5 block text-[11px] text-slate-400">
-          @{highlight.author} · {formatRelativeTime(highlight.sentAt)}
-        </span>
-      </span>
-      <ExternalLink size={13} className="mt-1 shrink-0 text-slate-300" />
-    </button>
+    <div className="overflow-hidden rounded-xl border border-transparent transition hover:border-slate-100">
+      <div className="flex w-full items-start gap-2.5 px-2.5 py-2">
+        <button
+          type="button"
+          onClick={() => void navigateToAnnotation(item, { kind: "area", id: area.id })}
+          className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
+          title="Jump to this area on the page"
+        >
+          <Square size={14} className="mt-0.5 shrink-0 text-violet-500" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-medium leading-snug">
+              {area.text}
+            </span>
+            <span className="mt-0.5 block text-[11px] text-slate-400">
+              @{area.author} · {formatRelativeTime(area.sentAt)}
+            </span>
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:bg-slate-50"
+        >
+          <MessageSquareText size={11} />
+          {(area.comments ?? []).length}
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-slate-100 bg-slate-50/60 px-3 py-2.5">
+          {(area.comments ?? []).length > 0 && (
+            <ul className="mb-2 space-y-1.5">
+              {(area.comments ?? []).map((comment) => (
+                <li key={comment.id} className="text-xs leading-5">
+                  <span className="font-semibold">@{comment.author}</span>{" "}
+                  <span className="text-slate-600">{comment.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") submit();
+              }}
+              placeholder="Reply to this area…"
+              className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-xs outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!draft.trim()}
+              aria-label="Send comment"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white disabled:bg-slate-300"
+            >
+              <Send size={12} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

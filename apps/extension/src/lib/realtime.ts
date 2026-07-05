@@ -46,16 +46,32 @@ export interface WireBoardPin {
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
+  comments: WireBoardComment[];
 }
 
 export interface WireBoardHighlight {
   id: string;
   author: string;
   sentAt: number;
-  comment?: string;
   quote: string;
   prefix: string;
   suffix: string;
+  comments: WireBoardComment[];
+}
+
+export interface WireBoardArea {
+  id: string;
+  author: string;
+  sentAt: number;
+  text: string;
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+  comments: WireBoardComment[];
 }
 
 export interface WireBoardItem {
@@ -70,6 +86,7 @@ export interface WireBoardItem {
   comments: WireBoardComment[];
   pins: WireBoardPin[];
   highlights: WireBoardHighlight[];
+  areas: WireBoardArea[];
   votes: string[];
   decided: boolean;
 }
@@ -488,6 +505,24 @@ export function commentOnBoardItem(
   socket?.emit("board_comment", { communityId, itemId, text });
 }
 
+export function commentOnPin(
+  communityId: string,
+  itemId: string,
+  pinId: string,
+  text: string
+): void {
+  socket?.emit("board_pin_comment", { communityId, itemId, pinId, text });
+}
+
+export function commentOnHighlight(
+  communityId: string,
+  itemId: string,
+  highlightId: string,
+  text: string
+): void {
+  socket?.emit("board_highlight_comment", { communityId, itemId, highlightId, text });
+}
+
 export function voteOnBoardItem(communityId: string, itemId: string): void {
   socket?.emit("board_vote", { communityId, itemId });
 }
@@ -551,6 +586,38 @@ export function removeBoardPin(
   pinId: string
 ): void {
   socket?.emit("board_pin_remove", { communityId, itemId, pinId });
+}
+
+export function addBoardArea(
+  input: BoardAnchorInput & {
+    text: string;
+    xPercent: number;
+    yPercent: number;
+    widthPercent: number;
+    heightPercent: number;
+    anchorSelector?: string;
+    elXPercent?: number;
+    elYPercent?: number;
+  }
+): void {
+  socket?.emit("board_area_add", input);
+}
+
+export function removeBoardArea(
+  communityId: string,
+  itemId: string,
+  areaId: string
+): void {
+  socket?.emit("board_area_remove", { communityId, itemId, areaId });
+}
+
+export function commentOnArea(
+  communityId: string,
+  itemId: string,
+  areaId: string,
+  text: string
+): void {
+  socket?.emit("board_area_comment", { communityId, itemId, areaId, text });
 }
 
 export function addBoardHighlight(

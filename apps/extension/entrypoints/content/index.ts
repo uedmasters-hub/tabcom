@@ -2,7 +2,7 @@ import { browser } from "wxt/browser";
 
 import type { WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
-import { resolveTextQuote, serializeSelection } from "../../src/lib/text-quote";
+import { resolveTextQuote } from "../../src/lib/text-quote";
 import { anchorForPoint } from "../../src/lib/element-anchor";
 import {
   getCursorsEnabled,
@@ -14,13 +14,21 @@ import {
  *
  * READ (passive, on every page load): looks up the page's canonical key
  * against communities already synced to local storage and renders any
- * existing pins/highlights. No network activity — this must be free for
- * every page a person browses.
+ * existing pins/areas/highlights. No network activity — this must be
+ * free for every page a person browses.
  *
- * WRITE (only when the person actually pins/highlights something): opens
- * a short-lived socket scoped to this tab, submits, listens once for the
- * server's confirmation, writes it back to local storage so read-mode
- * stays fresh even if the side panel isn't open, then disconnects.
+ * WRITE (only when the person actually annotates something): relays
+ * through the background service worker's persistent connection (see
+ * that file for why it's persistent, not on-demand) — writes there,
+ * confirmation comes back via community_update, which updates storage
+ * and re-renders every open tab, this one included.
+ *
+ * One unified "annotate" mode replaces separate pin/highlight modes:
+ * a single click drops a pin, click-and-drag draws a rectangular area
+ * annotation. Existing text-quote highlights (the older mechanism)
+ * still render for backward compatibility but are no longer created
+ * through this UI — areas are the general-purpose replacement, since
+ * they work over any content, not just selectable text.
  */
 
 interface StoredProfile {
@@ -38,7 +46,14 @@ const HIGHLIGHT_STYLE_ID = "tabcom-highlight-style";
 
 let shadowHost: HTMLDivElement | null = null;
 let shadowRoot: ShadowRoot | null = null;
-let activeMode: { kind: "pin" | "highlight"; communityId: string } | null = null;
+let activeMode: { kind: "annotate"; communityId: string } | null = null;
+let dragState: {
+  startPageX: number;
+  startPageY: number;
+  startClientX: number;
+  startClientY: number;
+} | null = null;
+const DRAG_THRESHOLD_PX = 6;
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
   try {
@@ -113,6 +128,17 @@ function ensureShadowRoot(): ShadowRoot {
     .highlight-btn { position: fixed; pointer-events: auto; background: #0F172A; color: white;
       border: none; border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600;
       cursor: pointer; z-index: 2147483001; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+
+    .drag-rect { position: fixed; pointer-events: none; z-index: 2147483001;
+      border: 2px dashed #2563EB; background: rgba(37,99,235,.10); border-radius: 4px; }
+
+    .area-box { position: fixed; pointer-events: auto; cursor: pointer;
+      border: 2px solid #7C3AED; background: rgba(124,58,237,.08); border-radius: 6px;
+      transition: background .15s ease; }
+    .area-box:hover { background: rgba(124,58,237,.16); }
+    .area-box .area-label { position: absolute; top: -22px; left: -2px; pointer-events: none;
+      background: #7C3AED; color: white; font-size: 10px; font-weight: 700; padding: 2px 7px;
+      border-radius: 999px 999px 999px 2px; white-space: nowrap; }
 
     @keyframes tabcom-pulse { 0%,100% { transform: rotate(-45deg) scale(1); }
       50% { transform: rotate(-45deg) scale(1.45); } }
@@ -212,13 +238,14 @@ async function renderExistingInner() {
   // Pins/popovers live in the fixed layer — clear stale ones on
   // re-render, but never touch live peer cursors.
   fixedLayerEl()
-    .querySelectorAll(".pin, .popover")
+    .querySelectorAll(".pin, .area-box, .popover")
     .forEach((el) => el.remove());
 
   removeHighlightStyle();
   const ranges: Range[] = [];
   highlightRanges.clear();
   renderedPins.clear();
+  renderedAreas.clear();
   ensureRepositionObserver();
   let boardScope: { communityId: string; canonicalKey: string } | null = null;
 
@@ -231,8 +258,8 @@ async function renderExistingInner() {
     console.debug(
       "[tabcom] found matching item in",
       community.name,
-      "- pins:", item.pins.length,
-      "highlights:", item.highlights.length
+      "- pins:", (item.pins ?? []).length,
+      "highlights:", (item.highlights ?? []).length
     );
 
     // This page is on a board — live cursors are in scope here.
@@ -240,7 +267,7 @@ async function renderExistingInner() {
       boardScope = { communityId: community.id, canonicalKey: anchor.canonicalKey };
     }
 
-    for (const pin of item.pins) {
+    for (const pin of item.pins ?? []) {
       const marker = document.createElement("div");
       marker.className = "pin";
       marker.dataset.pinId = pin.id;
@@ -256,7 +283,23 @@ async function renderExistingInner() {
       fixedLayerEl().append(marker);
     }
 
-    for (const highlight of item.highlights) {
+    for (const area of item.areas ?? []) {
+      const box = document.createElement("div");
+      box.className = "area-box";
+      box.dataset.areaId = area.id;
+      renderedAreas.set(area.id, { box, area });
+      positionAreaBox(box, area);
+      box.innerHTML = `<span class="area-label">@${area.author}</span>`;
+
+      box.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showAreaPopover(box, area, community.id, item.id);
+      });
+
+      fixedLayerEl().append(box);
+    }
+
+    for (const highlight of item.highlights ?? []) {
       const range = resolveTextQuote(highlight);
       if (range) {
         ranges.push(range);
@@ -322,6 +365,34 @@ function showPinPopover(
   fixedLayerEl().append(popover);
 }
 
+function showAreaPopover(
+  anchorEl: HTMLElement,
+  area: { id: string; author: string; text: string },
+  communityId: string,
+  itemId: string
+) {
+  const root = ensureShadowRoot();
+  root.querySelectorAll(".popover").forEach((el) => el.remove());
+
+  const rect = anchorEl.getBoundingClientRect();
+  const popover = document.createElement("div");
+  popover.className = "popover";
+  popover.style.left = `${Math.min(rect.left, window.innerWidth - 236)}px`;
+  popover.style.top = `${rect.bottom + 6}px`;
+  popover.innerHTML = `
+    <div class="author">@${area.author}</div>
+    <div>${area.text.replace(/</g, "&lt;")}</div>
+    <button class="remove">Remove area</button>
+  `;
+  popover.querySelector(".remove")?.addEventListener("click", async () => {
+    await boardWrite("area_remove", { communityId, itemId, areaId: area.id });
+    popover.remove();
+  });
+
+  document.addEventListener("click", () => popover.remove(), { once: true });
+  fixedLayerEl().append(popover);
+}
+
 // ---- Write path: relay to the background service worker ---------------
 //
 // Content scripts run inside a webpage's context and can be subject to
@@ -373,6 +444,8 @@ async function boardWrite(
   action:
     | "pin_add"
     | "pin_remove"
+    | "area_add"
+    | "area_remove"
     | "highlight_add"
     | "highlight_remove"
     | "item_add"
@@ -413,17 +486,21 @@ function eventTouchesOwnUI(event: Event): boolean {
           node.classList?.contains("mode-bar") ||
           node.classList?.contains("pin") ||
           node.classList?.contains("popover") ||
+          node.classList?.contains("area-box") ||
           node.classList?.contains("highlight-btn"))
     );
 }
 
 function exitMode() {
   activeMode = null;
+  dragState = null;
   ensureShadowRoot()
-    .querySelectorAll(".mode-bar, .composer, .highlight-btn")
+    .querySelectorAll(".mode-bar, .composer, .highlight-btn, .drag-rect")
     .forEach((el) => el.remove());
-  document.removeEventListener("click", handlePinClick, true);
-  document.removeEventListener("mouseup", handleSelectionChange);
+  document.removeEventListener("mousedown", handleAnnotateMouseDown, true);
+  document.removeEventListener("mousemove", handleAnnotateMouseMove, true);
+  document.removeEventListener("mouseup", handleAnnotateMouseUp, true);
+  document.removeEventListener("dragstart", suppressNativeDrag, true);
 }
 
 function showModeBar(label: string) {
@@ -435,26 +512,18 @@ function showModeBar(label: string) {
   root.append(bar);
 }
 
-function handlePinClick(event: MouseEvent) {
-  if (!activeMode || activeMode.kind !== "pin") return;
-  if (eventTouchesOwnUI(event)) {
-    console.debug("[tabcom] pin click ignored — landed on our own UI");
-    return;
-  }
-
-  event.preventDefault();
-  event.stopPropagation();
-  console.debug("[tabcom] dropping pin at", event.pageX, event.pageY);
+function createPinAt(pageX: number, pageY: number, clientX: number, clientY: number) {
+  console.debug("[tabcom] dropping pin at", pageX, pageY);
 
   const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
-  const xPercent = Math.min(100, (event.pageX / pageWidth) * 100) || 0;
-  const yPercent = Math.min(100, (event.pageY / documentHeight()) * 100) || 0;
+  const xPercent = Math.min(100, (pageX / pageWidth) * 100) || 0;
+  const yPercent = Math.min(100, (pageY / documentHeight()) * 100) || 0;
 
   // Element anchor captured at click time — the pin sticks to this
   // element even as lazy-loading reshapes everything around it.
-  const elementAnchor = anchorForPoint(event.clientX, event.clientY);
+  const elementAnchor = anchorForPoint(clientX, clientY);
 
-  showComposer(event.clientX, event.clientY, async (text) => {
+  showComposer(clientX, clientY, async (text) => {
     const anchor = readPageAnchor();
     const ok = await boardWrite("pin_add", {
       communityId: activeMode!.communityId,
@@ -469,6 +538,137 @@ function handlePinClick(event: MouseEvent) {
     console.debug("[tabcom] pin_add result:", ok, "anchored:", !!elementAnchor);
     exitMode();
   });
+}
+
+function createAreaAt(
+  startPageX: number,
+  startPageY: number,
+  endPageX: number,
+  endPageY: number,
+  startClientX: number,
+  startClientY: number
+) {
+  const left = Math.min(startPageX, endPageX);
+  const top = Math.min(startPageY, endPageY);
+  const width = Math.abs(endPageX - startPageX);
+  const height = Math.abs(endPageY - startPageY);
+
+  const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const pageHeight = documentHeight();
+  const xPercent = Math.min(100, (left / pageWidth) * 100) || 0;
+  const yPercent = Math.min(100, (top / pageHeight) * 100) || 0;
+  const widthPercent = Math.min(100, (width / pageWidth) * 100) || 0.5;
+  const heightPercent = Math.min(100, (height / pageHeight) * 100) || 0.5;
+
+  // Anchor to the element under the START corner — same reasoning as
+  // pins, keeps the box attached to content rather than a raw coordinate.
+  const elementAnchor = anchorForPoint(startClientX, startClientY);
+
+  console.debug("[tabcom] drawing area", { xPercent, yPercent, widthPercent, heightPercent });
+
+  showComposer(startClientX, startClientY, async (text) => {
+    const anchor = readPageAnchor();
+    const ok = await boardWrite("area_add", {
+      communityId: activeMode!.communityId,
+      ...anchor,
+      text,
+      xPercent,
+      yPercent,
+      widthPercent,
+      heightPercent,
+      anchorSelector: elementAnchor?.selector,
+      elXPercent: elementAnchor?.elXPercent,
+      elYPercent: elementAnchor?.elYPercent,
+    });
+    console.debug("[tabcom] area_add result:", ok, "anchored:", !!elementAnchor);
+    exitMode();
+  });
+}
+
+/**
+ * Single click -> pin. Click and drag past a small threshold -> a
+ * rectangular area selection, Figma-comment style. One entry point
+ * instead of separate pin/highlight modes — the gesture itself decides
+ * which annotation type gets created, nothing to pick beforehand.
+ */
+function handleAnnotateMouseDown(event: MouseEvent) {
+  if (!activeMode || activeMode.kind !== "annotate") return;
+  if (eventTouchesOwnUI(event)) return;
+  if (event.button !== 0) return; // left button only — right-click/middle-click pass through
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  dragState = {
+    startPageX: event.pageX,
+    startPageY: event.pageY,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+  };
+
+  document.addEventListener("mousemove", handleAnnotateMouseMove, true);
+  document.addEventListener("mouseup", handleAnnotateMouseUp, true);
+}
+
+function handleAnnotateMouseMove(event: MouseEvent) {
+  if (!dragState) return;
+
+  const dx = Math.abs(event.clientX - dragState.startClientX);
+  const dy = Math.abs(event.clientY - dragState.startClientY);
+  if (dx < DRAG_THRESHOLD_PX && dy < DRAG_THRESHOLD_PX) return; // still within click tolerance
+
+  updateDragRectangle(
+    dragState.startClientX,
+    dragState.startClientY,
+    event.clientX,
+    event.clientY
+  );
+}
+
+function handleAnnotateMouseUp(event: MouseEvent) {
+  if (!dragState) return;
+  const start = dragState;
+  dragState = null;
+
+  document.removeEventListener("mousemove", handleAnnotateMouseMove, true);
+  document.removeEventListener("mouseup", handleAnnotateMouseUp, true);
+  removeDragRectangle();
+
+  const dx = Math.abs(event.clientX - start.startClientX);
+  const dy = Math.abs(event.clientY - start.startClientY);
+
+  if (dx < DRAG_THRESHOLD_PX && dy < DRAG_THRESHOLD_PX) {
+    createPinAt(start.startPageX, start.startPageY, start.startClientX, start.startClientY);
+  } else {
+    createAreaAt(
+      start.startPageX,
+      start.startPageY,
+      event.pageX,
+      event.pageY,
+      start.startClientX,
+      start.startClientY
+    );
+  }
+}
+
+function updateDragRectangle(x1: number, y1: number, x2: number, y2: number) {
+  const root = ensureShadowRoot();
+  let rect = root.querySelector(".drag-rect") as HTMLDivElement | null;
+  if (!rect) {
+    rect = document.createElement("div");
+    rect.className = "drag-rect";
+    root.append(rect);
+  }
+  rect.style.left = `${Math.min(x1, x2)}px`;
+  rect.style.top = `${Math.min(y1, y2)}px`;
+  rect.style.width = `${Math.abs(x2 - x1)}px`;
+  rect.style.height = `${Math.abs(y2 - y1)}px`;
+}
+
+function removeDragRectangle() {
+  ensureShadowRoot()
+    .querySelectorAll(".drag-rect")
+    .forEach((el) => el.remove());
 }
 
 function showComposer(clientX: number, clientY: number, onSubmit: (text: string) => void) {
@@ -521,72 +721,26 @@ function showComposer(clientX: number, clientY: number, onSubmit: (text: string)
   setTimeout(() => input.focus(), 0);
 }
 
-function handleSelectionChange(event: Event) {
-  if (!activeMode || activeMode.kind !== "highlight") return;
-
-  // Don't tear down the button because of the mouseup that's the
-  // first half of clicking the button itself.
-  if (eventTouchesOwnUI(event)) {
-    console.debug("[tabcom] selection mouseup ignored — landed on our own UI");
-    return;
-  }
-
-  const root = ensureShadowRoot();
-  root.querySelectorAll(".highlight-btn").forEach((el) => el.remove());
-
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed) return;
-
-  const range = selection.getRangeAt(0);
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return;
-
-  // CRITICAL: serialize the selection NOW, while it exists. Clicking
-  // the button collapses the selection on mousedown — before the click
-  // handler runs — so serializing at click time reads an empty
-  // selection and silently fails.
-  const capturedQuote = serializeSelection();
-  if (!capturedQuote) return;
-
-  const button = document.createElement("button");
-  button.className = "highlight-btn";
-  button.textContent = "✎ Highlight this";
-  button.style.left = `${rect.left + rect.width / 2 - 60}px`;
-  button.style.top = `${Math.max(8, rect.top - 38)}px`;
-
-  // Keep the page selection alive through the button press.
-  button.addEventListener("mousedown", (e) => e.preventDefault());
-
-  button.addEventListener("click", async (event) => {
-    event.stopPropagation();
-    console.debug("[tabcom] highlight submit, quote:", capturedQuote.quote);
-
-    const anchor = readPageAnchor();
-    const ok = await boardWrite("highlight_add", {
-      communityId: activeMode!.communityId,
-      ...anchor,
-      ...capturedQuote,
-    });
-    console.debug("[tabcom] highlight_add result:", ok);
-    button.remove();
-    exitMode();
-  });
-
-  root.append(button);
+/**
+ * <img> and <a> elements are draggable by default in every browser —
+ * mousedown+move over one starts a NATIVE drag operation instead of
+ * firing mousemove/mouseup at all, which is a completely different
+ * event sequence (dragstart/drag/dragend) our handlers never see.
+ * Without this, area selection silently fails on any image-heavy page
+ * (which is most of them) while a plain click elsewhere still works
+ * fine — exactly the "pins work, areas don't" symptom this fixes.
+ */
+function suppressNativeDrag(event: DragEvent) {
+  if (!activeMode || activeMode.kind !== "annotate") return;
+  event.preventDefault();
 }
 
-function enterPinMode(communityId: string) {
+function enterAnnotateMode(communityId: string) {
   exitMode();
-  activeMode = { kind: "pin", communityId };
-  showModeBar("Click anywhere on the page to drop a pin");
-  document.addEventListener("click", handlePinClick, true);
-}
-
-function enterHighlightMode(communityId: string) {
-  exitMode();
-  activeMode = { kind: "highlight", communityId };
-  showModeBar("Select any text to highlight it");
-  document.addEventListener("mouseup", handleSelectionChange);
+  activeMode = { kind: "annotate", communityId };
+  showModeBar("Click to pin, or click and drag to select an area");
+  document.addEventListener("mousedown", handleAnnotateMouseDown, true);
+  document.addEventListener("dragstart", suppressNativeDrag, true);
 }
 
 // ---- Pin positioning: element-anchored, self-correcting ------------------
@@ -604,7 +758,18 @@ interface PinLike {
   elYPercent?: number;
 }
 
+interface AreaLike {
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}
+
 const renderedPins = new Map<string, { marker: HTMLElement; pin: PinLike }>();
+const renderedAreas = new Map<string, { box: HTMLElement; area: AreaLike }>();
 let repositionObserver: ResizeObserver | null = null;
 
 /** Viewport position from an element anchor's LIVE on-screen rect —
@@ -646,9 +811,34 @@ function positionPinMarker(marker: HTMLElement, pin: PinLike) {
   marker.style.top = `${(pin.yPercent / 100) * documentHeight() - window.scrollY}px`;
 }
 
+/** Top-left corner anchors the same way a pin does (element anchor,
+ *  falling back to page-percent); width/height stay page-percent-based
+ *  always, since a dragged rectangle can span multiple elements and has
+ *  no single element to size itself against. */
+function positionAreaBox(box: HTMLElement, area: AreaLike) {
+  const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const pageHeight = documentHeight();
+  const width = (area.widthPercent / 100) * pageWidth;
+  const height = (area.heightPercent / 100) * pageHeight;
+
+  const point = anchorViewportPoint(area);
+  if (point) {
+    box.style.left = `${point.x}px`;
+    box.style.top = `${point.y}px`;
+  } else {
+    box.style.left = `${(area.xPercent / 100) * pageWidth - window.scrollX}px`;
+    box.style.top = `${(area.yPercent / 100) * pageHeight - window.scrollY}px`;
+  }
+  box.style.width = `${width}px`;
+  box.style.height = `${height}px`;
+}
+
 function repositionAllPins() {
   for (const { marker, pin } of renderedPins.values()) {
     positionPinMarker(marker, pin);
+  }
+  for (const { box, area } of renderedAreas.values()) {
+    positionAreaBox(box, area);
   }
   repositionAllCursors();
 }
@@ -715,6 +905,41 @@ function pulsePin(pinId: string) {
   return true;
 }
 
+function pulseArea(areaId: string): boolean {
+  const entry = renderedAreas.get(areaId);
+  const box = fixedLayerEl().querySelector(
+    `[data-area-id="${areaId}"]`
+  ) as HTMLElement | null;
+  if (!box || !entry) return false;
+
+  let element: Element | null = null;
+  if (entry.area.anchorSelector) {
+    try {
+      element = document.querySelector(entry.area.anchorSelector);
+    } catch {
+      element = null;
+    }
+  }
+  if (element) {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  } else {
+    window.scrollTo({
+      top: (entry.area.yPercent / 100) * documentHeight() - window.innerHeight / 2,
+      behavior: "smooth",
+    });
+  }
+
+  // area-box has no built-in pulse keyframe (it's a differently-shaped
+  // element than a pin marker) — a brief box-shadow flash reads clearly
+  // enough without needing a dedicated animation.
+  const originalShadow = box.style.boxShadow;
+  box.style.boxShadow = "0 0 0 4px rgba(124,58,237,.35)";
+  setTimeout(() => {
+    box.style.boxShadow = originalShadow;
+  }, 900);
+  return true;
+}
+
 function flashHighlight(highlightId: string) {
   const range = highlightRanges.get(highlightId);
   if (!range) return false;
@@ -742,10 +967,12 @@ function flashHighlight(highlightId: string) {
   return true;
 }
 
-function performNavigation(target: { kind: "pin" | "highlight"; id: string }) {
+function performNavigation(target: { kind: "pin" | "highlight" | "area"; id: string }) {
   const attempt = () => {
     try {
-      return target.kind === "pin" ? pulsePin(target.id) : flashHighlight(target.id);
+      if (target.kind === "pin") return pulsePin(target.id);
+      if (target.kind === "area") return pulseArea(target.id);
+      return flashHighlight(target.id);
     } catch {
       return false; // never let a hostile/odd page break navigation
     }
@@ -940,14 +1167,8 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type === "tabcom:enter-pin-mode") {
-    enterPinMode(message.communityId);
-    sendResponse({ ok: true });
-    return true;
-  }
-
-  if (message?.type === "tabcom:enter-highlight-mode") {
-    enterHighlightMode(message.communityId);
+  if (message?.type === "tabcom:enter-annotate-mode") {
+    enterAnnotateMode(message.communityId);
     sendResponse({ ok: true });
     return true;
   }
