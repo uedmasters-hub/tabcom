@@ -14,6 +14,7 @@ type UsernameState =
   | { status: "available" }
   | { status: "taken"; suggestions: string[] }
   | { status: "invalid" }
+  | { status: "error" }
   | { status: "unreachable" };
 
 type InviteState =
@@ -108,9 +109,17 @@ export default function RegisterScreen() {
       if (checkId !== latestCheckId.current) return; // a newer keystroke superseded this check
 
       if (!result.ok) {
-        setUsernameState(
-          result.reason === "unreachable" ? { status: "unreachable" } : { status: "invalid" }
-        );
+        if (result.reason === "unreachable") {
+          setUsernameState({ status: "unreachable" });
+        } else if (result.reason === "invalid_format") {
+          setUsernameState({ status: "invalid" });
+        } else {
+          // The server responded but couldn't complete the check
+          // (e.g. a database problem) — this is NOT the same thing
+          // as the username being badly formatted, and showing the
+          // format-rule copy here would be actively misleading.
+          setUsernameState({ status: "error" });
+        }
       } else if (result.available) {
         setUsernameState({ status: "available" });
       } else {
@@ -126,7 +135,9 @@ export default function RegisterScreen() {
   const canSubmit =
     (inviteState.status === "valid" || inviteState.status === "unreachable") &&
     displayName.trim().length >= 2 &&
-    (usernameState.status === "available" || usernameState.status === "unreachable") &&
+    (usernameState.status === "available" ||
+      usernameState.status === "unreachable" ||
+      usernameState.status === "error") &&
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 
   const submit = async () => {
@@ -244,6 +255,11 @@ export default function RegisterScreen() {
                 {usernameState.status === "invalid" && (
                   <span className="text-red-500">
                     3-20 characters — lowercase letters, numbers and underscores only.
+                  </span>
+                )}
+                {usernameState.status === "error" && (
+                  <span className="text-amber-600">
+                    Couldn't check availability right now (server issue) — you can still continue.
                   </span>
                 )}
                 {usernameState.status === "taken" && (
