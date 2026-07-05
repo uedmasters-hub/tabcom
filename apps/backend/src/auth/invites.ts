@@ -114,6 +114,25 @@ export async function grantInvites(userId: string): Promise<void> {
   }
 }
 
+/**
+ * Self-healing top-up: grants the allowance if (and only if) this
+ * account currently holds zero codes. Covers two cases with one
+ * check — a brand-new registration, AND an account that predates the
+ * invite system entirely (created back when registerAccount had no
+ * gate at all) logging back in and finally getting its codes.
+ * Never re-tops an account that already has some — 5 is a one-time
+ * grant, not a recurring allowance.
+ */
+export async function ensureInviteAllowance(userId: string): Promise<void> {
+  const [existing] = await db
+    .select({ id: schema.invites.id })
+    .from(schema.invites)
+    .where(eq(schema.invites.createdBy, userId))
+    .limit(1);
+
+  if (!existing) await grantInvites(userId);
+}
+
 export interface InviteSummary {
   code: string;
   used: boolean;

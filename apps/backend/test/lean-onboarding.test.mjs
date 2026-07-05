@@ -123,6 +123,12 @@ const rereg = await register(`lean1+${runId}@example.com`, `leanuser${runId}`, "
 if (!rereg.ok) fail("re-register with existing email should skip the invite gate: " + JSON.stringify(rereg));
 pass("invite gate: existing accounts can re-register without a code — the seat is already theirs");
 
+// TEST 1f: re-registering an already-topped-up account must not grant
+// a SECOND allowance on top of the first — 5 is a one-time grant
+const inv1Rereg = await myInvites(rereg.sessionToken);
+if (!inv1Rereg.ok || inv1Rereg.invites.length !== 5) fail(`re-registering should not grant a duplicate allowance: expected 5, got ${inv1Rereg.invites?.length}`);
+pass("invite allowance: re-registering an already-topped-up account does not grant a duplicate allowance");
+
 
 // TEST 2: username availability + real suggestions when taken
 const takenCheck = await checkUsername(`leanuser${runId}`);

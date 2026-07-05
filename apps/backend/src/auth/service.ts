@@ -1,7 +1,7 @@
 import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 
 import { db, schema } from "../db/client";
-import { checkInvite, consumeInvite, grantInvites } from "./invites";
+import { checkInvite, consumeInvite, ensureInviteAllowance } from "./invites";
 import { sendMagicLinkEmail } from "./mailer";
 import { generateToken, hashToken } from "./tokens";
 
@@ -332,10 +332,13 @@ export async function registerAccount(
     // retry with a fresh code.
     const claimed = await consumeInvite(rawInviteCode, user.id);
     if (!claimed.ok) return { ok: false, reason: "invalid_invite" };
-
-    // Every new member gets their own allowance to hand out.
-    await grantInvites(user.id);
   }
+
+  // Top up the invite allowance if this account has never had one —
+  // covers a fresh registration AND an account created before the
+  // invite system existed logging back in. A no-op for anyone who
+  // already has codes.
+  await ensureInviteAllowance(user.id);
 
   if (existingByEmail && existingByEmail.username !== username) {
     await db
