@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { io } from "socket.io-client";
 
-const PORT = 5827;
+const PORT = 6103;
 const URL = `http://localhost:${PORT}`;
 
 const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
@@ -903,6 +903,64 @@ let areaId;
   zed.emit("board_area_remove", { communityId: pinCommunityId, itemId: pinItemId, areaId }); // zed is admin AND author
   await removed;
   pass("area removal: restricted to admin or original author, same as pins");
+}
+
+// TEST 26e: absolute page-pixel fallback fields (pageX/pageY/pageWidth/
+// pageHeight) round-trip correctly — these are what fix position drift
+// on infinite-scroll pages, so they need to actually reach the client.
+{
+  const pinned = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.canonicalKey === "example:pixel-test");
+      if (item?.pins.length === 1) { amy.off("community_update", h); r(item); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_pin_add", {
+    communityId: pinCommunityId,
+    url: "https://example.com/pixel-test",
+    canonicalKey: "example:pixel-test",
+    title: "Pixel Test Page",
+    text: "testing absolute pixel storage",
+    xPercent: 10,
+    yPercent: 20,
+    pageX: 1234,
+    pageY: 5678,
+  });
+  const item = await pinned;
+  if (item.pins[0].pageX !== 1234 || item.pins[0].pageY !== 5678) {
+    fail("pin's absolute pixel fallback fields did not round-trip correctly");
+  }
+  pass("pin: pageX/pageY absolute pixel fields round-trip correctly, not silently dropped");
+
+  const areaAdded = new Promise((r) => {
+    const h = ({ community }) => {
+      const item = community.board.find((i) => i.canonicalKey === "example:pixel-test");
+      if (item?.areas.length === 1) { amy.off("community_update", h); r(item); }
+    };
+    amy.on("community_update", h);
+  });
+  zed.emit("board_area_add", {
+    communityId: pinCommunityId,
+    url: "https://example.com/pixel-test",
+    canonicalKey: "example:pixel-test",
+    title: "Pixel Test Page",
+    text: "testing absolute pixel area",
+    xPercent: 10,
+    yPercent: 20,
+    widthPercent: 5,
+    heightPercent: 5,
+    pageX: 100,
+    pageY: 200,
+    pageWidth: 300,
+    pageHeight: 400,
+  });
+  const item2 = await areaAdded;
+  const area = item2.areas[0];
+  if (area.pageX !== 100 || area.pageY !== 200 || area.pageWidth !== 300 || area.pageHeight !== 400) {
+    fail("area's absolute pixel fallback fields did not round-trip correctly");
+  }
+  pass("area: pageX/pageY/pageWidth/pageHeight all round-trip correctly");
 }
 
 // TEST 27: pin/highlight removal restricted to admin or original author

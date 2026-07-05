@@ -43,6 +43,8 @@ export interface WireBoardPin {
   sentAt: number;
   xPercent: number;
   yPercent: number;
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -68,6 +70,10 @@ export interface WireBoardArea {
   yPercent: number;
   widthPercent: number;
   heightPercent: number;
+  pageX?: number;
+  pageY?: number;
+  pageWidth?: number;
+  pageHeight?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -575,7 +581,16 @@ export interface BoardAnchorInput {
 }
 
 export function addBoardPin(
-  input: BoardAnchorInput & { text: string; xPercent: number; yPercent: number }
+  input: BoardAnchorInput & {
+    text: string;
+    xPercent: number;
+    yPercent: number;
+    pageX?: number;
+    pageY?: number;
+    anchorSelector?: string;
+    elXPercent?: number;
+    elYPercent?: number;
+  }
 ): void {
   socket?.emit("board_pin_add", input);
 }
@@ -595,6 +610,10 @@ export function addBoardArea(
     yPercent: number;
     widthPercent: number;
     heightPercent: number;
+    pageX?: number;
+    pageY?: number;
+    pageWidth?: number;
+    pageHeight?: number;
     anchorSelector?: string;
     elXPercent?: number;
     elYPercent?: number;

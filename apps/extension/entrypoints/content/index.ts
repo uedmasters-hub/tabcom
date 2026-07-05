@@ -531,6 +531,8 @@ function createPinAt(pageX: number, pageY: number, clientX: number, clientY: num
       text,
       xPercent,
       yPercent,
+      pageX,
+      pageY,
       anchorSelector: elementAnchor?.selector,
       elXPercent: elementAnchor?.elXPercent,
       elYPercent: elementAnchor?.elYPercent,
@@ -576,6 +578,10 @@ function createAreaAt(
       yPercent,
       widthPercent,
       heightPercent,
+      pageX: left,
+      pageY: top,
+      pageWidth: width,
+      pageHeight: height,
       anchorSelector: elementAnchor?.selector,
       elXPercent: elementAnchor?.elXPercent,
       elYPercent: elementAnchor?.elYPercent,
@@ -753,6 +759,8 @@ function enterAnnotateMode(communityId: string) {
 interface PinLike {
   xPercent: number;
   yPercent: number;
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -763,6 +771,10 @@ interface AreaLike {
   yPercent: number;
   widthPercent: number;
   heightPercent: number;
+  pageX?: number;
+  pageY?: number;
+  pageWidth?: number;
+  pageHeight?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -805,8 +817,18 @@ function positionPinMarker(marker: HTMLElement, pin: PinLike) {
     marker.style.display = "";
     return;
   }
-  // Legacy fallback (no element anchor): document-percent minus scroll.
-  // Correct on document-scrolling pages; best-effort elsewhere.
+  if (pin.pageX != null && pin.pageY != null) {
+    // Absolute document-pixel fallback: immune to the page's total
+    // height/width changing later (infinite scroll, lazy-loaded
+    // content appended below) since this was captured once, at
+    // creation, and doesn't get reinterpreted against a moving target.
+    marker.style.left = `${pin.pageX - window.scrollX}px`;
+    marker.style.top = `${pin.pageY - window.scrollY}px`;
+    return;
+  }
+  // Legacy percentage fallback, for pins created before pageX/pageY
+  // existed. Drifts as the page's total dimensions change over time —
+  // correct at creation, best-effort after significant page growth.
   marker.style.left = `${(pin.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1) - window.scrollX}px`;
   marker.style.top = `${(pin.yPercent / 100) * documentHeight() - window.scrollY}px`;
 }
@@ -818,14 +840,29 @@ function positionPinMarker(marker: HTMLElement, pin: PinLike) {
 function positionAreaBox(box: HTMLElement, area: AreaLike) {
   const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
   const pageHeight = documentHeight();
-  const width = (area.widthPercent / 100) * pageWidth;
-  const height = (area.heightPercent / 100) * pageHeight;
+
+  // Size: prefer the absolute pixel dimensions captured at creation —
+  // same drift reasoning as position below. Percentage-based size
+  // additionally has its own subtler issue: even if position stayed
+  // correct, a percentage width recalculated against a since-changed
+  // pageWidth would stretch or shrink the box from its original shape.
+  const width = area.pageWidth ?? (area.widthPercent / 100) * pageWidth;
+  const height = area.pageHeight ?? (area.heightPercent / 100) * pageHeight;
 
   const point = anchorViewportPoint(area);
   if (point) {
     box.style.left = `${point.x}px`;
     box.style.top = `${point.y}px`;
+  } else if (area.pageX != null && area.pageY != null) {
+    // Absolute document-pixel fallback: immune to the page's total
+    // height/width changing later (infinite scroll, lazy-loaded
+    // content appended below) since this was captured once, at
+    // creation, and doesn't get reinterpreted against a moving target.
+    box.style.left = `${area.pageX - window.scrollX}px`;
+    box.style.top = `${area.pageY - window.scrollY}px`;
   } else {
+    // Legacy percentage fallback, for areas created before pageX/pageY
+    // existed. Drifts as the page's total dimensions change over time.
     box.style.left = `${(area.xPercent / 100) * pageWidth - window.scrollX}px`;
     box.style.top = `${(area.yPercent / 100) * pageHeight - window.scrollY}px`;
   }
@@ -895,7 +932,10 @@ function pulsePin(pinId: string) {
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   } else if (entry) {
     window.scrollTo({
-      top: (entry.pin.yPercent / 100) * documentHeight() - window.innerHeight / 2,
+      top:
+        entry.pin.pageY != null
+          ? entry.pin.pageY - window.innerHeight / 2
+          : (entry.pin.yPercent / 100) * documentHeight() - window.innerHeight / 2,
       behavior: "smooth",
     });
   }
@@ -924,7 +964,10 @@ function pulseArea(areaId: string): boolean {
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   } else {
     window.scrollTo({
-      top: (entry.area.yPercent / 100) * documentHeight() - window.innerHeight / 2,
+      top:
+        entry.area.pageY != null
+          ? entry.area.pageY - window.innerHeight / 2
+          : (entry.area.yPercent / 100) * documentHeight() - window.innerHeight / 2,
       behavior: "smooth",
     });
   }

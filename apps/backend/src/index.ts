@@ -289,11 +289,23 @@ interface BoardPin {
   author: string;
   text: string;
   sentAt: number;
-  /** Fallback position as a percentage of full document width/height. */
+  /** Fallback position as a percentage of full document width/height —
+   *  legacy field, kept for pins created before pageX/pageY existed.
+   *  Drifts on pages whose total height grows over time (infinite
+   *  scroll, lazy loading), since the same percentage then maps to a
+   *  different absolute pixel than when it was drawn. */
   xPercent: number;
   yPercent: number;
-  /** Element anchor (preferred): CSS path + offsets within the element,
-   *  so the pin sticks to CONTENT even as lazy-loading reshapes the page. */
+  /** Absolute document-pixel fallback (preferred over xPercent/yPercent
+   *  when present) — captured once at creation, immune to the page's
+   *  total height changing later since new content appended BELOW an
+   *  annotation doesn't shift anything ABOVE it. */
+  pageX?: number;
+  pageY?: number;
+  /** Element anchor (preferred over both fallbacks): CSS path + offsets
+   *  within the element, so the pin sticks to CONTENT itself even as
+   *  the page reshapes — this is the best option when it holds; the
+   *  pixel/percent fields only matter when it can't be resolved. */
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -328,12 +340,20 @@ interface BoardArea {
   author: string;
   sentAt: number;
   text: string;
+  /** Legacy percentage-based fallback — same drift issue as BoardPin's
+   *  xPercent/yPercent on pages whose total height grows over time. */
   xPercent: number;
   yPercent: number;
   widthPercent: number;
   heightPercent: number;
-  /** Element anchor for the top-left corner — same reasoning as pins:
-   *  sticks to CONTENT rather than a raw coordinate as the page reshapes. */
+  /** Absolute document-pixel fallback (preferred over the percentage
+   *  fields when present) — same reasoning as BoardPin.pageX/pageY. */
+  pageX?: number;
+  pageY?: number;
+  pageWidth?: number;
+  pageHeight?: number;
+  /** Element anchor for the top-left corner — preferred over both
+   *  fallbacks, same reasoning as pins. */
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -1396,6 +1416,8 @@ io.on("connection", (socket) => {
       text: string;
       xPercent: number;
       yPercent: number;
+      pageX?: number;
+      pageY?: number;
       anchorSelector?: string;
       elXPercent?: number;
       elYPercent?: number;
@@ -1415,6 +1437,8 @@ io.on("connection", (socket) => {
         comments: [],
         xPercent: Math.max(0, Math.min(100, Number(input.xPercent) || 0)),
         yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
+        pageX: input.pageX != null ? Math.max(0, Number(input.pageX) || 0) : undefined,
+        pageY: input.pageY != null ? Math.max(0, Number(input.pageY) || 0) : undefined,
         anchorSelector:
           typeof input.anchorSelector === "string"
             ? input.anchorSelector.slice(0, 500)
@@ -1481,6 +1505,10 @@ io.on("connection", (socket) => {
       yPercent: number;
       widthPercent: number;
       heightPercent: number;
+      pageX?: number;
+      pageY?: number;
+      pageWidth?: number;
+      pageHeight?: number;
       anchorSelector?: string;
       elXPercent?: number;
       elYPercent?: number;
@@ -1501,6 +1529,12 @@ io.on("connection", (socket) => {
         yPercent: Math.max(0, Math.min(100, Number(input.yPercent) || 0)),
         widthPercent: Math.max(0.5, Math.min(100, Number(input.widthPercent) || 0.5)),
         heightPercent: Math.max(0.5, Math.min(100, Number(input.heightPercent) || 0.5)),
+        pageX: input.pageX != null ? Math.max(0, Number(input.pageX) || 0) : undefined,
+        pageY: input.pageY != null ? Math.max(0, Number(input.pageY) || 0) : undefined,
+        pageWidth:
+          input.pageWidth != null ? Math.max(1, Number(input.pageWidth) || 1) : undefined,
+        pageHeight:
+          input.pageHeight != null ? Math.max(1, Number(input.pageHeight) || 1) : undefined,
         anchorSelector:
           typeof input.anchorSelector === "string"
             ? input.anchorSelector.slice(0, 500)
