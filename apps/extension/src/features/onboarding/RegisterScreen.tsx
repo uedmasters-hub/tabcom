@@ -2,7 +2,6 @@ import { ArrowRight, Check, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import AppShell from "../../components/layout/AppShell";
-import ScreenFooter from "../../components/layout/ScreenFooter";
 import ScreenHeader from "../../components/layout/ScreenHeader";
 import { Button, Input, SectionLabel } from "../../components/ui";
 import { checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
@@ -196,25 +195,37 @@ export default function RegisterScreen() {
               error={error ?? undefined}
             />
           </div>
-        </section>
 
-        <ScreenFooter>
-          <Button
-            fullWidth
-            disabled={!canSubmit || submitting}
-            onClick={() => void submit()}
-            rightIcon={<ArrowRight size={18} />}
-          >
-            {submitting ? "Creating your account…" : "Continue"}
-          </Button>
-          <button
-            type="button"
-            onClick={() => setScreen("signin")}
-            className="mt-3 w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
-          >
-            Already have an account? Sign in
-          </button>
-        </ScreenFooter>
+          {/* CTA lives in the scrollable flow, not a pinned footer — it
+              scrolls with the form instead of sitting fixed over the
+              last field on short screens. */}
+          <div className="mt-8 space-y-3 pb-8">
+            <Button
+              fullWidth
+              disabled={!canSubmit || submitting}
+              onClick={() => void submit()}
+              rightIcon={<ArrowRight size={18} />}
+            >
+              {submitting ? "Creating your account…" : "Continue"}
+            </Button>
+
+            <button
+              type="button"
+              onClick={() => setScreen("signin")}
+              className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
+            >
+              Already have an account? Sign in
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setScreen("setup")}
+              className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
+            >
+              Continue as a guest instead
+            </button>
+          </div>
+        </section>
       </div>
     </AppShell>
   );

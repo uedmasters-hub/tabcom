@@ -495,7 +495,11 @@ export default function ChatView({
               no separate full-width bar underneath. For 1:1 chats it's
               the presence/typing subtitle, same as before. */}
           {community ? (
-            <div className="flex gap-1 pl-11" role="tablist" aria-label="View">
+            <div
+              className="ml-11 inline-flex w-fit gap-0.5 rounded-full bg-slate-100 p-0.5"
+              role="tablist"
+              aria-label="View"
+            >
               {(["chat", "board"] as const).map((id) => (
                 <button
                   key={id}
@@ -504,21 +508,23 @@ export default function ChatView({
                   aria-selected={tab === id}
                   onClick={() => setTab(id)}
                   className={cn(
-                    "rounded-full px-2.5 py-0.5 text-[11px] font-semibold capitalize transition",
+                    "rounded-full px-3 py-1 text-[11px] font-semibold capitalize transition",
                     tab === id
-                      ? "bg-slate-900 text-white"
-                      : "text-slate-500 hover:bg-slate-100"
+                      ? "bg-white text-slate-900 shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
                   )}
                 >
                   {id === "board" ? "Board" : "Chat"}
                   {id === "board" && community.board.length > 0 && (
-                    <span className="ml-1">· {community.board.length}</span>
+                    <span className="ml-1 text-slate-400">
+                      · {community.board.length}
+                    </span>
                   )}
                 </button>
               ))}
             </div>
           ) : (
-            <span className="flex items-center gap-1.5 pl-11 text-xs text-slate-500">
+            <span className="ml-11 flex items-center gap-1.5 text-xs text-slate-500">
               <span
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
