@@ -1,6 +1,6 @@
 import { browser } from "wxt/browser";
 
-import type { WireCommunity } from "../../src/lib/realtime";
+import type { AnnotationPeer, WireCommunity } from "../../src/lib/realtime";
 import { readPageAnchor } from "../../src/lib/anchor";
 import { resolveTextQuote } from "../../src/lib/text-quote";
 import { anchorForPoint } from "../../src/lib/element-anchor";
@@ -54,6 +54,25 @@ let dragState: {
   startClientY: number;
 } | null = null;
 const DRAG_THRESHOLD_PX = 6;
+
+// ---- Quick annotations ("/" bubble): ephemeral speech bubbles + the
+// @-prefixed shortcut into a persistent pin. See buildQuickAnnotations
+// section below for the full flow. ---------------------------------------
+
+/** Mirrors cursorScope but tracked independently — quick-annotation
+ *  availability depends only on "is this page on a board", never on the
+ *  unrelated live-cursors preference toggle. Set in renderExistingInner
+ *  alongside boardScope. */
+let annotationScope: { communityId: string; canonicalKey: string } | null = null;
+
+/** Updated on every mousemove so "/" can open the bubble beside wherever
+ *  the cursor actually is, without needing a click first. */
+let lastMouseClientX = 0;
+let lastMouseClientY = 0;
+
+const QUICK_ANNOTATION_MAX_LENGTH = 50;
+const EPHEMERAL_DISSOLVE_MS = 4000;
+const EPHEMERAL_ANIMATION_MS = 180;
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
   try {
@@ -153,6 +172,42 @@ function ensureShadowRoot(): ShadowRoot {
     .peer-cursor svg { display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.3)); }
     .peer-cursor .plabel { margin: 2px 0 0 12px; padding: 2px 7px; border-radius: 999px;
       color: white; font-size: 10px; font-weight: 700; white-space: nowrap; width: fit-content; }
+
+    /* Quick annotation bubble — the "/" composer. Single-line by
+       construction (a plain <input>), positioned beside the cursor,
+       never centered/modal. */
+    .quick-bubble { position: fixed; pointer-events: auto; background: white; border-radius: 14px;
+      box-shadow: 0 10px 28px rgba(0,0,0,.22); padding: 8px; width: 240px; z-index: 2147483002;
+      opacity: 0; transform: scale(.94); transition: opacity .16s ease, transform .16s ease; }
+    .quick-bubble.in { opacity: 1; transform: scale(1); }
+    .quick-bubble .row { display: flex; align-items: center; gap: 6px; }
+    .quick-bubble input { flex: 1; min-width: 0; border: none; outline: none; font-size: 13px;
+      padding: 4px 2px; color: #0F172A; background: transparent; }
+    .quick-bubble .counter { font-size: 10px; color: #94A3B8; font-variant-numeric: tabular-nums;
+      flex-shrink: 0; transition: color .15s ease; }
+    .quick-bubble .counter.limit { color: #DC2626; font-weight: 700; }
+    .quick-bubble .hint { margin-top: 5px; font-size: 10.5px; color: #94A3B8; line-height: 14px; }
+    .quick-bubble .hint b { color: #64748B; }
+
+    /* Ephemeral speech bubble — never stored, dissolves on its own.
+       Distinct visual language from persistent pins (rounded speech-
+       bubble tail vs. the teardrop pin shape) so the two are never
+       confused at a glance. */
+    .speech-bubble { position: fixed; pointer-events: none; z-index: 2147483001;
+      display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+      opacity: 0; transform: scale(.9) translateY(3px);
+      transition: opacity .18s ease, transform .18s ease; }
+    .speech-bubble.in { opacity: 1; transform: scale(1) translateY(0); }
+    .speech-bubble.out { opacity: 0; transform: scale(.92) translateY(-2px); }
+    .speech-bubble .author { font-size: 10px; font-weight: 700; padding: 1px 8px;
+      border-radius: 999px; color: white; white-space: nowrap; }
+    .speech-bubble .bubble { position: relative; background: #0F172A; color: white; font-size: 12.5px;
+      font-weight: 500; padding: 7px 12px; border-radius: 14px 14px 14px 3px;
+      max-width: 260px; word-break: break-word; box-shadow: 0 6px 16px rgba(0,0,0,.22); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .quick-bubble, .speech-bubble { transition: opacity .01ms !important; transform: none !important; }
+    }
   `;
   shadowRoot.append(style);
 
@@ -311,6 +366,12 @@ async function renderExistingInner() {
   // Cursor sharing follows board scope: on when this page is on a board
   // the user's community tracks, off otherwise.
   void syncCursorScope(boardScope);
+
+  // Quick annotations follow the SAME board scope, but registered
+  // unconditionally — unlike cursors, this isn't gated by a preference
+  // toggle, so it's a separate call rather than piggybacking on the one
+  // above (which the cursors-enabled toggle can force back to null).
+  void syncAnnotationScope(boardScope);
 
   // A navigation may be waiting for this page (panel click-through).
   void consumePendingNavigation(anchor.canonicalKey);
@@ -1126,6 +1187,41 @@ async function syncCursorScope(
   }
 }
 
+/**
+ * Same idea as syncCursorScope, but unconditional — no preference
+ * toggle gates whether a page qualifies for quick annotations, only
+ * whether it's actually on a board. Registers/clears this tab's scope
+ * with the background script so incoming annotation_peer broadcasts
+ * get relayed here.
+ */
+async function syncAnnotationScope(
+  next: { communityId: string; canonicalKey: string } | null
+) {
+  const same =
+    (!next && !annotationScope) ||
+    (next &&
+      annotationScope &&
+      next.communityId === annotationScope.communityId &&
+      next.canonicalKey === annotationScope.canonicalKey);
+  if (same) return;
+
+  annotationScope = next;
+
+  if (next) {
+    ensureMouseTracker();
+  } else {
+    closeQuickBubble();
+    if (lastMouseTrackerAttached) {
+      document.removeEventListener("mousemove", trackMousePosition);
+      lastMouseTrackerAttached = false;
+    }
+  }
+
+  await browser.runtime
+    .sendMessage({ type: "tabcom:annotation-scope", scope: next })
+    .catch(() => {});
+}
+
 function handleCursorMove(event: MouseEvent) {
   const now = Date.now();
   if (now - lastCursorSent < 90) return; // ~11 updates/sec max
@@ -1198,6 +1294,343 @@ function removePeerCursor(username: string) {
   peerCursors.delete(username);
 }
 
+// ---- Quick annotations: the "/" bubble ---------------------------------
+//
+// Two outcomes from one input, decided by the first character:
+//   "Looks good"        -> ephemeral speech bubble, broadcast, never stored
+//   "@todo Fix spacing" -> persistent pin, reuses the exact same pin_add
+//                          path the click-to-pin composer already uses
+//
+// Deliberately NOT a rich editor: a plain <input> is single-line by
+// construction, so there is no multiline state to guard against beyond
+// stripping the rare injected newline (IME edge cases). Paste/cut/drop
+// are disabled to keep this a quick note, not a text-dump destination.
+
+const RICH_EDITOR_SELECTOR = [
+  "input",
+  "textarea",
+  "select",
+  "[contenteditable]",
+  "[contenteditable='true']",
+  ".monaco-editor",
+  ".CodeMirror",
+  ".cm-editor",
+  ".ace_editor",
+  ".ProseMirror",
+  "[data-slate-editor='true']",
+  ".tiptap",
+  ".ql-editor",
+  "[role='textbox']",
+  "[role='searchbox']",
+  "[role='combobox']",
+].join(", ");
+
+/**
+ * Whether the CURRENT focus should keep "/" (or any single-key
+ * shortcut) working normally. Two checks: is the focused element
+ * itself (or an ancestor, for editors that focus an inner node) an
+ * editable/rich-text surface, and separately, is focus captured inside
+ * an open dialog/modal at all (even a non-input control there shouldn't
+ * lose its keystrokes to this feature).
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest(RICH_EDITOR_SELECTOR)) return true;
+  if (target.closest("dialog[open], [role='dialog'], [aria-modal='true']")) return true;
+  return false;
+}
+
+let lastMouseTrackerAttached = false;
+function trackMousePosition(event: MouseEvent) {
+  lastMouseClientX = event.clientX;
+  lastMouseClientY = event.clientY;
+}
+
+function ensureMouseTracker() {
+  if (lastMouseTrackerAttached) return;
+  lastMouseTrackerAttached = true;
+  document.addEventListener("mousemove", trackMousePosition, { passive: true });
+}
+
+/** Parses raw bubble input into either an ephemeral note or a
+ *  persistent (@identifier) annotation. No toggle, no ambiguity — the
+ *  first character alone decides. */
+function parseQuickAnnotation(
+  raw: string
+): { kind: "ephemeral"; text: string } | { kind: "persistent"; identifier: string; text: string } {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("@") && trimmed.length > 1) {
+    const match = trimmed.match(/^@([A-Za-z0-9_\-+.,]+)(?:\s+([\s\S]*))?$/);
+    if (match) {
+      return { kind: "persistent", identifier: match[1], text: trimmed };
+    }
+  }
+  return { kind: "ephemeral", text: trimmed };
+}
+
+let quickBubbleEl: HTMLDivElement | null = null;
+
+function closeQuickBubble() {
+  if (!quickBubbleEl) return;
+  quickBubbleEl.remove();
+  quickBubbleEl = null;
+}
+
+function openQuickBubble(clientX: number, clientY: number) {
+  if (quickBubbleEl) return; // only one at a time
+  if (!annotationScope) return;
+
+  const root = ensureShadowRoot();
+  const scope = annotationScope; // captured — a mid-composition page nav shouldn't repoint this
+
+  const bubble = document.createElement("div");
+  bubble.className = "quick-bubble";
+  bubble.setAttribute("role", "dialog");
+  bubble.setAttribute("aria-label", "Quick annotation");
+  bubble.style.left = `${Math.min(clientX, window.innerWidth - 256)}px`;
+  bubble.style.top = `${Math.min(clientY, window.innerHeight - 90)}px`;
+  bubble.innerHTML = `
+    <div class="row">
+      <input type="text" placeholder="Quick note or @todo…" maxlength="${QUICK_ANNOTATION_MAX_LENGTH}" autofocus aria-label="Annotation text, 50 characters maximum" />
+      <span class="counter" aria-hidden="true">0/${QUICK_ANNOTATION_MAX_LENGTH}</span>
+    </div>
+    <div class="hint"><b>@name</b> pins it here for good · everything else just floats by</div>
+  `;
+
+  const input = bubble.querySelector("input") as HTMLInputElement;
+  const counter = bubble.querySelector(".counter") as HTMLSpanElement;
+
+  const updateCounter = () => {
+    const len = input.value.length;
+    counter.textContent = `${len}/${QUICK_ANNOTATION_MAX_LENGTH}`;
+    counter.classList.toggle("limit", len >= QUICK_ANNOTATION_MAX_LENGTH);
+  };
+
+  const submit = () => {
+    const value = input.value.trim();
+    closeQuickBubble();
+    if (!value) return;
+
+    const parsed = parseQuickAnnotation(value);
+    if (parsed.kind === "ephemeral") {
+      void sendEphemeralAnnotation(parsed.text, clientX, clientY, scope);
+    } else {
+      void createPersistentQuickAnnotation(parsed.text, clientX, clientY, scope);
+    }
+  };
+
+  input.addEventListener("input", () => {
+    // Belt-and-suspenders beyond the maxlength attribute (spec: "stop
+    // accepting additional characters, preserve cursor position") and a
+    // guard against a stray newline from an IME composing across Enter.
+    if (input.value.includes("\n")) {
+      const pos = input.selectionStart ?? input.value.length;
+      input.value = input.value.replace(/\n/g, " ");
+      input.setSelectionRange(pos, pos);
+    }
+    if (input.value.length > QUICK_ANNOTATION_MAX_LENGTH) {
+      input.value = input.value.slice(0, QUICK_ANNOTATION_MAX_LENGTH);
+    }
+    updateCounter();
+  });
+
+  // Enter and Shift+Enter are deliberately identical — neither should
+  // ever insert a line, both submit immediately.
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeQuickBubble();
+    }
+  });
+
+  // Lightweight, intentionally: no large-paste path to guard against
+  // when paste itself is disabled outright.
+  input.addEventListener("paste", (event) => event.preventDefault());
+  input.addEventListener("cut", (event) => event.preventDefault());
+  input.addEventListener("drop", (event) => event.preventDefault());
+  input.addEventListener("dragover", (event) => event.preventDefault());
+
+  // Same keyboard/mouse isolation as the pin composer — host-page
+  // shortcuts must never see keystrokes meant for this bubble.
+  for (const type of ["keydown", "keyup", "keypress"] as const) {
+    bubble.addEventListener(type, (event) => event.stopPropagation());
+  }
+  bubble.addEventListener("mousedown", (event) => event.stopPropagation());
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (bubble.isConnected) input.focus();
+    }, 0);
+  });
+
+  // Dismiss on an outside click, same convention as the pin popover.
+  const onOutsideClick = (event: MouseEvent) => {
+    if (eventTouchesOwnUI(event)) return;
+    closeQuickBubble();
+    document.removeEventListener("mousedown", onOutsideClick, true);
+  };
+  document.addEventListener("mousedown", onOutsideClick, true);
+
+  root.append(bubble);
+  quickBubbleEl = bubble;
+  requestAnimationFrame(() => bubble.classList.add("in"));
+  setTimeout(() => input.focus(), 0);
+}
+
+// ---- Ephemeral: send, and render (mine + peers') -----------------------
+
+function renderSpeechBubble(payload: {
+  text: string;
+  name: string;
+  color: string;
+  clientX: number;
+  clientY: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}) {
+  const el = document.createElement("div");
+  el.className = "speech-bubble";
+  el.setAttribute("role", "status");
+
+  const point = anchorViewportPoint(payload) ?? { x: payload.clientX, y: payload.clientY };
+  el.style.left = `${Math.min(point.x, window.innerWidth - 20)}px`;
+  el.style.top = `${Math.max(point.y - 12, 10)}px`;
+
+  el.innerHTML = `
+    <span class="author" style="background:${payload.color}">${payload.name.replace(/</g, "&lt;")}</span>
+    <span class="bubble">${payload.text.replace(/</g, "&lt;")}</span>
+  `;
+
+  fixedLayerEl().append(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+
+  setTimeout(() => {
+    el.classList.remove("in");
+    el.classList.add("out");
+    setTimeout(() => el.remove(), EPHEMERAL_ANIMATION_MS);
+  }, EPHEMERAL_DISSOLVE_MS);
+}
+
+async function sendEphemeralAnnotation(
+  text: string,
+  clientX: number,
+  clientY: number,
+  scope: { communityId: string; canonicalKey: string }
+) {
+  if (orphanCheck()) return;
+
+  const elementAnchor = anchorForPoint(clientX, clientY);
+  const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const xPercent = Math.min(100, ((clientX + window.scrollX) / pageWidth) * 100) || 0;
+  const yPercent = Math.min(100, ((clientY + window.scrollY) / documentHeight()) * 100) || 0;
+
+  // Optimistic: show my own bubble immediately rather than waiting on a
+  // round trip — this is a "everyone sees it right away" feature, and
+  // that includes the sender seeing their own note land instantly.
+  const profile = await readStoredProfile();
+  if (profile) {
+    renderSpeechBubble({
+      text,
+      name: profile.displayName,
+      color: profile.avatarColor,
+      clientX,
+      clientY,
+      anchorSelector: elementAnchor?.selector,
+      elXPercent: elementAnchor?.elXPercent,
+      elYPercent: elementAnchor?.elYPercent,
+    });
+  }
+
+  void browser.runtime
+    .sendMessage({
+      type: "tabcom:annotation-send",
+      communityId: scope.communityId,
+      canonicalKey: scope.canonicalKey,
+      text,
+      xPercent,
+      yPercent,
+      anchorSelector: elementAnchor?.selector,
+      elXPercent: elementAnchor?.elXPercent,
+      elYPercent: elementAnchor?.elYPercent,
+    })
+    .catch(() => {});
+}
+
+function handleAnnotationPeer(peer: AnnotationPeer) {
+  if (!annotationScope) return;
+  if (peer.canonicalKey !== annotationScope.canonicalKey) return;
+  if (peer.communityId !== annotationScope.communityId) return;
+
+  const point = anchorViewportPoint(peer);
+  const fallback = point ?? {
+    x: (peer.xPercent / 100) * window.innerWidth,
+    y: (peer.yPercent / 100) * window.innerHeight,
+  };
+
+  renderSpeechBubble({
+    text: peer.text,
+    name: peer.from.name,
+    color: peer.from.color,
+    clientX: fallback.x,
+    clientY: fallback.y,
+    anchorSelector: peer.anchorSelector,
+    elXPercent: peer.elXPercent,
+    elYPercent: peer.elYPercent,
+  });
+}
+
+// ---- Persistent: @-prefixed quick annotation reuses pin_add exactly ----
+
+async function createPersistentQuickAnnotation(
+  text: string,
+  clientX: number,
+  clientY: number,
+  scope: { communityId: string; canonicalKey: string }
+) {
+  const pageX = clientX + window.scrollX;
+  const pageY = clientY + window.scrollY;
+  const pageWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const xPercent = Math.min(100, (pageX / pageWidth) * 100) || 0;
+  const yPercent = Math.min(100, (pageY / documentHeight()) * 100) || 0;
+  const elementAnchor = anchorForPoint(clientX, clientY);
+  const anchor = readPageAnchor();
+
+  const ok = await boardWrite("pin_add", {
+    communityId: scope.communityId,
+    ...anchor,
+    text,
+    xPercent,
+    yPercent,
+    pageX,
+    pageY,
+    anchorSelector: elementAnchor?.selector,
+    elXPercent: elementAnchor?.elXPercent,
+    elYPercent: elementAnchor?.elYPercent,
+  });
+  console.debug("[tabcom] quick persistent annotation pin_add result:", ok);
+}
+
+// ---- Global "/" shortcut ------------------------------------------------
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (isEditableTarget(document.activeElement)) return; // page's own input wins, always
+    if (!annotationScope) return; // this page isn't shared — "/" does nothing
+    if (quickBubbleEl) return; // one bubble at a time
+    if (activeMode) return; // don't fight the click-to-pin/area tool
+
+    event.preventDefault();
+    openQuickBubble(lastMouseClientX, lastMouseClientY);
+  },
+  true
+);
+
 // ---- Messages from the side panel --------------------------------------
 
 browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1224,6 +1657,11 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "tabcom:community-updated") {
     void renderExisting();
+    return undefined;
+  }
+
+  if (message?.type === "tabcom:annotation-peer") {
+    handleAnnotationPeer(message.peer);
     return undefined;
   }
 

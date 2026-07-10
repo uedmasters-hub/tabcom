@@ -75,7 +75,7 @@ export async function pollLoginRequest(pollId: string): Promise<PollResult> {
 
 export type ClaimUsernameResult =
   | { ok: true }
-  | { ok: false; reason: "taken" | "invalid_session" | "unreachable" };
+  | { ok: false; reason: "taken" | "invalid_username" | "invalid_session" | "unreachable" };
 
 export async function claimUsername(
   sessionToken: string,
@@ -194,4 +194,29 @@ export async function fetchMe(
   return authFetch<{ ok: true; user: AuthenticatedUser } | { ok: false }>(
     `/auth/me?sessionToken=${encodeURIComponent(sessionToken)}`
   );
+}
+
+/** Revokes this session server-side. Best-effort by design — if the
+ *  server can't be reached, the caller should still clear local state
+ *  and treat the person as signed out on this device either way. */
+export async function logout(
+  sessionToken: string
+): Promise<{ ok: true } | { ok: false; reason?: string }> {
+  return authFetch<{ ok: true } | { ok: false; reason?: string }>("/auth/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionToken }),
+  });
+}
+
+export type DeleteAccountResult =
+  | { ok: true }
+  | { ok: false; reason: "invalid_session" | "unreachable" | "server_error" };
+
+export async function deleteAccount(sessionToken: string): Promise<DeleteAccountResult> {
+  return authFetch<DeleteAccountResult>("/auth/delete-account", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionToken }),
+  });
 }

@@ -16,7 +16,7 @@ export function contactLabel(contact: Contact): string {
   return contact.alias?.trim() || contact.name;
 }
 
-export type MessageKind = "text" | "link" | "system";
+export type MessageKind = "text" | "link" | "system" | "voice" | "image";
 
 /** Only meaningful for messages authored by "me" — a fire-and-forget
  *  socket emit doesn't give a real delivery guarantee, so this is a
@@ -35,6 +35,12 @@ export interface Message {
   kind: MessageKind;
   text: string;
   url?: string;
+  /** Media payload for kind "voice" (audio) or "image" — a data URL,
+   *  stored only in each participant's local client (never on the
+   *  server, which relays the message and forgets it like all others). */
+  dataUrl?: string;
+  /** Recorded length for kind "voice", in milliseconds. */
+  durationMs?: number;
   sentAt: number;
   /** Community messages carry author display info. */
   authorName?: string;

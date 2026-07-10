@@ -45,6 +45,15 @@ interface ProfileState {
   /** Floating picture-in-picture chat. */
   pipEnabled: boolean;
 
+  /** True for the duration of a temporary guest session — never true
+   *  at the same time as having a sessionToken (see setSession, which
+   *  always clears these: a real session means you're no longer a
+   *  guest by definition). */
+  isGuest: boolean;
+  /** Epoch ms when this guest session should be force-ended. Undefined
+   *  when isGuest is false. */
+  guestExpiresAt?: number;
+
   setHasHydrated: (value: boolean) => void;
   setVisibility: (visibility: ProfileVisibility) => void;
   setIdentity: (identity: { displayName: string; username: string }) => void;
@@ -57,7 +66,19 @@ interface ProfileState {
   setVerified: (verified: boolean) => void;
   completeProfile: () => void;
   resetProfile: () => void;
+
+  /** Starts a fresh 30-minute guest session with the given display
+   *  name + auto-generated username. */
+  startGuestSession: (identity: { displayName: string; username: string }) => void;
+  /** True once guestExpiresAt has passed — pure read, no side effect. */
+  isGuestSessionExpired: () => boolean;
+  /** Ends the guest session (expiry or manual) without touching any
+   *  local chat/board data — that storage is device-scoped, not
+   *  identity-scoped, so it isn't "guest data" to begin with. */
+  endGuestSession: () => void;
 }
+
+const GUEST_SESSION_DURATION_MS = 30 * 60 * 1000;
 
 const initialProfile = {
   isComplete: false,
@@ -72,11 +93,13 @@ const initialProfile = {
   animations: true,
   presence: "online" as const,
   pipEnabled: true,
+  isGuest: false,
+  guestExpiresAt: undefined as number | undefined,
 };
 
 export const useProfileStore = create<ProfileState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       hasHydrated: false,
       ...initialProfile,
 
@@ -97,13 +120,43 @@ export const useProfileStore = create<ProfileState>()(
 
       setPipEnabled: (pipEnabled) => set({ pipEnabled }),
 
-      setSession: (sessionToken, email) => set({ sessionToken, email }),
+      // A real session token means this is, by definition, no longer
+      // a guest — clearing guest state here means every future caller
+      // never has to remember to do it separately (e.g. converting a
+      // guest to a permanent account via RegisterScreen).
+      setSession: (sessionToken, email) =>
+        set({ sessionToken, email, isGuest: false, guestExpiresAt: undefined }),
 
       setVerified: (verified) => set({ verified }),
 
       completeProfile: () => set({ isComplete: true }),
 
       resetProfile: () => set({ ...initialProfile }),
+
+      startGuestSession: ({ displayName, username }) =>
+        set({
+          displayName,
+          username,
+          isGuest: true,
+          guestExpiresAt: Date.now() + GUEST_SESSION_DURATION_MS,
+          sessionToken: undefined,
+          email: undefined,
+          verified: false,
+        }),
+
+      isGuestSessionExpired: () => {
+        const { isGuest, guestExpiresAt } = get();
+        return !!isGuest && !!guestExpiresAt && Date.now() >= guestExpiresAt;
+      },
+
+      endGuestSession: () =>
+        set({
+          isGuest: false,
+          guestExpiresAt: undefined,
+          isComplete: false,
+          displayName: "",
+          username: "",
+        }),
     }),
     {
       name: "tabcom:profile",
@@ -121,6 +174,8 @@ export const useProfileStore = create<ProfileState>()(
         animations: state.animations,
         presence: state.presence,
         pipEnabled: state.pipEnabled,
+        isGuest: state.isGuest,
+        guestExpiresAt: state.guestExpiresAt,
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);

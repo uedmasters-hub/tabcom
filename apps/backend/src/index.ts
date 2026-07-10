@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { dirname } from "node:path";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
@@ -7,9 +8,12 @@ import { Server } from "socket.io";
 import {
   claimUsername,
   checkUsernameAvailable,
+  deleteAccount,
+  isUsernameRegistered,
   pollLoginRequest,
   registerAccount,
   requestMagicLink,
+  revokeSession,
   sendVerificationEmail,
   validateSession,
   verifyMagicLink,
@@ -307,13 +311,82 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/auth/logout") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await revokeSession(String(body.sessionToken ?? ""));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] logout failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/auth/delete-account") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await deleteAccount(String(body.sessionToken ?? ""));
+        res.writeHead(result.ok ? 200 : 401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] delete-account failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true, service: "tabcom-realtime" }));
 });
 
-const io = new Server(httpServer, { cors: { origin: "*" } });
+// Voice notes and shared photos both ride this same relay as base64
+// data URLs (see the "dm" handler below) — the 1MB default was too
+// tight for either once bitrate/quality pushed past it, and there was
+// no feedback at all when a frame got silently dropped for being too
+// large. 8MB comfortably covers a 60s voice note at a sane bitrate
+// (see ChatView's explicit audioBitsPerSecond cap) and a downscaled
+// photo, with real headroom rather than a coin-flip ceiling.
+//
+// pingInterval/pingTimeout tightened from socket.io's defaults
+// (25000/20000, ~45s to notice a dead connection) to ~18s total. A
+// Chrome extension's background service worker can be killed by
+// Chrome (idle timeout, or an abrupt reload during development)
+// without ever running a clean socket.disconnect() — the default
+// timing left stale "ghost" users showing as online in Discover for
+// up to 45s per dead connection, and MV3's frequent worker restarts
+// during active use/testing make that a lot more likely to be
+// visible than on a typical always-on client.
+const io = new Server(httpServer, {
+  cors: { origin: "*" },
+  maxHttpBufferSize: 8 * 1024 * 1024,
+  pingInterval: 10_000,
+  pingTimeout: 8_000,
+});
 
 const users = new Map<string, WireUser>(); // socket.id -> user
+
+// Belt-and-suspenders against "ghost" online users: the "disconnect"
+// handler below (and the tightened ping timeout above) SHOULD always
+// catch a dead connection, but this reconciles the users map against
+// what Socket.IO itself actually still considers connected every 20s,
+// so a stale entry can never persist for more than one sweep even in
+// an edge case neither of those catches.
+setInterval(() => {
+  let changed = false;
+  for (const socketId of users.keys()) {
+    if (!io.sockets.sockets.has(socketId)) {
+      users.delete(socketId);
+      changed = true;
+    }
+  }
+  if (changed) broadcastRoster();
+}, 20_000);
 
 interface BoardComment {
   id: string;
@@ -751,9 +824,47 @@ io.on("connection", (socket) => {
   // handler runs.
   const sessionToken = socket.handshake.auth?.sessionToken as string | undefined;
 
-  socket.on("hello", (raw: Partial<WireUser>) => {
-    void (sessionToken ? validateSession(sessionToken) : Promise.resolve(null)).then(
-      (authedUser) => {
+/**
+ * Guarantees an unauthenticated ("hello" with no session) connection
+ * can never claim a username that's already in use — by a real
+ * registered account, OR by another currently-connected socket (guest
+ * or otherwise). Retries with a random numeric suffix until free.
+ *
+ * This is the actual fix for guests appearing to "merge": previously
+ * an unauthenticated hello's username was trusted verbatim with zero
+ * collision check, so two different people (or two devices) landing
+ * on the same generated/typed name became indistinguishable to every
+ * part of the system that keys by username string — same roster
+ * entry, same community membership, same DM delivery target.
+ */
+async function ensureUniqueGuestUsername(
+  candidate: string,
+  mySocketId: string
+): Promise<string> {
+  let attempt = candidate;
+
+  for (let i = 0; i < 6; i++) {
+    const takenByAccount = await isUsernameRegistered(attempt);
+    const takenByOtherSocket = [...users.entries()].some(
+      ([id, user]) => id !== mySocketId && user.username === attempt
+    );
+
+    if (!takenByAccount && !takenByOtherSocket) return attempt;
+
+    const suffix = String(Math.floor(1000 + Math.random() * 9000));
+    attempt = `${candidate.slice(0, 20 - suffix.length)}${suffix}`;
+  }
+
+  // Practically unreachable after 6 rounds of a 4-digit suffix, but a
+  // time-based tail is unique by construction if it ever comes to that.
+  return `${candidate.slice(0, 14)}${Date.now().toString(36).slice(-6)}`;
+}
+
+  socket.on(
+    "hello",
+    (raw: Partial<WireUser>, ack?: (response: { username: string }) => void) => {
+      void (sessionToken ? validateSession(sessionToken) : Promise.resolve(null)).then(
+      async (authedUser) => {
         // Re-checked on every "hello", not cached once at connection
         // time — verified status (and in principle the username too)
         // can change while a socket stays open (e.g. clicking the
@@ -767,11 +878,22 @@ io.on("connection", (socket) => {
         // account has claimed a username, the account's username wins —
         // a client cannot impersonate anyone else's authenticated
         // identity by simply typing a different name in "hello".
-        const claimedUsername = authedUsername ?? raw?.username;
+        let claimedUsername = authedUsername ?? raw?.username;
         if (!claimedUsername) return;
+        claimedUsername = String(claimedUsername).slice(0, 20).toLowerCase();
+
+        // Authenticated usernames are already guaranteed unique — they
+        // went through real DB-backed uniqueness checking at
+        // registration (see auth/service.ts's claimUsername /
+        // registerAccount). Only the unauthenticated path — guests,
+        // and the pre-auth demo/dev fallback — ever needs this, since
+        // it used to trust the client's self-reported name completely.
+        if (!authedUsername) {
+          claimedUsername = await ensureUniqueGuestUsername(claimedUsername, socket.id);
+        }
 
         const user: WireUser = {
-          username: String(claimedUsername).slice(0, 20).toLowerCase(),
+          username: claimedUsername,
           name: String(raw?.name ?? claimedUsername).slice(0, 40),
           color: String(raw?.color ?? "#2563EB").slice(0, 9),
           visibility: sanitizeVisibility(raw?.visibility),
@@ -799,6 +921,14 @@ io.on("connection", (socket) => {
           )
         .map((c) => serializeCommunity(c, user.username));
       socket.emit("communities", mine);
+
+      // Tells the client the username it's ACTUALLY registered under —
+      // essential for guests, since that can now differ from what they
+      // proposed if it collided with someone else. A client that kept
+      // using the old value locally would sign its own outgoing
+      // messages/board actions with an identity the server no longer
+      // recognizes as this socket.
+      ack?.({ username: user.username });
     });
   });
 
@@ -1847,6 +1977,70 @@ io.on("connection", (socket) => {
     }
   );
 
+  // ---- Ephemeral quick annotations (speech-bubble notes) -----------------
+  //
+  // Same relay-only, zero-retention model as cursors: this exists only in
+  // flight, matched by canonicalKey client-side, never touches the
+  // `communities` map or its snapshot. Distinct from board pins/areas,
+  // which ARE persisted — see board_pin_add below for those. The 50-char
+  // cap is enforced here too, not just client-side, since the client is
+  // never trusted for limits that matter.
+  socket.on(
+    "annotation_ephemeral",
+    ({
+      communityId,
+      canonicalKey,
+      text,
+      xPercent,
+      yPercent,
+      anchorSelector,
+      elXPercent,
+      elYPercent,
+    }: {
+      communityId: string;
+      canonicalKey: string;
+      text: string;
+      xPercent: number;
+      yPercent: number;
+      anchorSelector?: string;
+      elXPercent?: number;
+      elYPercent?: number;
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community || !canonicalKey) return;
+      if (!community.members.has(me.username)) return;
+
+      const trimmed = String(text ?? "").trim().slice(0, 50);
+      if (!trimmed) return;
+
+      for (const member of community.members) {
+        if (member === me.username) continue;
+        notify(member, "annotation_peer", {
+          communityId,
+          canonicalKey,
+          id: crypto.randomUUID(),
+          from: { username: me.username, name: me.name, color: me.color },
+          text: trimmed,
+          xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
+          yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
+          anchorSelector:
+            typeof anchorSelector === "string"
+              ? anchorSelector.slice(0, 500)
+              : undefined,
+          elXPercent:
+            elXPercent != null
+              ? Math.max(0, Math.min(100, Number(elXPercent) || 0))
+              : undefined,
+          elYPercent:
+            elYPercent != null
+              ? Math.max(0, Math.min(100, Number(elYPercent) || 0))
+              : undefined,
+        });
+      }
+    }
+  );
+
   // ---- Messaging (public + accepted only) ------------------------------
 
   socket.on(
@@ -1878,6 +2072,42 @@ io.on("connection", (socket) => {
 
       for (const id of targets) {
         io.to(id).emit("dm", { from, message });
+      }
+    }
+  );
+
+  // ---- Call signaling (WebRTC offer/answer/ICE relay) --------------------
+  //
+  // The server ONLY relays session negotiation between two accepted,
+  // unblocked contacts — the same consent gate as "dm" above. Audio/
+  // video itself flows peer-to-peer over WebRTC (DTLS-SRTP encrypted
+  // end-to-end by the browser); no media ever touches this server, and
+  // nothing here is stored. `busy` / `reject` / `end` reuse the same
+  // channel so call state changes are just more signals.
+  socket.on(
+    "call_signal",
+    ({ to, signal }: { to: string; signal: { kind: string; [key: string]: unknown } }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !signal?.kind) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) {
+        socket.emit("call_error", { to, reason: "not_connected" });
+        return;
+      }
+
+      const targets = publicSocketIdsFor(to);
+      if (targets.length === 0) {
+        socket.emit("call_error", { to, reason: "recipient_unavailable" });
+        return;
+      }
+
+      for (const id of targets) {
+        io.to(id).emit("call_signal", {
+          from: { username: from.username, name: from.name, color: from.color },
+          signal,
+        });
       }
     }
   );
@@ -2083,8 +2313,28 @@ io.on("connection", (socket) => {
 
 const PORT = Number(process.env.PORT ?? 3001);
 
+function lanAddresses(): string[] {
+  const addresses: string[] = [];
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) addresses.push(entry.address);
+    }
+  }
+  return addresses;
+}
+
 httpServer.listen(PORT, () => {
   console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
+  // The line above is only reachable from THIS machine — "localhost"
+  // never means anything else to any other device. This one is what
+  // another device on the same network (or a .local hostname pointing
+  // at this machine) actually needs, and it's easy to mistake the line
+  // above for "the server only listens on localhost" when debugging
+  // LAN/cross-device connectivity, since listen(PORT) with no host
+  // argument actually binds every interface, not just loopback.
+  for (const address of lanAddresses()) {
+    console.log(`[tabcom] also reachable on your network at http://${address}:${PORT}`);
+  }
   console.log(
     "[tabcom] privacy: zero message retention, server-enforced visibility, consent before contact"
   );

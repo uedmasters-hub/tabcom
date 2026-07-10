@@ -11,9 +11,27 @@ import { io, type Socket } from "socket.io-client";
  * here and in the UI is UX only — the server is the authority.
  */
 
+// NOTE: this fallback is intentionally a portable "localhost" default,
+// not any particular person's machine. For LAN testing across devices
+// (phone + laptop, two laptops, etc.), set WXT_REALTIME_URL in
+// apps/extension/.env — see apps/extension/.env.example. A previous
+// version of this fallback was literally the string
+// "WXT_REALTIME_URL=http://rameshs-macbook-pro.local:3001" (the whole
+// .env LINE, not just the URL) — not a valid URL at all, so whenever
+// the env var wasn't actually picked up at build time, socket.io was
+// silently handed garbage and never connected. That's almost certainly
+// why "other people online" wasn't showing up: the socket never
+// connected in the first place, not a presence/roster bug.
 export const REALTIME_URL =
-  (import.meta.env.WXT_REALTIME_URL as string | undefined) ??
-  "WXT_REALTIME_URL=http://rameshs-macbook-pro.local:3001";
+  (import.meta.env.WXT_REALTIME_URL as string | undefined) ?? "http://localhost:3001";
+
+if (!import.meta.env.WXT_REALTIME_URL) {
+  console.warn(
+    "[tabcom] WXT_REALTIME_URL is not set — falling back to",
+    REALTIME_URL,
+    ". For LAN testing across devices, set it in apps/extension/.env and rebuild (this is baked in at build time, not read at runtime)."
+  );
+}
 
 export type Visibility = "public" | "private";
 
@@ -115,11 +133,32 @@ export type CommunityErrorReason =
 
 export interface WireMessage {
   id: string;
-  kind: "text" | "link";
+  kind: "text" | "link" | "voice" | "image";
   text: string;
   url?: string;
+  /** Data URL for voice/image messages — relayed and forgotten by the
+   *  server exactly like message text (zero retention). Kept small
+   *  client-side (voice capped at 60s opus, images downscaled) to stay
+   *  under the transport's 1MB frame limit. */
+  dataUrl?: string;
+  durationMs?: number;
   sentAt: number;
   replyToId?: string;
+}
+
+/** One leg of WebRTC call negotiation, relayed (never stored) through
+ *  the server between accepted contacts. Media itself is P2P. */
+export interface CallSignal {
+  kind: "offer" | "answer" | "ice" | "end" | "reject" | "busy";
+  /** Caller sets this on the offer: video call vs voice-only. */
+  video?: boolean;
+  sdp?: string;
+  candidate?: unknown;
+}
+
+export interface IncomingCallSignal {
+  from: { username: string; name: string; color: string };
+  signal: CallSignal;
 }
 
 export type DmErrorReason =
@@ -202,6 +241,15 @@ export interface RealtimeHandlers {
     canonicalKey: string;
     from: string;
   }) => void;
+  onAnnotationPeer?: (peer: AnnotationPeer) => void;
+  onCallSignal?: (payload: IncomingCallSignal) => void;
+  /** Fired after every "hello" ack — the username the server actually
+   *  registered this socket under, which can differ from what was sent
+   *  if it collided with someone else (guests only; see index.ts's
+   *  ensureUniqueGuestUsername). The caller should persist this if it
+   *  differs from local state, or outgoing actions will keep signing
+   *  with an identity the server no longer recognizes for this socket. */
+  onUsernameAssigned?: (username: string) => void;
 }
 
 let socket: Socket | null = null;
@@ -229,7 +277,11 @@ export function initRealtime(
   });
 
   socket.on("connect", () => {
-    socket?.emit("hello", me);
+    socket?.emit("hello", me, (ack?: { username: string }) => {
+      if (ack?.username && ack.username !== me.username) {
+        handlers.onUsernameAssigned?.(ack.username);
+      }
+    });
     handlers.onConnectionChange(true);
   });
 
@@ -428,6 +480,14 @@ export function initRealtime(
     handlers.onCursorPeer?.(peer)
   );
 
+  socket.on("annotation_peer", (peer: AnnotationPeer) =>
+    handlers.onAnnotationPeer?.(peer)
+  );
+
+  socket.on("call_signal", (payload: IncomingCallSignal) =>
+    handlers.onCallSignal?.(payload)
+  );
+
   socket.on(
     "cursor_peer_leave",
     (payload: { communityId: string; canonicalKey: string; from: string }) =>
@@ -435,7 +495,11 @@ export function initRealtime(
   );
 }
 
-/** Re-announce profile changes (name, color, photo) mid-session. */
+/** Re-announce profile changes (name, color, photo) mid-session. No ack
+ *  handling needed here — the username collision this guards against
+ *  can only happen on the FIRST hello of a session (see initRealtime),
+ *  since by definition nothing else could have taken this socket's
+ *  already-established username in the meantime. */
 export function reannounce(me: WireUser): void {
   socket?.emit("hello", me);
 }
@@ -551,6 +615,24 @@ export interface CursorPeer {
   elYPercent?: number;
 }
 
+/**
+ * A quick, ephemeral annotation from a peer — the "speech bubble" kind,
+ * never stored. See annotation_ephemeral (server) / pin_add (persistent,
+ * unrelated path) for the two ways a `/`-opened annotation can go.
+ */
+export interface AnnotationPeer {
+  communityId: string;
+  canonicalKey: string;
+  id: string;
+  from: { username: string; name: string; color: string };
+  text: string;
+  xPercent: number;
+  yPercent: number;
+  anchorSelector?: string;
+  elXPercent?: number;
+  elYPercent?: number;
+}
+
 export interface CursorMovePayload {
   xPercent: number;
   yPercent: number;
@@ -569,6 +651,25 @@ export function sendCursorMove(
 
 export function sendCursorLeave(communityId: string, canonicalKey: string): void {
   socket?.emit("cursor_leave", { communityId, canonicalKey });
+}
+
+export function sendCallSignal(to: string, signal: CallSignal): void {
+  socket?.emit("call_signal", { to, signal });
+}
+
+export function sendAnnotationEphemeral(
+  communityId: string,
+  canonicalKey: string,
+  payload: {
+    text: string;
+    xPercent: number;
+    yPercent: number;
+    anchorSelector?: string;
+    elXPercent?: number;
+    elYPercent?: number;
+  }
+): void {
+  socket?.emit("annotation_ephemeral", { communityId, canonicalKey, ...payload });
 }
 
 export interface BoardAnchorInput {

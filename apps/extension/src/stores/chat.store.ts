@@ -122,6 +122,17 @@ interface ChatState {
   /** Muted targets (contactId or communityId): no unread badges. */
   muted: string[];
 
+  /** Last community-scoped action error (invite failures etc.) — surfaced
+   *  inline in the Community Management page. Deliberately not persisted
+   *  and not part of the chat-feed system notices (which still also fire,
+   *  for anyone not currently looking at the management page). */
+  communityActionError: {
+    communityId: string;
+    username?: string;
+    reason: CommunityErrorReason;
+  } | null;
+  clearCommunityActionError: () => void;
+
   /** Usernames in the latest live roster (currently connected). */
   rosterUsernames: string[];
   /** Contacts I appear offline to (presence mask, not blocking). */
@@ -140,6 +151,10 @@ interface ChatState {
   openCommunityConversation: (communityId: string) => string;
 
   sendText: (conversationId: string, text: string, replyToId?: string) => void;
+  sendMedia: (
+    conversationId: string,
+    media: { kind: "voice" | "image"; dataUrl: string; durationMs?: number }
+  ) => void;
   editMessage: (conversationId: string, messageId: string, text: string) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   reactToMessage: (conversationId: string, messageId: string, emoji: string) => void;
@@ -435,6 +450,8 @@ export const useChatStore = create<ChatState>()(
           kind: message.kind,
           text: message.text,
           url: message.url,
+          dataUrl: message.dataUrl,
+          durationMs: message.durationMs,
           sentAt: message.sentAt,
           replyToId: message.replyToId,
         };
@@ -533,6 +550,7 @@ export const useChatStore = create<ChatState>()(
         communities: {},
         communityInvites: {},
         muted: [],
+        communityActionError: null,
         rosterUsernames: [],
         hiddenFrom: [],
         activeConversationId: null,
@@ -609,6 +627,28 @@ export const useChatStore = create<ChatState>()(
             sentAt: Date.now(),
             status: get().live ? "sent" : "failed",
             replyToId,
+          };
+
+          set((state) => appendMessage(state, conversationId, message, false));
+          deliver(conversationId, message);
+        },
+
+        sendMedia: (conversationId, media) => {
+          if (!media.dataUrl) return;
+
+          const message: Message = {
+            id: uid(),
+            authorId: ME,
+            kind: media.kind,
+            // `text` doubles as the conversation-list / notification
+            // preview everywhere previews read message.text — so media
+            // messages carry a human label there instead of an empty
+            // string, and every preview surface works with no changes.
+            text: media.kind === "voice" ? "🎤 Voice message" : "📷 Photo",
+            dataUrl: media.dataUrl,
+            durationMs: media.durationMs,
+            sentAt: Date.now(),
+            status: get().live ? "sent" : "failed",
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
@@ -1087,6 +1127,8 @@ export const useChatStore = create<ChatState>()(
             kind: message.kind,
             text: message.text,
             url: message.url,
+            dataUrl: message.dataUrl,
+            durationMs: message.durationMs,
             sentAt: message.sentAt,
             replyToId: message.replyToId,
           };
@@ -1360,7 +1402,10 @@ export const useChatStore = create<ChatState>()(
                 : `Can't invite @${username} — you can only invite accepted connections.`,
             false
           );
+          set({ communityActionError: { communityId, username, reason } });
         },
+
+        clearCommunityActionError: () => set({ communityActionError: null }),
 
         resetChat: () =>
           set({
@@ -1371,6 +1416,7 @@ export const useChatStore = create<ChatState>()(
             communities: {},
             communityInvites: {},
             muted: [],
+            communityActionError: null,
             rosterUsernames: [],
             hiddenFrom: [],
             activeConversationId: null,

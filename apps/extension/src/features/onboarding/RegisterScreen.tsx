@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Loader2, Ticket, X } from "lucide-react";
+import { ArrowRight, Check, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import AppShell from "../../components/layout/AppShell";
@@ -7,6 +7,8 @@ import { Button, Input, SectionLabel } from "../../components/ui";
 import { checkInvite, checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
+
+type Step = "invite" | "identity";
 
 type UsernameState =
   | { status: "idle" }
@@ -25,21 +27,26 @@ type InviteState =
   | { status: "unreachable" };
 
 /**
- * The lean onboarding entry point: invite code + name + username +
- * email, account usable immediately. No click-a-link wait — see
- * profile.store's sessionToken/verified split and Settings' unverified
- * nudge for how verification happens later instead of gating this
- * screen. Tabcom is invite-only: the code gate is the one hard
- * requirement here, everything else stays lean.
+ * Two-step invite gate, split deliberately: step one asks for nothing
+ * but the invite code (Tabcom's one hard requirement), step two asks
+ * for identity details ONLY once that's confirmed — a person who
+ * doesn't have a code yet never sees fields that don't matter to them.
+ * No click-a-link wait either way — see profile.store's sessionToken/
+ * verified split and Settings' unverified nudge for how email
+ * verification happens later instead of gating this screen.
  */
 export default function RegisterScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
+  const goBack = useAppStore((state) => state.goBack);
   const setSession = useProfileStore((state) => state.setSession);
   const setVerified = useProfileStore((state) => state.setVerified);
   const setIdentity = useProfileStore((state) => state.setIdentity);
+  const existingDisplayName = useProfileStore((state) => state.displayName);
+  const isGuest = useProfileStore((state) => state.isGuest);
 
+  const [step, setStep] = useState<Step>("invite");
   const [inviteCode, setInviteCode] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [displayName, setDisplayName] = useState(isGuest ? existingDisplayName : "");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [inviteState, setInviteState] = useState<InviteState>({ status: "idle" });
@@ -132,8 +139,10 @@ export default function RegisterScreen() {
     };
   }, [username]);
 
+  const canContinueFromInvite =
+    inviteState.status === "valid" || inviteState.status === "unreachable";
+
   const canSubmit =
-    (inviteState.status === "valid" || inviteState.status === "unreachable") &&
     displayName.trim().length >= 2 &&
     (usernameState.status === "available" ||
       usernameState.status === "unreachable" ||
@@ -157,7 +166,12 @@ export default function RegisterScreen() {
 
     if (!result.ok) {
       if (result.reason === "invalid_invite") {
+        // The code was consumed or invalidated between the step-one
+        // check and final submit (race with someone else, or expiry)
+        // — send them back to re-enter rather than fail silently on a
+        // screen that no longer shows the invite field at all.
         setInviteState({ status: "invalid" });
+        setStep("invite");
       } else if (result.reason === "username_taken") {
         setUsernameState({ status: "taken", suggestions: [] });
       } else if (result.reason === "unreachable") {
@@ -177,29 +191,37 @@ export default function RegisterScreen() {
   return (
     <AppShell>
       <div className="flex h-full flex-col">
-        <ScreenHeader onBack={() => setScreen("welcome")} />
+        <ScreenHeader
+          onBack={() => {
+            if (step === "identity") {
+              setStep("invite");
+            } else {
+              goBack("welcome");
+            }
+          }}
+        />
 
-        <section className="flex flex-1 flex-col overflow-y-auto px-6">
-          <SectionLabel>Create your account</SectionLabel>
-          <h1 className="mt-3 text-2xl font-bold tracking-tight">
-            You're invited — almost in.
-          </h1>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            Tabcom is invite-only right now. Enter your invitation code to
-            create an account — we'll ask you to confirm your email later.
-          </p>
+        {step === "invite" ? (
+          <section className="flex flex-1 flex-col px-6">
+            <SectionLabel>Join Tabcom</SectionLabel>
+            <h1 className="mt-3 text-2xl font-bold tracking-tight">
+              Enter your invite code.
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Tabcom is invite-only. You'll set up your name and username next.
+            </p>
 
-          <div className="mt-8 space-y-4">
-            <div>
+            <div className="mt-8">
               <Input
                 label="Invitation code"
                 placeholder="TAB-XXXX-XXXX"
                 autoFocus
                 autoComplete="off"
                 value={inviteCode}
-                onChange={(event) =>
-                  setInviteCode(event.target.value.toUpperCase())
-                }
+                onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && canContinueFromInvite) setStep("identity");
+                }}
               />
               <div className="mt-1.5 min-h-[18px] text-xs">
                 {inviteState.status === "checking" && (
@@ -209,7 +231,7 @@ export default function RegisterScreen() {
                 )}
                 {inviteState.status === "valid" && (
                   <span className="flex items-center gap-1.5 font-medium text-emerald-600">
-                    <Ticket size={12} /> Invitation accepted — welcome aboard
+                    <Check size={12} /> Invitation accepted — welcome aboard
                   </span>
                 )}
                 {inviteState.status === "invalid" && (
@@ -225,111 +247,127 @@ export default function RegisterScreen() {
               </div>
             </div>
 
-            <Input
-              label="Display Name"
-              placeholder="Ramesh Mandal"
-              autoComplete="name"
-              value={displayName}
-              onChange={(event) => setDisplayName(event.target.value)}
-            />
+            <div className="mt-8 space-y-3 pb-8">
+              <Button
+                fullWidth
+                disabled={!canContinueFromInvite}
+                onClick={() => setStep("identity")}
+                rightIcon={<ArrowRight size={18} />}
+              >
+                Continue
+              </Button>
 
-            <div>
+              <button
+                type="button"
+                onClick={() => setScreen("signin")}
+                className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
+              >
+                Already have an account? Sign in
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section className="flex flex-1 flex-col overflow-y-auto px-6">
+            <SectionLabel>Create your account</SectionLabel>
+            <h1 className="mt-3 text-2xl font-bold tracking-tight">
+              Almost in.
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              We'll ask you to confirm your email later.
+            </p>
+
+            <div className="mt-8 space-y-4">
               <Input
-                label="Username"
-                placeholder="ramesh"
-                autoComplete="off"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
+                label="Display Name"
+                placeholder="Ramesh Mandal"
+                autoComplete="name"
+                autoFocus
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
               />
-              <div className="mt-1.5 min-h-[18px] text-xs">
-                {usernameState.status === "checking" && (
-                  <span className="flex items-center gap-1.5 text-slate-400">
-                    <Loader2 size={11} className="animate-spin" /> Checking availability…
-                  </span>
-                )}
-                {usernameState.status === "available" && (
-                  <span className="flex items-center gap-1.5 font-medium text-emerald-600">
-                    <Check size={12} /> @{username.trim().toLowerCase()} is available
-                  </span>
-                )}
-                {usernameState.status === "invalid" && (
-                  <span className="text-red-500">
-                    3-20 characters — lowercase letters, numbers and underscores only.
-                  </span>
-                )}
-                {usernameState.status === "error" && (
-                  <span className="text-amber-600">
-                    Couldn't check availability right now (server issue) — you can still continue.
-                  </span>
-                )}
-                {usernameState.status === "taken" && (
-                  <div className="flex items-center gap-1.5 text-red-500">
-                    <X size={12} /> Already taken.
+
+              <div>
+                <Input
+                  label="Username"
+                  placeholder="ramesh"
+                  autoComplete="off"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                />
+                <div className="mt-1.5 min-h-[18px] text-xs">
+                  {usernameState.status === "checking" && (
+                    <span className="flex items-center gap-1.5 text-slate-400">
+                      <Loader2 size={11} className="animate-spin" /> Checking availability…
+                    </span>
+                  )}
+                  {usernameState.status === "available" && (
+                    <span className="flex items-center gap-1.5 font-medium text-emerald-600">
+                      <Check size={12} /> @{username.trim().toLowerCase()} is available
+                    </span>
+                  )}
+                  {usernameState.status === "invalid" && (
+                    <span className="text-red-500">
+                      3-20 characters — lowercase letters, numbers and underscores only.
+                    </span>
+                  )}
+                  {usernameState.status === "error" && (
+                    <span className="text-amber-600">
+                      Couldn't check availability right now (server issue) — you can still continue.
+                    </span>
+                  )}
+                  {usernameState.status === "taken" && (
+                    <div className="flex items-center gap-1.5 text-red-500">
+                      <X size={12} /> Already taken.
+                    </div>
+                  )}
+                  {usernameState.status === "unreachable" && (
+                    <span className="text-amber-600">
+                      Couldn't check availability right now — you can still continue.
+                    </span>
+                  )}
+                </div>
+                {usernameState.status === "taken" && (usernameState.suggestions ?? []).length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {usernameState.suggestions.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setUsername(s)}
+                        className="rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-900 hover:text-slate-900"
+                      >
+                        {s}
+                      </button>
+                    ))}
                   </div>
                 )}
-                {usernameState.status === "unreachable" && (
-                  <span className="text-amber-600">
-                    Couldn't check availability right now — you can still continue.
-                  </span>
-                )}
               </div>
-              {usernameState.status === "taken" && (usernameState.suggestions ?? []).length > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {usernameState.suggestions.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setUsername(s)}
-                      className="rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-900 hover:text-slate-900"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
+
+              <Input
+                label="Email address"
+                type="email"
+                placeholder="you@example.com"
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                error={error ?? undefined}
+              />
             </div>
 
-            <Input
-              label="Email address"
-              type="email"
-              placeholder="you@example.com"
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              error={error ?? undefined}
-            />
-          </div>
-
-          {/* CTA lives in the scrollable flow, not a pinned footer — it
-              scrolls with the form instead of sitting fixed over the
-              last field on short screens. */}
-          <div className="mt-8 space-y-3 pb-8">
-            <Button
-              fullWidth
-              disabled={!canSubmit || submitting}
-              onClick={() => void submit()}
-              rightIcon={<ArrowRight size={18} />}
-            >
-              {submitting ? "Creating your account…" : "Continue"}
-            </Button>
-
-            <button
-              type="button"
-              onClick={() => setScreen("signin")}
-              className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
-            >
-              Already have an account? Sign in
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setScreen("setup")}
-              className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
-            >
-              Continue as a guest instead
-            </button>
-          </div>
-        </section>
+            {/* CTA lives in the scrollable flow, not a pinned footer —
+                it scrolls with the form instead of sitting fixed over
+                the last field on short screens. */}
+            <div className="mt-8 space-y-3 pb-8">
+              <Button
+                fullWidth
+                disabled={!canSubmit || submitting}
+                onClick={() => void submit()}
+                rightIcon={<ArrowRight size={18} />}
+              >
+                {submitting ? "Creating your account…" : "Continue"}
+              </Button>
+            </div>
+          </section>
+        )}
       </div>
     </AppShell>
   );

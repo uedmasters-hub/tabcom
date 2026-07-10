@@ -1,4 +1,4 @@
-import { Camera, Check, Copy, Globe, Lock, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Ticket, Trash2 } from "lucide-react";
+import { Camera, Check, Copy, Globe, Lock, LogOut, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Ticket, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -9,11 +9,12 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
-import { fetchInvites, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
+import { deleteAccount, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
 import { FLOATING_PILL_ENABLED } from "../../../lib/feature-flags";
-import { reannounce, updateVisibility } from "../../../lib/realtime";
+import { disconnectRealtime, reannounce, updateVisibility } from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
+import { useChatStore } from "../../../stores/chat.store";
 import {
   AVATAR_COLORS,
   useProfileStore,
@@ -112,6 +113,10 @@ export default function SettingsView() {
   const photo = useProfileStore((state) => state.photo);
   const animations = useProfileStore((state) => state.animations);
   const pipEnabled = useProfileStore((state) => state.pipEnabled);
+  const isGuest = useProfileStore((state) => state.isGuest);
+  const guestExpiresAt = useProfileStore((state) => state.guestExpiresAt);
+  const resetProfile = useProfileStore((state) => state.resetProfile);
+  const resetChat = useChatStore((state) => state.resetChat);
 
   const [cursorsEnabled, setCursorsEnabledState] = useState(true);
 
@@ -136,10 +141,28 @@ export default function SettingsView() {
   const [verificationSent, setVerificationSent] = useState(false);
   const [sendingVerification, setSendingVerification] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Invitations — signed-in accounts each hold 5 single-use codes.
   const [invites, setInvites] = useState<InviteSummary[] | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  // Forces a re-render once a minute so the guest countdown stays
+  // roughly live without a per-second timer nobody needs.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!isGuest) return;
+    const interval = setInterval(() => forceTick((n) => n + 1), 60_000);
+    return () => clearInterval(interval);
+  }, [isGuest]);
+
+  const guestMinutesLeft =
+    isGuest && guestExpiresAt
+      ? Math.max(0, Math.ceil((guestExpiresAt - Date.now()) / 60_000))
+      : null;
 
   useEffect(() => {
     if (!sessionToken) return;
@@ -170,6 +193,60 @@ export default function SettingsView() {
           : "Couldn't send the verification email. Try again in a moment."
       );
     }
+  };
+
+  // Real-account sign-out deliberately leaves local device data in
+  // place — see chat.store's own persistence notes — since that data
+  // was never the account's to begin with in this architecture.
+  //
+  // Guests are different: a guest identity is meant to be fully
+  // disposable, and two different guests must never appear linked in
+  // any way (see ensureUniqueGuestUsername server-side, and the
+  // matching decision here). Ending a guest session — by choice or by
+  // the 30-minute timeout in WorkspaceScreen/App.tsx — clears
+  // everything so the NEXT guest (or the next session generally)
+  // starts from a genuinely clean slate, not a carried-over one.
+  const signOut = async () => {
+    if (!sessionToken) {
+      disconnectRealtime();
+      resetProfile();
+      resetChat();
+      setScreen("welcome");
+      return;
+    }
+    setSigningOut(true);
+    try {
+      await logout(sessionToken); // best-effort — proceed either way
+    } finally {
+      setSigningOut(false);
+      disconnectRealtime();
+      resetProfile();
+      setScreen("welcome");
+    }
+  };
+
+  // Same local-data principle as sign-out: this ends the ACCOUNT, not
+  // this device's chat history, which was never the account's to
+  // begin with in this architecture.
+  const handleDeleteAccount = async () => {
+    if (!sessionToken) return;
+    setDeletingAccount(true);
+    setDeleteError(null);
+    const result = await deleteAccount(sessionToken);
+    setDeletingAccount(false);
+
+    if (!result.ok) {
+      setDeleteError(
+        result.reason === "unreachable"
+          ? "Couldn't reach Tabcom's server — make sure it's running and try again."
+          : "Couldn't delete your account right now. Try again in a moment."
+      );
+      return;
+    }
+
+    disconnectRealtime();
+    resetProfile();
+    setScreen("welcome");
   };
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -219,17 +296,19 @@ export default function SettingsView() {
       {!sessionToken && (
         <button
           type="button"
-          onClick={() => setScreen("signin")}
+          onClick={() => setScreen("register", { returnTo: "workspace" })}
           className="mb-6 flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-left transition hover:border-blue-300"
         >
           <Lock size={18} className="shrink-0 text-blue-600" />
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold text-blue-900">
-              You're using Tabcom as a guest
+              {guestMinutesLeft !== null
+                ? `Guest session — ${guestMinutesLeft} min left`
+                : "You're using Tabcom as a guest"}
             </span>
             <span className="mt-0.5 block text-xs leading-5 text-blue-700">
-              Sign in to protect @{username} from being taken by someone
-              else, and pick up your account on other devices.
+              Register to make it permanent, pick your own username, and
+              sync across devices — no time limit.
             </span>
           </span>
         </button>
@@ -466,6 +545,73 @@ export default function SettingsView() {
             checked={pipEnabled}
             onToggle={() => setPipEnabled(!pipEnabled)}
           />
+        )}
+      </div>
+
+      {/* Account — session + lifecycle actions, same flat-row density
+          as everything above rather than a separate bordered "card". */}
+      <SectionLabel className="mt-8">Account</SectionLabel>
+
+      <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          disabled={signingOut}
+          className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-medium transition hover:bg-slate-50 disabled:opacity-60"
+        >
+          <LogOut size={17} className="shrink-0 text-slate-400" />
+          {signingOut
+            ? "Signing out…"
+            : sessionToken
+              ? "Sign out"
+              : "End guest session"}
+        </button>
+
+        {sessionToken && (
+          <div>
+            {confirmingDelete ? (
+              <div className="flex flex-col gap-2 px-4 py-3">
+                <p className="text-xs leading-5 text-slate-500">
+                  This permanently deletes your account, invitation codes,
+                  and sessions. Local chat history on this device is not
+                  affected. This can't be undone.
+                </p>
+                {deleteError && (
+                  <p className="text-xs text-red-600">{deleteError}</p>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteAccount()}
+                    disabled={deletingAccount}
+                    className="flex-1 rounded-lg bg-red-600 py-2 text-xs font-semibold text-white transition disabled:opacity-60"
+                  >
+                    {deletingAccount ? "Deleting…" : "Delete permanently"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmingDelete(false);
+                      setDeleteError(null);
+                    }}
+                    disabled={deletingAccount}
+                    className="rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-500"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(true)}
+                className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-medium text-red-600 transition hover:bg-red-50"
+              >
+                <Trash2 size={17} />
+                Delete account
+              </button>
+            )}
+          </div>
         )}
       </div>
 

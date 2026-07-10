@@ -8,9 +8,13 @@ import {
   removeBoardHighlight,
   removeBoardPin,
   removeBoardArea,
+  sendAnnotationEphemeral,
+  sendCallSignal,
   sendCommunityMessage,
   sendCursorLeave,
   sendCursorMove,
+  type AnnotationPeer,
+  type IncomingCallSignal,
   type WireCommunity,
 } from "../../src/lib/realtime";
 
@@ -62,6 +66,122 @@ let writeConnected = false;
  *  unrelated to connection lifecycle now that the connection stays open
  *  regardless. */
 const cursorTabs = new Map<number, { communityId: string; canonicalKey: string }>();
+
+/** Tabs currently eligible for quick annotations: tabId -> scope.
+ *  Deliberately separate from cursorTabs — annotation availability
+ *  depends only on "is this page on a board", not on the unrelated
+ *  live-cursors preference toggle, so it's tracked independently and
+ *  registered unconditionally whenever the content script finds a
+ *  matching board item (see content/index.ts's annotationScope). */
+const annotationTabs = new Map<number, { communityId: string; canonicalKey: string }>();
+
+// ---- Call session routing ----------------------------------------------
+//
+// The call WINDOW (entrypoints/call) owns getUserMedia + the
+// RTCPeerConnection; this background script only routes signaling
+// between that window (via a long-lived Port) and the socket. One call
+// at a time: a second incoming offer while a session exists gets an
+// automatic "busy" back, per the spec's busy-state requirement.
+
+let callPort: ReturnType<typeof browser.runtime.connect> | null = null;
+let callSession: { peer: string; windowId?: number } | null = null;
+/** Signals that arrived after the window was opened but before its
+ *  port connected — replayed on connect so the offer isn't lost. */
+let pendingCallSignals: IncomingCallSignal[] = [];
+
+async function openCallWindow(params: {
+  peer: string;
+  peerName: string;
+  peerColor: string;
+  video: boolean;
+  role: "caller" | "callee";
+}) {
+  // browser.runtime.getURL's generated PublicPath type only covers bare
+  // entrypoint paths — a query string can never literally match it, so
+  // this is cast rather than made to depend on wxt prepare/dev/build
+  // having regenerated types since call.html was added (tsc --noEmit
+  // alone doesn't trigger that regeneration, which is exactly what
+  // produced the "Found 1 error" compile failure here).
+  const url = browser.runtime.getURL("/call.html" as never) +
+    `?peer=${encodeURIComponent(params.peer)}&peerName=${encodeURIComponent(params.peerName)}&peerColor=${encodeURIComponent(params.peerColor)}&video=${params.video ? "1" : "0"}&role=${params.role}`;
+  const win = await browser.windows.create({
+    url,
+    type: "popup",
+    width: params.video ? 420 : 340,
+    height: params.video ? 520 : 300,
+  });
+  callSession = { peer: params.peer, windowId: win?.id ?? undefined };
+}
+
+function handleIncomingCallSignal(payload: IncomingCallSignal) {
+  const { from, signal } = payload;
+
+  if (signal.kind === "offer") {
+    if (callSession) {
+      // Already in (or setting up) a call — auto-busy, don't interrupt.
+      if (callSession.peer !== from.username) {
+        sendCallSignal(from.username, { kind: "busy" });
+      }
+      return;
+    }
+    callSession = { peer: from.username };
+    pendingCallSignals = [payload];
+    void openCallWindow({
+      peer: from.username,
+      peerName: from.name,
+      peerColor: from.color,
+      video: signal.video === true,
+      role: "callee",
+    });
+    return;
+  }
+
+  // Non-offer signals only matter for the active session's peer.
+  if (!callSession || callSession.peer !== from.username) return;
+
+  if (callPort) {
+    callPort.postMessage({ type: "signal", payload });
+  } else {
+    pendingCallSignals.push(payload);
+  }
+}
+
+/** Registered inside defineBackground() — browser API listeners must
+ *  not run at module top level (WXT imports this module at build time
+ *  in a mock environment where they'd throw). */
+function registerCallPortListener() {
+  browser.runtime.onConnect.addListener((port) => {
+    if (port.name !== "tabcom-call") return;
+
+    callPort = port;
+    for (const queued of pendingCallSignals) {
+      port.postMessage({ type: "signal", payload: queued });
+    }
+    pendingCallSignals = [];
+
+    port.onMessage.addListener((message: { type: string; to?: string; signal?: unknown }) => {
+      if (message.type === "signal" && message.to && message.signal) {
+        void ensureWriteConnection().then((connected) => {
+          if (connected) {
+            sendCallSignal(message.to!, message.signal as Parameters<typeof sendCallSignal>[1]);
+          }
+        });
+      }
+    });
+
+    // Window closed (hang up, or just closed): tell the peer the call is
+    // over — a vanished window must never leave the other side ringing.
+    port.onDisconnect.addListener(() => {
+      if (callPort === port) {
+        const peer = callSession?.peer;
+        callPort = null;
+        callSession = null;
+        pendingCallSignals = [];
+        if (peer && writeConnected) sendCallSignal(peer, { kind: "end" });
+      }
+    });
+  });
+}
 
 async function readStoredProfile(): Promise<StoredProfile | null> {
   const result = await browser.storage.local.get("tabcom:profile");
@@ -189,6 +309,16 @@ async function ensureWriteConnection(): Promise<boolean> {
                 .catch(() => cursorTabs.delete(tabId));
             }
           },
+          onAnnotationPeer: (peer: AnnotationPeer) => {
+            for (const [tabId, scope] of annotationTabs) {
+              if (scope.canonicalKey !== peer.canonicalKey) continue;
+              if (scope.communityId !== peer.communityId) continue;
+              browser.tabs
+                .sendMessage(tabId, { type: "tabcom:annotation-peer", peer })
+                .catch(() => annotationTabs.delete(tabId));
+            }
+          },
+          onCallSignal: handleIncomingCallSignal,
           onCommunityInvite: () => {},
           onCommunityDeclined: () => {},
           onCommunityLeft: () => {},
@@ -253,6 +383,65 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Registered unconditionally whenever the content script's own board-
+  // scope detection changes (renderExistingInner) — NOT gated by the
+  // cursors-enabled toggle, since quick annotations are a separate
+  // feature from live cursor sharing. `scope: null` clears it (page no
+  // longer on a board, e.g. an SPA nav away from a shared page).
+  if (message?.type === "tabcom:annotation-scope") {
+    const tabId = sender.tab?.id;
+    if (tabId != null) {
+      if (message.scope) {
+        annotationTabs.set(tabId, message.scope);
+      } else {
+        annotationTabs.delete(tabId);
+      }
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message?.type === "tabcom:call-start") {
+    (async () => {
+      if (callSession) {
+        sendResponse({ ok: false, reason: "call_in_progress" });
+        return;
+      }
+      const connected = await ensureWriteConnection();
+      if (!connected) {
+        sendResponse({ ok: false, reason: "offline" });
+        return;
+      }
+      await openCallWindow({
+        peer: message.peer,
+        peerName: message.peerName,
+        peerColor: message.peerColor,
+        video: message.video === true,
+        role: "caller",
+      });
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (message?.type === "tabcom:annotation-send") {
+    (async () => {
+      const connected = await ensureWriteConnection();
+      if (connected) {
+        sendAnnotationEphemeral(message.communityId, message.canonicalKey, {
+          text: message.text,
+          xPercent: message.xPercent,
+          yPercent: message.yPercent,
+          anchorSelector: message.anchorSelector,
+          elXPercent: message.elXPercent,
+          elYPercent: message.elYPercent,
+        });
+      }
+      sendResponse({ ok: connected });
+    })();
+    return true;
+  }
+
   if (message?.type !== "tabcom:board-write") return undefined;
 
   console.log("[tabcom:background] board-write received:", message.action, message.payload);
@@ -313,6 +502,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 export default defineBackground(() => {
+  registerCallPortListener();
+
   browser.runtime.onInstalled.addListener(async () => {
     // NOTE: this call is currently a no-op. The UI entrypoint is
     // entrypoints/popup, which makes WXT generate action.default_popup

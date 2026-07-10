@@ -88,7 +88,7 @@ export default function CommunitiesView() {
 
   const submitCreate = () => {
     if (!name.trim()) return;
-    createCommunity(name);
+    createCommunity(name.trim());
     setName("");
     setCreating(false);
   };
@@ -136,6 +136,7 @@ export default function CommunitiesView() {
               <Input
                 placeholder="Community name"
                 value={name}
+                maxLength={40}
                 onChange={(event) => setName(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") submitCreate();

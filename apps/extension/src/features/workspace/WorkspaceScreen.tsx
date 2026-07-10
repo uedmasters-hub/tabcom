@@ -2,7 +2,8 @@ import { useEffect } from "react";
 
 import AppShell from "../../components/layout/AppShell";
 import { fetchMe } from "../../lib/auth-client";
-import { initRealtime } from "../../lib/realtime";
+import { disconnectRealtime, initRealtime } from "../../lib/realtime";
+import { useAppStore } from "../../stores/app.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useProfileStore } from "../../stores/profile.store";
 import { useWorkspaceStore } from "../../stores/workspace.store";
@@ -50,6 +51,39 @@ export default function WorkspaceScreen() {
   const myPresence = useProfileStore((state) => state.presence);
   const sessionToken = useProfileStore((state) => state.sessionToken);
   const setVerified = useProfileStore((state) => state.setVerified);
+  const isGuest = useProfileStore((state) => state.isGuest);
+  const isGuestSessionExpired = useProfileStore(
+    (state) => state.isGuestSessionExpired
+  );
+  const endGuestSession = useProfileStore((state) => state.endGuestSession);
+  const setScreen = useAppStore((state) => state.setScreen);
+  const resetChat = useChatStore((state) => state.resetChat);
+
+  // Guest sessions are time-boxed to 30 minutes (see profile.store's
+  // GUEST_SESSION_DURATION_MS). Checked on an interval rather than a
+  // single timeout so it still fires correctly even if the machine was
+  // asleep or the popup was closed and reopened mid-session — a plain
+  // setTimeout scheduled at mount would drift or simply never fire in
+  // those cases. A guest identity is fully disposable by design, so
+  // expiry clears chat.store completely too — contacts, conversations,
+  // messages, communities, everything — rather than leaving anything
+  // for a future session (guest or otherwise) to inherit.
+  useEffect(() => {
+    if (!isGuest) return;
+
+    const checkExpiry = () => {
+      if (isGuestSessionExpired()) {
+        endGuestSession();
+        resetChat();
+        disconnectRealtime();
+        setScreen("guest-expired");
+      }
+    };
+
+    checkExpiry(); // catch an expiry that already happened before mount
+    const interval = setInterval(checkExpiry, 15_000);
+    return () => clearInterval(interval);
+  }, [isGuest, isGuestSessionExpired, endGuestSession, resetChat, setScreen]);
 
   // Pick up a verification that happened elsewhere (another tab, or
   // between extension launches) — the socket's own per-hello
@@ -77,6 +111,21 @@ export default function WorkspaceScreen() {
       {
         onConnectionChange: (live) =>
           useChatStore.getState().setLiveStatus(live),
+
+        onUsernameAssigned: (assignedUsername) => {
+          const profile = useProfileStore.getState();
+          // Only guests can actually hit this (see realtime.ts's
+          // comment on the ack) — but the check is by identity, not by
+          // trusting that invariant blindly: only ever touch the
+          // locally-stored username if we're not authenticated, so a
+          // real account's username can never be silently overwritten.
+          if (!profile.sessionToken) {
+            profile.setIdentity({
+              displayName: profile.displayName,
+              username: assignedUsername,
+            });
+          }
+        },
 
         onRoster: (users) =>
           useChatStore

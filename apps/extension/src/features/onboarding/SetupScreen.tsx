@@ -56,13 +56,12 @@ export default function SetupScreen() {
   const previewName = watch("displayName") || displayName || "You";
 
   const onSubmit = async (values: IdentityValues) => {
-    // No session (e.g. dev/demo path without magic-link sign-in) —
-    // fall back to the original local-only behavior rather than block
-    // someone who never went through /signin at all.
     if (!sessionToken) {
-      setIdentity(values);
-      completeProfile();
-      setScreen("workspace");
+      // Shouldn't happen in practice — SetupScreen is only ever
+      // reached via a magic-link session that has no username yet
+      // (guests get their own dedicated GuestSetupScreen). Bounce back
+      // to sign-in rather than silently completing without an account.
+      setScreen("signin");
       return;
     }
 
@@ -77,6 +76,10 @@ export default function SetupScreen() {
       if (result.reason === "taken") {
         setError("username", {
           message: "That username is already taken — try another.",
+        });
+      } else if (result.reason === "invalid_username") {
+        setError("username", {
+          message: "That username isn't available — try another.",
         });
       } else {
         setError("username", {

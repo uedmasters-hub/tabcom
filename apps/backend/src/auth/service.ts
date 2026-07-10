@@ -189,6 +189,45 @@ export interface AuthenticatedUser {
 
 const USERNAME_RULE = /^[a-z0-9_]{3,20}$/;
 
+/**
+ * Names that would be actively misleading or confusing if a regular
+ * person claimed them — impersonation risk (admin/support/security),
+ * platform-identity confusion (tabcom/official), or just reserved for
+ * future product surfaces (api/bot/system). Checked on every path that
+ * can claim a username: live availability check, registration, and
+ * claim-username.
+ */
+const RESERVED_USERNAMES = new Set([
+  "admin",
+  "administrator",
+  "root",
+  "system",
+  "support",
+  "help",
+  "helpdesk",
+  "security",
+  "moderator",
+  "mod",
+  "staff",
+  "team",
+  "official",
+  "tabcom",
+  "tabcomteam",
+  "api",
+  "bot",
+  "null",
+  "undefined",
+  "anonymous",
+  "guest",
+  "owner",
+  "superadmin",
+  "webmaster",
+  "noreply",
+  "no_reply",
+  "everyone",
+  "here",
+]);
+
 function normalizeUsername(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@/, "");
 }
@@ -212,6 +251,13 @@ export async function checkUsernameAvailable(
   const username = normalizeUsername(rawUsername);
   if (!USERNAME_RULE.test(username)) {
     return { ok: false, reason: "invalid_format" };
+  }
+
+  if (RESERVED_USERNAMES.has(username)) {
+    // Deliberately no suggestions built off the reserved word itself
+    // (nobody should be nudged toward "admin2") — a generic fallback
+    // gives the person somewhere to go without echoing the name back.
+    return { ok: true, available: false, suggestions: await suggestUsernames("user") };
   }
 
   const [existing] = await db
@@ -287,7 +333,7 @@ export async function registerAccount(
   }
 
   const username = normalizeUsername(rawUsername);
-  if (!USERNAME_RULE.test(username)) {
+  if (!USERNAME_RULE.test(username) || RESERVED_USERNAMES.has(username)) {
     return { ok: false, reason: "invalid_username" };
   }
 
@@ -446,12 +492,33 @@ export async function validateSession(
 /** Claims a username for an authenticated user — the FIRST real
  *  uniqueness enforcement this project has ever had. Returns false if
  *  taken by someone else (idempotent if it's already yours). */
+/**
+ * Whether a real, registered account already holds this username.
+ * Used by the socket layer to stop an unauthenticated (guest) "hello"
+ * from claiming a name that belongs to an actual account — the same
+ * uniqueness guarantee registration itself already enforces, extended
+ * to cover the one path that used to bypass it entirely.
+ */
+export async function isUsernameRegistered(username: string): Promise<boolean> {
+  const [existing] = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(eq(schema.users.username, username))
+    .limit(1);
+  return !!existing;
+}
+
 export async function claimUsername(
   userId: string,
-  username: string,
+  rawUsername: string,
   displayName: string,
   avatarColor: string
-): Promise<{ ok: true } | { ok: false; reason: "taken" }> {
+): Promise<{ ok: true } | { ok: false; reason: "taken" | "invalid_username" }> {
+  const username = normalizeUsername(rawUsername);
+  if (!USERNAME_RULE.test(username) || RESERVED_USERNAMES.has(username)) {
+    return { ok: false, reason: "invalid_username" };
+  }
+
   const [existing] = await db
     .select({ id: schema.users.id })
     .from(schema.users)
@@ -467,5 +534,46 @@ export async function claimUsername(
     .set({ username, displayName, avatarColor })
     .where(eq(schema.users.id, userId));
 
+  return { ok: true };
+}
+
+/**
+ * Explicit sign-out: revokes THIS session only (not every session on
+ * every device — same principle as most real products, and consistent
+ * with sessions already being per-device rows rather than a single
+ * account-wide flag). Idempotent: revoking an already-revoked or
+ * unknown token is not an error, since the end state the caller wants
+ * ("this token no longer works") is already true either way.
+ */
+export async function revokeSession(rawSessionToken: string): Promise<{ ok: true }> {
+  const tokenHash = hashToken(rawSessionToken);
+  await db
+    .update(schema.sessions)
+    .set({ revoked: true })
+    .where(eq(schema.sessions.tokenHash, tokenHash));
+  return { ok: true };
+}
+
+/**
+ * Permanently deletes the account and everything that references it.
+ * The users row is the single source of truth here — sessions and
+ * invites both carry `references(() => users.id, { onDelete: "cascade" })`
+ * already (see db/schema.ts), so one DELETE is enough; there is no
+ * separate cleanup pass to forget.
+ *
+ * Deliberately does NOT touch community membership or board data —
+ * those live entirely in the realtime server's in-memory/snapshot
+ * state (see index.ts's `communities` map), not in this database, and
+ * are keyed by username rather than user id. A deleted account's
+ * username simply becomes free to re-register, same as if they'd
+ * never signed up.
+ */
+export async function deleteAccount(
+  rawSessionToken: string
+): Promise<{ ok: true } | { ok: false; reason: "invalid_session" }> {
+  const user = await validateSession(rawSessionToken);
+  if (!user) return { ok: false, reason: "invalid_session" };
+
+  await db.delete(schema.users).where(eq(schema.users.id, user.id));
   return { ok: true };
 }

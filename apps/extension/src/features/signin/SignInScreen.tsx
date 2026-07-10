@@ -24,6 +24,7 @@ const BENEFITS = [
  */
 export default function SignInScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
+  const goBack = useAppStore((state) => state.goBack);
   const setSession = useProfileStore((state) => state.setSession);
   const setVerified = useProfileStore((state) => state.setVerified);
   const setIdentity = useProfileStore((state) => state.setIdentity);
@@ -89,7 +90,7 @@ export default function SignInScreen() {
   return (
     <AppShell>
       <div className="flex h-full flex-col">
-        <ScreenHeader onBack={() => setScreen("welcome")} />
+        <ScreenHeader onBack={() => goBack("welcome")} />
 
         <section className="flex flex-1 flex-col px-6">
           <SectionLabel>Sign in</SectionLabel>
@@ -168,13 +169,6 @@ export default function SignInScreen() {
             >
               {submitting ? "Sending…" : "Send sign-in link"}
             </Button>
-            <button
-              type="button"
-              onClick={() => setScreen("setup")}
-              className="mt-3 w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
-            >
-              Continue as a guest instead
-            </button>
           </ScreenFooter>
         )}
       </div>

@@ -1,8 +1,8 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Ticket, UserRound } from "lucide-react";
 
 import AppShell from "../../components/layout/AppShell";
 import ScreenHeader from "../../components/layout/ScreenHeader";
-import { Button, SectionLabel } from "../../components/ui";
+import { Button } from "../../components/ui";
 import { useAppStore } from "../../stores/app.store";
 
 export default function WelcomeScreen() {
@@ -17,41 +17,35 @@ export default function WelcomeScreen() {
             Browser-first communication
           </p>
         </div>
-
-        <span className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500">
-          v0.1
-        </span>
       </ScreenHeader>
 
-      <section className="flex flex-1 flex-col justify-center px-6">
-        <SectionLabel className="mb-6">Introducing Tabcom</SectionLabel>
+      <section className="flex flex-1 flex-col justify-center gap-3 px-6">
+        <Button
+          fullWidth
+          onClick={() => setScreen("register")}
+          leftIcon={<Ticket size={16} />}
+          rightIcon={<ArrowRight size={16} />}
+        >
+          Join with an invite code
+        </Button>
 
-        <h2 className="max-w-xs text-4xl font-bold leading-tight tracking-tight">
-          Your communication workspace inside the browser.
-        </h2>
+        <Button
+          fullWidth
+          variant="outline"
+          onClick={() => setScreen("guest-setup")}
+          leftIcon={<UserRound size={16} />}
+        >
+          Continue as guest
+        </Button>
 
-        <p className="mt-6 max-w-sm text-sm leading-7 text-slate-500">
-          Chat, share tabs, exchange files, and collaborate without leaving the
-          page you're working on.
-        </p>
-
-        <div className="mt-10">
-          <Button
-            onClick={() => setScreen("register")}
-            rightIcon={<ArrowRight size={16} />}
-          >
-            Get started
-          </Button>
-        </div>
-      </section>
-
-      <footer className="flex items-center justify-between border-t border-slate-200 px-6 py-4 text-xs text-slate-500">
-        <span>Privacy First</span>
-
-        <button className="transition-colors hover:text-slate-900">
-          Learn more
+        <button
+          type="button"
+          onClick={() => setScreen("signin")}
+          className="mt-1 w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
+        >
+          Already have an account? Sign in
         </button>
-      </footer>
+      </section>
     </AppShell>
   );
 }
