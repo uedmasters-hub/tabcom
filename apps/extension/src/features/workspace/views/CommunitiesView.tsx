@@ -95,27 +95,66 @@ export default function CommunitiesView() {
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
-      {/* Segmented control */}
-      <div className="flex gap-1 border-b border-slate-100 px-6 py-3">
-        {(["groups", "discover"] as const).map((id) => (
+      {/* Segmented control — same underline-tab + plain-action pattern as the board's Tabs/Pins/Areas row */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-6">
+        <div className="flex gap-4" role="tablist" aria-label="Communities filter">
+          {(["groups", "discover"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={segment === id}
+              onClick={() => setSegment(id)}
+              className={cn(
+                "border-b-2 py-3 text-xs font-semibold capitalize transition",
+                segment === id
+                  ? "border-slate-900 text-slate-900"
+                  : "border-transparent text-slate-400 hover:text-slate-600"
+              )}
+            >
+              {id}
+            </button>
+          ))}
+        </div>
+
+        {segment === "groups" && !creating && (
           <button
-            key={id}
             type="button"
-            onClick={() => setSegment(id)}
-            className={cn(
-              "rounded-full px-4 py-1.5 text-xs font-semibold capitalize transition",
-              segment === id
-                ? "bg-slate-900 text-white"
-                : "text-slate-500 hover:bg-slate-100"
-            )}
+            onClick={() => setCreating(true)}
+            className="flex shrink-0 items-center gap-1 text-xs font-semibold text-slate-700 transition hover:text-slate-900"
           >
-            {id}
+            <Plus size={14} />
+            Create
           </button>
-        ))}
+        )}
       </div>
 
       {segment === "groups" ? (
         <>
+          {creating && (
+            <div className="flex gap-2 px-6 pt-4">
+              <Input
+                placeholder="Community name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submitCreate();
+                }}
+                className="h-10"
+              />
+              <Button size="md" onClick={submitCreate}>
+                Create
+              </Button>
+              <Button
+                size="md"
+                variant="ghost"
+                onClick={() => setCreating(false)}
+              >
+                <X size={16} />
+              </Button>
+            </div>
+          )}
+
           {/* Pending invites — consent cards */}
           {invites.map(({ community, from, attempt }) => (
             <div
@@ -157,43 +196,6 @@ export default function CommunitiesView() {
               </div>
             </div>
           ))}
-
-          {/* Create */}
-          <div className="px-6 pt-4">
-            {creating ? (
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Community name"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") submitCreate();
-                  }}
-                  className="h-10"
-                />
-                <Button size="md" onClick={submitCreate}>
-                  Create
-                </Button>
-                <Button
-                  size="md"
-                  variant="ghost"
-                  onClick={() => setCreating(false)}
-                >
-                  <X size={16} />
-                </Button>
-              </div>
-            ) : (
-              <Button
-                size="md"
-                variant="outline"
-                fullWidth
-                leftIcon={<Plus size={15} />}
-                onClick={() => setCreating(true)}
-              >
-                Create a community
-              </Button>
-            )}
-          </div>
 
           {/* Groups list */}
           {groups.length === 0 && invites.length === 0 ? (

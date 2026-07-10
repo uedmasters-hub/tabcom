@@ -12,12 +12,13 @@ import {
   Trash2,
   Trophy,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
-import { Button, EmptyState } from "../../../../components/ui";
+import { EmptyState } from "../../../../components/ui";
 import { navigateToAnnotation } from "../../../../lib/board-navigation";
 import { cn } from "../../../../lib/cn";
+import { useAutoHideOnScroll } from "../../../../lib/use-auto-hide-on-scroll";
 import { useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import type {
@@ -33,7 +34,13 @@ import { formatRelativeTime } from "../../../../utils/time";
  *   Tabs       — every page on the board, with voting/comments/decide
  *   Pins       — every pin across all pages; click = jump to the exact
  *                spot on the page (focus-or-open + scroll + pulse)
- *   Highlights — every highlight across all pages; click = jump + flash
+ *   Areas      — every area across all pages; click = jump + flash
+ *
+ * The filter row and the "add" action live together in one sticky nav
+ * row (previously each section had its own full-width CTA button
+ * underneath the filter — three near-identical bars stacked on top of
+ * each other). That row hides while scrolling down through content and
+ * reappears on scroll-up or once scrolling goes idle.
  */
 
 type Section = "tabs" | "pins" | "areas";
@@ -50,6 +57,10 @@ async function sendToActiveTab(message: Record<string, unknown>) {
 
 export default function BoardView({ community }: { community: Community }) {
   const [section, setSection] = useState<Section>("tabs");
+  const addCurrentTabToBoard = useChatStore((state) => state.addCurrentTabToBoard);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const navVisible = useAutoHideOnScroll(scrollRef);
 
   const pinCount = community.board.reduce((n, item) => n + (item.pins ?? []).length, 0);
   const areaCount = community.board.reduce((n, item) => n + (item.areas ?? []).length, 0);
@@ -60,34 +71,66 @@ export default function BoardView({ community }: { community: Community }) {
     { id: "areas", label: "Areas", count: areaCount },
   ];
 
+  // The add action is contextual: adding a page only makes sense from
+  // Tabs, while Pins/Areas both funnel into the same unified on-page
+  // annotate mode (one click = pin, click-and-drag = area).
+  const addAction =
+    section === "tabs"
+      ? {
+          label: "Add tab",
+          icon: <Plus size={13} />,
+          onClick: () => void addCurrentTabToBoard(community.id),
+        }
+      : {
+          label: "Annotate",
+          icon: section === "pins" ? <MapPin size={13} /> : <Square size={13} />,
+          onClick: () =>
+            void sendToActiveTab({
+              type: "tabcom:enter-annotate-mode",
+              communityId: community.id,
+            }),
+        };
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div
-        className="flex gap-4 border-b border-slate-100 px-4"
-        role="tablist"
-        aria-label="Board filter"
-      >
-        {segments.map((segment) => (
-          <button
-            key={segment.id}
-            type="button"
-            role="tab"
-            aria-selected={section === segment.id}
-            onClick={() => setSection(segment.id)}
-            className={cn(
-              "border-b-2 py-2 text-xs font-semibold transition",
-              section === segment.id
-                ? "border-slate-900 text-slate-900"
-                : "border-transparent text-slate-400 hover:text-slate-600"
-            )}
-          >
-            {segment.label}
-            {segment.count > 0 && <span className="ml-1">· {segment.count}</span>}
-          </button>
-        ))}
-      </div>
+      <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto">
+        <div
+          className={cn(
+            "sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-100 bg-white px-4 transition-transform duration-200 ease-out",
+            navVisible ? "translate-y-0" : "-translate-y-full"
+          )}
+        >
+          <div className="flex gap-4" role="tablist" aria-label="Board filter">
+            {segments.map((segment) => (
+              <button
+                key={segment.id}
+                type="button"
+                role="tab"
+                aria-selected={section === segment.id}
+                onClick={() => setSection(segment.id)}
+                className={cn(
+                  "border-b-2 py-2 text-xs font-semibold transition",
+                  section === segment.id
+                    ? "border-slate-900 text-slate-900"
+                    : "border-transparent text-slate-400 hover:text-slate-600"
+                )}
+              >
+                {segment.label}
+                {segment.count > 0 && <span className="ml-1">· {segment.count}</span>}
+              </button>
+            ))}
+          </div>
 
-      <div className="flex flex-1 flex-col overflow-y-auto">
+          <button
+            type="button"
+            onClick={addAction.onClick}
+            className="flex shrink-0 items-center gap-1 text-xs font-semibold text-slate-700 transition hover:text-slate-900"
+          >
+            {addAction.icon}
+            {addAction.label}
+          </button>
+        </div>
+
         {section === "tabs" && <TabsSection community={community} />}
         {section === "pins" && <PinsSection community={community} />}
         {section === "areas" && <AreasSection community={community} />}
@@ -100,9 +143,6 @@ export default function BoardView({ community }: { community: Community }) {
 
 function TabsSection({ community }: { community: Community }) {
   const username = useProfileStore((state) => state.username);
-  const addCurrentTabToBoard = useChatStore(
-    (state) => state.addCurrentTabToBoard
-  );
   const decideBoardItem = useChatStore((state) => state.decideBoardItem);
 
   const isAdmin = community.admin === username;
@@ -110,18 +150,6 @@ function TabsSection({ community }: { community: Community }) {
 
   return (
     <>
-      <div className="border-b border-slate-100 px-4 py-3">
-        <Button
-          size="md"
-          variant="outline"
-          fullWidth
-          leftIcon={<Plus size={15} />}
-          onClick={() => void addCurrentTabToBoard(community.id)}
-        >
-          Add current tab
-        </Button>
-      </div>
-
       {decided && (
         <div className="mx-4 mt-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
           <Trophy size={16} className="shrink-0 text-emerald-600" />
@@ -145,7 +173,7 @@ function TabsSection({ community }: { community: Community }) {
           className="flex-1"
           icon={<ThumbsUp size={24} />}
           title="No pages yet"
-          description="Browse to a listing and tap 'Add current tab' — or use the Tabcom pill right on the page."
+          description="Browse to a page and tap 'Add tab' above to bring it onto the board."
         />
       ) : (
         <ul className="flex flex-col gap-3 px-4 py-4">
@@ -171,29 +199,12 @@ function PinsSection({ community }: { community: Community }) {
 
   return (
     <>
-      <div className="border-b border-slate-100 px-4 py-3">
-        <Button
-          size="md"
-          variant="outline"
-          fullWidth
-          leftIcon={<MapPin size={15} />}
-          onClick={() =>
-            void sendToActiveTab({
-              type: "tabcom:enter-annotate-mode",
-              communityId: community.id,
-            })
-          }
-        >
-          Annotate this page — click to pin, drag to select an area
-        </Button>
-      </div>
-
       {itemsWithPins.length === 0 ? (
         <EmptyState
           className="flex-1"
           icon={<MapPin size={24} />}
           title="No pins yet"
-          description="Open any page on the board and drop a pin — everyone in the community can jump straight to it from here."
+          description="Tap 'Annotate' above, then click anywhere on the page to drop a pin — everyone in the community can jump straight to it from here."
         />
       ) : (
         <div className="flex flex-col gap-4 px-4 py-4">
@@ -305,29 +316,12 @@ function AreasSection({ community }: { community: Community }) {
 
   return (
     <>
-      <div className="border-b border-slate-100 px-4 py-3">
-        <Button
-          size="md"
-          variant="outline"
-          fullWidth
-          leftIcon={<Square size={15} />}
-          onClick={() =>
-            void sendToActiveTab({
-              type: "tabcom:enter-annotate-mode",
-              communityId: community.id,
-            })
-          }
-        >
-          Annotate this page — click to pin, drag to select an area
-        </Button>
-      </div>
-
       {itemsWithAreas.length === 0 ? (
         <EmptyState
           className="flex-1"
           icon={<Square size={24} />}
           title="No areas yet"
-          description="Click and drag over any part of a page on the board — works over images and mixed content, not just text."
+          description="Tap 'Annotate' above, then click and drag over any part of a page — works over images and mixed content, not just text."
         />
       ) : (
         <div className="flex flex-col gap-4 px-4 py-4">

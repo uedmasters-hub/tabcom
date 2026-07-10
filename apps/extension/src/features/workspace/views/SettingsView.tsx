@@ -11,6 +11,7 @@ import {
 import { cn } from "../../../lib/cn";
 import { fetchInvites, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
+import { FLOATING_PILL_ENABLED } from "../../../lib/feature-flags";
 import { reannounce, updateVisibility } from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
 import {
@@ -457,13 +458,15 @@ export default function SettingsView() {
           checked={animations}
           onToggle={() => setAnimations(!animations)}
         />
-        <SettingRow
-          icon={<PictureInPicture2 size={17} />}
-          label="Floating chat"
-          description="Pop out a chat into its own window"
-          checked={pipEnabled}
-          onToggle={() => setPipEnabled(!pipEnabled)}
-        />
+        {FLOATING_PILL_ENABLED && (
+          <SettingRow
+            icon={<PictureInPicture2 size={17} />}
+            label="Floating chat"
+            description="Pop out a chat into its own window"
+            checked={pipEnabled}
+            onToggle={() => setPipEnabled(!pipEnabled)}
+          />
+        )}
       </div>
 
       <p className="mt-8 text-center text-xs text-slate-400">

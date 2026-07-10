@@ -5,7 +5,6 @@ import {
   CheckCheck,
   CornerUpLeft,
   ExternalLink,
-  Info,
   Link as LinkIcon,
   Pencil,
   PictureInPicture2,
@@ -333,7 +332,9 @@ import { useEffect, useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
 import { Avatar } from "../../../../components/ui";
+import NotificationBell from "../../../../components/layout/NotificationBell";
 import { cn } from "../../../../lib/cn";
+import { FLOATING_PILL_ENABLED } from "../../../../lib/feature-flags";
 import { sendTyping } from "../../../../lib/realtime";
 import { ME, useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
@@ -358,6 +359,7 @@ export default function ChatView({
   const contacts = useChatStore((state) => state.contacts);
   const conversations = useChatStore((state) => state.conversations);
   const communities = useChatStore((state) => state.communities);
+  const live = useChatStore((state) => state.live);
   const messages = useChatStore(
     (state) => state.messages[conversationId] ?? NO_MESSAGES
   );
@@ -384,7 +386,9 @@ export default function ChatView({
   const [draft, setDraft] = useState("");
   const [showInfo, setShowInfo] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
-  const [tab, setTab] = useState<"chat" | "board">("chat");
+  // Board-first: the board (shared tabs/pins/areas) is the community's
+  // primary surface, chat is secondary — see product decision log.
+  const [tab, setTab] = useState<"chat" | "board">("board");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lastTypingSent = useRef(0);
@@ -433,11 +437,6 @@ export default function ChatView({
   if (!conversation || (!contact && !community)) return null;
 
   const title = community ? community.name : contactLabel(contact!);
-  const subtitle = community
-    ? `${community.members.length} member${community.members.length === 1 ? "" : "s"}`
-    : isTyping
-      ? "typing…"
-      : contact!.presence;
 
   const activeReplyId = replyTargets[conversationId] ?? null;
   const replySource = activeReplyId
@@ -467,40 +466,33 @@ export default function ChatView({
           <ArrowLeft size={18} />
         </button>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <button
-            type="button"
-            onClick={() => setShowInfo(true)}
-            className="flex min-w-0 items-center gap-3 text-left"
-          >
-            {community ? (
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
+        {community ? (
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowInfo(true)}
+              aria-label={`${community.name} details`}
+              title={community.name}
+              className="relative shrink-0 rounded-full transition hover:ring-2 hover:ring-slate-200"
+            >
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
                 {community.name.charAt(0).toUpperCase()}
               </span>
-            ) : (
-              <Avatar
-                name={contact!.name}
-                color={contact!.color}
-                photo={contact!.photo}
-                size="sm"
+              <span
+                title={live ? "Connected to realtime server" : "Offline — local demo mode"}
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white",
+                  live ? "bg-emerald-500" : "bg-slate-300"
+                )}
               />
-            )}
+            </button>
 
-            <span className="min-w-0 truncate text-sm font-semibold leading-tight">
-              {title}
-            </span>
-          </button>
-
-          {/* Second row: for communities this IS the Chat/Board switch —
-              no separate full-width bar underneath. For 1:1 chats it's
-              the presence/typing subtitle, same as before. */}
-          {community ? (
             <div
-              className="ml-11 inline-flex w-fit gap-0.5 rounded-full bg-slate-100 p-0.5"
+              className="inline-flex w-fit shrink-0 gap-0.5 rounded-full bg-slate-100 p-0.5"
               role="tablist"
               aria-label="View"
             >
-              {(["chat", "board"] as const).map((id) => (
+              {(["board", "chat"] as const).map((id) => (
                 <button
                   key={id}
                   type="button"
@@ -523,20 +515,41 @@ export default function ChatView({
                 </button>
               ))}
             </div>
-          ) : (
-            <span className="ml-11 flex items-center gap-1.5 text-xs text-slate-500">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  presenceColors[contact!.presence]
-                )}
-              />
-              {subtitle}
-            </span>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => setShowInfo(true)}
+              className="flex min-w-0 items-center gap-3 text-left"
+            >
+              <span className="relative shrink-0">
+                <Avatar
+                  name={contact!.name}
+                  color={contact!.color}
+                  photo={contact!.photo}
+                  size="sm"
+                />
+                <span
+                  className={cn(
+                    "absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white",
+                    presenceColors[contact!.presence]
+                  )}
+                />
+              </span>
 
-        {pipEnabled && (
+              <span className="min-w-0 truncate text-sm font-semibold leading-tight">
+                {title}
+              </span>
+            </button>
+
+            {isTyping && (
+              <span className="ml-11 text-xs text-slate-500">typing…</span>
+            )}
+          </div>
+        )}
+
+        {FLOATING_PILL_ENABLED && pipEnabled && (
           <button
             type="button"
             onClick={() => {
@@ -557,14 +570,7 @@ export default function ChatView({
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={() => setShowInfo(true)}
-          aria-label="Details"
-          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-900"
-        >
-          <Info size={18} />
-        </button>
+        <NotificationBell />
       </div>
 
       {isCommunity && tab === "board" && community ? (
