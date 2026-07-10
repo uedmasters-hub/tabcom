@@ -13,7 +13,7 @@ import { io, type Socket } from "socket.io-client";
 
 export const REALTIME_URL =
   (import.meta.env.WXT_REALTIME_URL as string | undefined) ??
-  "http://localhost:3001";
+  "WXT_REALTIME_URL=http://rameshs-macbook-pro.local:3001";
 
 export type Visibility = "public" | "private";
 
