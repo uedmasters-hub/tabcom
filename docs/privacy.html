@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tabcom — Privacy Policy</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="icon/32.png" />
+  <style>
+    :root {
+      --slate-900: #0f172a;
+      --slate-700: #334155;
+      --slate-500: #64748b;
+      --slate-200: #e2e8f0;
+      --slate-50: #f8fafc;
+      --blue: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--slate-700);
+      background: #ffffff;
+      line-height: 1.65;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 64px 24px 96px; }
+    header { margin-bottom: 40px; }
+    .eyebrow {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin: 0 0 8px;
+    }
+    h1 { font-size: 32px; color: var(--slate-900); margin: 0 0 8px; letter-spacing: -0.01em; }
+    .updated { font-size: 14px; color: var(--slate-500); margin: 0; }
+    h2 {
+      font-size: 20px;
+      color: var(--slate-900);
+      margin: 40px 0 12px;
+      padding-top: 8px;
+      border-top: 1px solid var(--slate-200);
+    }
+    h2:first-of-type { border-top: none; padding-top: 0; }
+    p, li { font-size: 15.5px; }
+    ul { padding-left: 22px; }
+    li { margin-bottom: 8px; }
+    .callout {
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin: 20px 0;
+    }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout .label { font-weight: 600; color: var(--slate-900); }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14.5px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--slate-200); vertical-align: top; }
+    th { color: var(--slate-900); font-weight: 600; width: 30%; }
+    code {
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 13.5px;
+    }
+    a { color: var(--blue); }
+    footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--slate-200); font-size: 13.5px; color: var(--slate-500); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Tabcom</p>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: July 12, 2026</p>
+    </header>
+
+    <p>
+      Tabcom is a browser extension that lets a small group of people communicate
+      directly on top of the webpages they're viewing together — live cursors,
+      pins and annotations on page content, chat, and voice/video calls. This
+      page explains exactly what data that requires, what we store, what we
+      never store, and why.
+    </p>
+
+    <div class="callout">
+      <p><span class="label">The short version:</span> Tabcom stores your
+      profile and the shared boards/pins/tabs your communities create.
+      Chat messages, live cursor positions, and call audio/video are relayed
+      between people in real time and are never written to a database or log —
+      we call this our zero-retention guarantee for communication content.</p>
+    </div>
+
+    <h2>Information we store</h2>
+    <table>
+      <tr><th>Category</th><td>What, and why</td></tr>
+      <tr>
+        <td>Account information</td>
+        <td>Email address, chosen username, display name, avatar color, and an
+        optional profile photo — collected when you create an account, used to
+        identify you to your communities and to sign you in.</td>
+      </tr>
+      <tr>
+        <td>Authentication</td>
+        <td>We use passwordless sign-in: a one-time link is emailed to you, and
+        a session token authenticates your device afterward for up to 90 days.
+        We never see or store a password. Session tokens are stored hashed, not
+        in plain text.</td>
+      </tr>
+      <tr>
+        <td>Guest sessions</td>
+        <td>Using Tabcom without an account creates a temporary guest identity
+        that lasts 30 minutes. When it ends — by your choice or by timing out —
+        the guest's session record and their personal activity log are deleted
+        outright, not just marked inactive.</td>
+      </tr>
+      <tr>
+        <td>Shared boards</td>
+        <td>When you or a community member pins a page, adds a tab, or
+        annotates content, we store that page's URL, title, a thumbnail image,
+        and the annotation/comment text itself, tied to the community that
+        added it. This is what makes those pins and comments visible to your
+        teammates and persistent across sessions.</td>
+      </tr>
+      <tr>
+        <td>Community membership &amp; settings</td>
+        <td>Which communities you belong to, your role, and your app
+        preferences (theme, notification, and similar settings), so they carry
+        over across devices and sign-ins.</td>
+      </tr>
+      <tr>
+        <td>Invitations</td>
+        <td>Tabcom is currently invite-only. We store invite codes and which
+        account redeemed which code, to enforce single-use codes.</td>
+      </tr>
+    </table>
+
+    <h2>Information we deliberately do not store</h2>
+    <p>
+      The following data passes through our server in real time so it can
+      reach the other person or people you're communicating with — but it is
+      never written to a database, file, or log, and is discarded the moment
+      it's been relayed:
+    </p>
+    <ul>
+      <li><strong>Chat messages</strong> — delivered live between community
+      members; not persisted server-side.</li>
+      <li><strong>Live cursor position</strong> — your on-page cursor location
+      is relayed to teammates viewing the same page so they can see where
+      you're looking, and is held in memory only for that instant, never
+      written anywhere.</li>
+      <li><strong>Voice and video call audio/video</strong> — calls are
+      connected peer-to-peer where possible; call signaling passes through our
+      relay but call content is never recorded or stored by Tabcom.</li>
+    </ul>
+
+    <h2>What we don't collect</h2>
+    <ul>
+      <li>We do not collect health information, financial or payment
+      information, or precise location/GPS data.</li>
+      <li>We do not track your browsing history outside of pages you or your
+      community members explicitly pin or annotate.</li>
+      <li>We do not run analytics or advertising trackers inside the
+      extension.</li>
+    </ul>
+
+    <h2>How we use your information</h2>
+    <p>We use the information above only to operate Tabcom's core features:</p>
+    <ul>
+      <li>Authenticating you and keeping your session signed in.</li>
+      <li>Displaying your profile, boards, pins, and communities to the people
+      you share them with.</li>
+      <li>Sending you a magic-link sign-in email or an account verification
+      email, via our transactional email provider, Resend. Resend only
+      receives your email address and the content of that one email — never
+      your messages, boards, or browsing activity.</li>
+      <li>Enforcing invite-only registration.</li>
+    </ul>
+    <p>We do not use your data for advertising, profiling, or any purpose
+    unrelated to these core features, and we do not use it to make
+    creditworthiness or lending decisions.</p>
+
+    <h2>Sharing your information</h2>
+    <p>
+      We do not sell or rent your data to anyone. We share data only with the
+      infrastructure providers that make Tabcom work:
+    </p>
+    <ul>
+      <li><strong>Neon</strong> (PostgreSQL database hosting) — stores the
+      account, board, and community data described above.</li>
+      <li><strong>Render</strong> (application hosting) — runs our server;
+      may retain standard infrastructure-level access/error logs briefly for
+      operational purposes, separate from the application data described in
+      this policy.</li>
+      <li><strong>Resend</strong> (transactional email) — sends sign-in and
+      verification emails on our behalf.</li>
+    </ul>
+    <p>
+      Your data is visible to the other members of any community you join —
+      that's the point of a shared board — but never outside your
+      communities, and never to us for any purpose beyond running the service.
+    </p>
+
+    <h2>Data retention and deletion</h2>
+    <ul>
+      <li>Registered account sessions last 90 days and can be ended at any
+      time from Settings → Sign out.</li>
+      <li>Guest sessions last 30 minutes and are fully deleted — session
+      record and personal activity log — when they end.</li>
+      <li>Deleting your account permanently removes your user record and
+      every session tied to it. Your account's invite codes are removed with
+      it. Board items you contributed to a shared community (pins, tabs)
+      remain visible to that community, attributed to your username, the same
+      way any shared document keeps a departed collaborator's past
+      contributions.</li>
+    </ul>
+
+    <h2>Your choices</h2>
+    <ul>
+      <li>You can use Tabcom as a guest with no account and no email address
+      at all, for a 30-minute session.</li>
+      <li>You can delete your account at any time from Settings, which removes
+      your account and its data as described above.</li>
+      <li>You can turn off Tabcom's permissions or remove the extension at any
+      time from your browser's extension settings.</li>
+    </ul>
+
+    <h2>Children's privacy</h2>
+    <p>Tabcom is not directed at children and we do not knowingly collect
+    information from anyone under 13.</p>
+
+    <h2>Changes to this policy</h2>
+    <p>If we make a material change to how Tabcom handles your data, we'll
+    update the date at the top of this page and, where appropriate, notify
+    active account holders.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy or your data can be sent to
+    <a href="mailto:privacy@tabcom.dev">privacy@tabcom.dev</a>.</p>
+
+    <footer>Tabcom · <a href="https://github.com/uedmasters-hub/tabcom">github.com/uedmasters-hub/tabcom</a></footer>
+  </div>
+</body>
+</html>
