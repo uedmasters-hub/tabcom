@@ -171,10 +171,23 @@ export async function pollLoginRequest(
     // device id) is in the loop, so fill it in now rather than leave
     // it permanently null for magic-link sessions.
     if (deviceId) {
+      const tokenHash = hashToken(handoff.rawSessionToken);
+      // Retire any OTHER active session already sitting on this
+      // device before attaching it to the new one. Without this, a
+      // still-unexpired leftover (most commonly a guest trial run on
+      // this same browser shortly before signing in for real) would
+      // remain "active" and — being older — would simply be shadowed
+      // by the row we're about to create, only to resurface the
+      // moment this new session is later revoked (see revokeSession's
+      // doc comment for the full loop this caused).
+      await db
+        .update(schema.sessions)
+        .set({ revoked: true })
+        .where(and(eq(schema.sessions.deviceId, deviceId), eq(schema.sessions.revoked, false)));
       await db
         .update(schema.sessions)
         .set({ deviceId, browserInfo: browserInfo ?? null })
-        .where(eq(schema.sessions.tokenHash, hashToken(handoff.rawSessionToken)));
+        .where(eq(schema.sessions.tokenHash, tokenHash));
     }
 
     return {
@@ -414,6 +427,14 @@ export async function registerAccount(
   }
 
   const rawSessionToken = generateToken();
+  if (deviceId) {
+    // Same device-level invariant as pollLoginRequest and
+    // registerGuestSession: at most one active session per device.
+    await db
+      .update(schema.sessions)
+      .set({ revoked: true })
+      .where(and(eq(schema.sessions.deviceId, deviceId), eq(schema.sessions.revoked, false)));
+  }
   await db.insert(schema.sessions).values({
     userId: user.id,
     tokenHash: hashToken(rawSessionToken),
@@ -572,12 +593,53 @@ export async function claimUsername(
  * unknown token is not an error, since the end state the caller wants
  * ("this token no longer works") is already true either way.
  */
+/**
+ * Explicit sign-out: revokes every active session tied to THIS
+ * device (not just the token being signed out with).
+ *
+ * Why "this device" and not "this token" alone: findActiveSessionForDevice
+ * resolves the device's most-recently-created active, non-revoked
+ * session — singular, by design, since a device is meant to have at
+ * most one live session at a time (see registerGuestSession's matching
+ * enforcement). If sign-out only revoked the one token, an OLDER
+ * still-unexpired row for the same device (e.g. a guest trial run on
+ * this browser minutes before registering a real account) would
+ * become the "most recent active" row the instant the newer one is
+ * revoked — silently resurrecting that stale identity on the very
+ * next device-recognition check, which is exactly the loop this was
+ * causing: sign out of the real account, bounce straight back into a
+ * leftover guest session, "sign out" appearing to do nothing.
+ *
+ * Revoking by deviceId rather than by a single tokenHash makes
+ * sign-out authoritative: this device ends up with zero active
+ * sessions, full stop, regardless of how many rows accumulated on it.
+ * Idempotent for the same reason the token-scoped version was —
+ * revoking rows that are already revoked, or a deviceId with none, is
+ * simply a no-op UPDATE.
+ */
 export async function revokeSession(rawSessionToken: string): Promise<{ ok: true }> {
   const tokenHash = hashToken(rawSessionToken);
-  await db
-    .update(schema.sessions)
-    .set({ revoked: true })
-    .where(eq(schema.sessions.tokenHash, tokenHash));
+  const [target] = await db
+    .select({ deviceId: schema.sessions.deviceId })
+    .from(schema.sessions)
+    .where(eq(schema.sessions.tokenHash, tokenHash))
+    .limit(1);
+
+  if (target?.deviceId) {
+    await db
+      .update(schema.sessions)
+      .set({ revoked: true })
+      .where(and(eq(schema.sessions.deviceId, target.deviceId), eq(schema.sessions.revoked, false)));
+  } else {
+    // No deviceId on record for this token (older row predating device
+    // tracking, or none was ever sent) — fall back to the narrow,
+    // token-only revoke so sign-out still works for that session.
+    await db
+      .update(schema.sessions)
+      .set({ revoked: true })
+      .where(eq(schema.sessions.tokenHash, tokenHash));
+  }
+
   return { ok: true };
 }
 
@@ -634,6 +696,15 @@ export async function registerGuestSession(input: {
   deviceId: string;
   browserInfo?: string;
 }): Promise<void> {
+  // Same device-level invariant as registerAccount and
+  // pollLoginRequest: at most one active session per device, so an
+  // older row (registered OR guest) can never be shadowed-then-later-
+  // resurrected once the new one is eventually revoked.
+  await db
+    .update(schema.sessions)
+    .set({ revoked: true })
+    .where(and(eq(schema.sessions.deviceId, input.deviceId), eq(schema.sessions.revoked, false)));
+
   await db.insert(schema.sessions).values({
     guestUsername: input.guestUsername,
     deviceId: input.deviceId,
