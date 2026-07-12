@@ -10,7 +10,7 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
-import { deleteAccount, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
+import { deleteAccount, endGuestSessionOnServer, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
 import { syncSettingsToServer } from "../../../lib/settings-sync";
 import { FLOATING_PILL_ENABLED } from "../../../lib/feature-flags";
@@ -216,6 +216,15 @@ export default function SettingsView() {
   // starts from a genuinely clean slate, not a carried-over one.
   const signOut = async () => {
     if (!sessionToken) {
+      // Guests have no sessionToken to revoke, but the server still
+      // has an active session row for this device (see
+      // registerGuestSession) that device recognition will happily
+      // resume on the very next popup open if it's left alone — this
+      // is what was previously making guest sign-out look like it did
+      // nothing. Best-effort, same as the registered-account logout
+      // call below: proceed with the local reset regardless of
+      // whether this succeeds.
+      await endGuestSessionOnServer().catch(() => {});
       disconnectAllContexts();
       resetProfile();
       resetChat();

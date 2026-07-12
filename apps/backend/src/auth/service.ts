@@ -723,6 +723,77 @@ export interface DeviceSessionInfo {
 }
 
 /**
+ * Ends a guest's session on THIS device right now, on manual sign-out
+ * — not waiting for either its natural 30-minute expiry or the
+ * once-a-minute sweep to notice.
+ *
+ * This closes a real gap: a registered account's sign-out revokes its
+ * session row via revokeSession, but a guest has no sessionToken to
+ * revoke with in the first place (see SettingsView's signOut, which
+ * takes an entirely separate no-token branch for guests) — so before
+ * this function existed, choosing "Sign out" as a guest cleared local
+ * state only. The server-side session row was left "active" and
+ * un-revoked for the rest of its real 30-minute TTL, so the very next
+ * device-recognition check (on the next popup open, which the client
+ * runs unconditionally) would find that still-valid row and silently
+ * resume the very identity the person had just tried to leave —
+ * sign-out appearing to do nothing.
+ *
+ * Deliberately mirrors sweepExpiredSessions' guest cleanup exactly
+ * (delete the session row, cascade-delete that username's
+ * community_activity) rather than merely marking revoked=true — a
+ * manually-ended guest session and a naturally-expired one are the
+ * same lifecycle event from one minute earlier, not two different
+ * ones, and the project's own stated principle is that ending a guest
+ * session "by choice or by the 30-minute timeout" should behave
+ * identically.
+ *
+ * Scoped to deviceId only (no guestUsername check) since a device is
+ * only ever supposed to hold one active session at a time — the same
+ * invariant registerGuestSession/registerAccount/pollLoginRequest all
+ * enforce — so "the active guest session on this device" is
+ * unambiguous without needing the caller to prove which username it
+ * expects.
+ */
+export async function endGuestSessionNow(deviceId: string): Promise<void> {
+  if (!deviceId) return;
+
+  const guestRows = await db
+    .select({ guestUsername: schema.sessions.guestUsername })
+    .from(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.deviceId, deviceId),
+        eq(schema.sessions.sessionType, "guest"),
+        eq(schema.sessions.status, "active")
+      )
+    );
+
+  const guestUsernames = guestRows
+    .map((row) => row.guestUsername)
+    .filter((username): username is string => !!username);
+
+  for (const guestUsername of guestUsernames) {
+    await db
+      .delete(schema.communityActivity)
+      .where(eq(schema.communityActivity.username, guestUsername))
+      .catch((error) => {
+        console.error("[tabcom] guest activity cleanup failed:", guestUsername, error);
+      });
+  }
+
+  await db
+    .delete(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.deviceId, deviceId),
+        eq(schema.sessions.sessionType, "guest"),
+        eq(schema.sessions.status, "active")
+      )
+    );
+}
+
+/**
  * The core of "device recognition" — given a deviceId, is there an
  * active, non-expired session for it? Used on app startup so a
  * returning device doesn't have to repeat onboarding.

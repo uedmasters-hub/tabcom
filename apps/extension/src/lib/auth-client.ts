@@ -250,6 +250,26 @@ export async function registerGuestSession(guestUsername: string): Promise<void>
   });
 }
 
+/** Ends this device's guest session server-side right now — call from
+ *  every place a guest session ends (manual sign-out, natural
+ *  30-minute expiry) so device recognition can't resurrect it on the
+ *  next popup open. Best-effort like logout(): a failed call here
+ *  isn't a reason to block the local reset the caller is about to do
+ *  regardless.
+ *
+ *  Named endGuestSessionOnServer (not endGuestSession) specifically so
+ *  it can be imported alongside profile.store's own endGuestSession
+ *  action — a same-name local reset — without a collision; the two
+ *  are meant to be called together, one right after the other. */
+export async function endGuestSessionOnServer(): Promise<void> {
+  const deviceId = await getDeviceId();
+  await authFetch("/session/end-guest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId }),
+  });
+}
+
 export type DeviceRecognition =
   | { ok: true; session: { sessionType: "registered" | "guest"; expiresAt: string; guestUsername?: string } | null }
   | { ok: false; reason: "unreachable" | "server_error" };

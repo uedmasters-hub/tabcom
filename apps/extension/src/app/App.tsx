@@ -11,7 +11,7 @@ import { useAppStore } from "../stores/app.store";
 import { useChatStore } from "../stores/chat.store";
 import { useProfileStore } from "../stores/profile.store";
 import { disconnectAllContexts } from "../lib/realtime";
-import { recognizeDevice } from "../lib/auth-client";
+import { recognizeDevice, endGuestSessionOnServer } from "../lib/auth-client";
 
 export default function App() {
   const screen = useAppStore((state) => state.screen);
@@ -46,6 +46,11 @@ export default function App() {
     if (isComplete) {
       if (isGuestSessionExpired()) {
         endGuestSession();
+        // Best-effort — see endGuestSessionOnServer's doc comment.
+        // Closes the up-to-60s window between local expiry and the
+        // server's own periodic sweep, during which device
+        // recognition could otherwise still resume this same guest.
+        void endGuestSessionOnServer().catch(() => {});
         resetChat();
         // disconnectAllContexts (not bare disconnectRealtime) — see its
         // doc comment. This is what makes background's separate

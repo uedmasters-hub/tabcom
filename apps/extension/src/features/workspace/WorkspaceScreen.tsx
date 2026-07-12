@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
 import AppShell from "../../components/layout/AppShell";
-import { fetchMe } from "../../lib/auth-client";
+import { fetchMe, endGuestSessionOnServer } from "../../lib/auth-client";
 import { loadSettingsFromServer } from "../../lib/settings-sync";
 import { disconnectAllContexts, initRealtime } from "../../lib/realtime";
 import { useAppStore } from "../../stores/app.store";
@@ -77,6 +77,7 @@ export default function WorkspaceScreen() {
     const checkExpiry = () => {
       if (isGuestSessionExpired()) {
         endGuestSession();
+        void endGuestSessionOnServer().catch(() => {});
         resetChat();
         disconnectAllContexts();
         setScreen("guest-expired");

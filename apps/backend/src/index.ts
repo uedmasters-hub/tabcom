@@ -14,6 +14,7 @@ import {
   pollLoginRequest,
   registerAccount,
   registerGuestSession,
+  endGuestSessionNow,
   requestMagicLink,
   revokeSession,
   saveUserSettings,
@@ -373,6 +374,33 @@ const httpServer = createServer((req, res) => {
       })
       .catch((error) => {
         console.error("[tabcom] register-guest-session failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  // Manual guest sign-out — see endGuestSessionNow's doc comment for
+  // why this exists as its own endpoint rather than reusing
+  // /auth/logout: guests have no sessionToken to revoke with, so
+  // without this, ending a guest session client-side only left the
+  // server-side row (and therefore device recognition) still live for
+  // the rest of its 30-minute TTL.
+  if (req.method === "POST" && url.pathname === "/session/end-guest") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const deviceId = String(body.deviceId ?? "");
+        if (!deviceId) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, reason: "missing_fields" }));
+          return;
+        }
+        await endGuestSessionNow(deviceId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      })
+      .catch((error) => {
+        console.error("[tabcom] end-guest-session failed:", error);
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, reason: "server_error" }));
       });
