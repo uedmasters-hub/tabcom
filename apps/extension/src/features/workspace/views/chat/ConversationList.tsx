@@ -1,6 +1,6 @@
 import { Inbox as InboxIcon } from "lucide-react";
 
-import { Avatar, EmptyState } from "../../../../components/ui";
+import { Avatar, CommunityAvatar, EmptyState } from "../../../../components/ui";
 import { useChatStore } from "../../../../stores/chat.store";
 import { formatRelativeTime } from "../../../../utils/time";
 
@@ -49,9 +49,12 @@ export default function ConversationList() {
               className="flex w-full items-center gap-3 border-b border-slate-100 px-6 py-4 text-left transition hover:bg-slate-50"
             >
               {community ? (
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-900 font-bold text-white">
-                  {community.name.charAt(0).toUpperCase()}
-                </span>
+                <CommunityAvatar
+                  name={community.name}
+                  imageVersion={community.imageVersion}
+                  communityId={community.id}
+                  size="md"
+                />
               ) : (
                 <Avatar
                   name={contact!.name}

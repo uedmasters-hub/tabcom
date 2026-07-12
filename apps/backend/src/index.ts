@@ -1,7 +1,6 @@
 import "dotenv/config";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
-import { dirname } from "node:path";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 
@@ -9,16 +8,23 @@ import {
   claimUsername,
   checkUsernameAvailable,
   deleteAccount,
+  findActiveSessionForDevice,
+  getUserSettings,
   isUsernameRegistered,
   pollLoginRequest,
   registerAccount,
+  registerGuestSession,
   requestMagicLink,
   revokeSession,
+  saveUserSettings,
   sendVerificationEmail,
+  sweepExpiredSessions,
   validateSession,
   verifyMagicLink,
 } from "./auth/service";
 import { checkInvite, listInvites } from "./auth/invites";
+import { db, schema } from "./db/client";
+import { and, desc, eq, inArray } from "drizzle-orm";
 
 /**
  * Tabcom realtime server — privacy-first relay with consent-based contact.
@@ -166,7 +172,9 @@ const httpServer = createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/auth/poll") {
     const pollId = url.searchParams.get("pollId") ?? "";
-    void pollLoginRequest(pollId)
+    const deviceId = url.searchParams.get("deviceId") ?? undefined;
+    const browserInfo = url.searchParams.get("browserInfo") ?? undefined;
+    void pollLoginRequest(pollId, deviceId, browserInfo)
       .then((result) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
@@ -229,7 +237,9 @@ const httpServer = createServer((req, res) => {
           String(body.username ?? ""),
           String(body.displayName ?? ""),
           String(body.avatarColor ?? "#2563EB"),
-          String(body.inviteCode ?? "")
+          String(body.inviteCode ?? ""),
+          typeof body.deviceId === "string" ? body.deviceId : undefined,
+          typeof body.browserInfo === "string" ? body.browserInfo : undefined
         );
         res.writeHead(result.ok ? 200 : 409, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
@@ -335,6 +345,181 @@ const httpServer = createServer((req, res) => {
       })
       .catch((error) => {
         console.error("[tabcom:auth] delete-account failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  // ---- Session management (Phase 1): device recognition + guest tracking --
+
+  if (req.method === "POST" && url.pathname === "/session/register-guest") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const guestUsername = String(body.guestUsername ?? "");
+        const deviceId = String(body.deviceId ?? "");
+        if (!guestUsername || !deviceId) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, reason: "missing_fields" }));
+          return;
+        }
+        await registerGuestSession({
+          guestUsername,
+          deviceId,
+          browserInfo: typeof body.browserInfo === "string" ? body.browserInfo : undefined,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      })
+      .catch((error) => {
+        console.error("[tabcom] register-guest-session failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  // Device recognition — "is there an active session for this device?"
+  // checked once on app startup. Never returns a bearer token (see the
+  // doc comment on findActiveSessionForDevice for why) — the client's
+  // own locally-stored sessionToken is still what actually
+  // authenticates every request; this just tells it whether to trust
+  // that local state or fall back to onboarding.
+  if (req.method === "GET" && url.pathname === "/session/recognize") {
+    const deviceId = url.searchParams.get("deviceId") ?? "";
+    void findActiveSessionForDevice(deviceId)
+      .then((session) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, session }));
+      })
+      .catch((error) => {
+        console.error("[tabcom] session recognize failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  // ---- Phase 2: registered-user settings/preferences persistence ---------
+  // Guests never hit these — they have no sessionToken, and their
+  // settings stay local-only, ephemeral like the rest of their identity.
+
+  if (req.method === "GET" && url.pathname === "/settings") {
+    const sessionToken = url.searchParams.get("sessionToken") ?? "";
+    void getUserSettings(sessionToken)
+      .then((result) => {
+        res.writeHead(result.ok ? 200 : 401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom] get-settings failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/settings") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await saveUserSettings(
+          String(body.sessionToken ?? ""),
+          body.settings ?? {}
+        );
+        res.writeHead(result.ok ? 200 : 401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom] save-settings failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  // Community logo/avatar, uploaded via the community_set_image socket
+  // event (see above) and served back over plain HTTP here so it can
+  // be used directly as an <img src>. No session-token auth on this
+  // GET — a community's id is an unguessable random UUID, and adding
+  // real per-request membership checks here would mean every <img> tag
+  // needs a way to attach a bearer token, which plain <img src> can't
+  // do. This is the same "unlisted by URL" trade-off most avatar/asset
+  // URLs make; the upload path (community_set_image) is fully
+  // authenticated and admin-gated regardless.
+  if (req.method === "GET" && url.pathname.startsWith("/community-image/")) {
+    const communityId = url.pathname.slice("/community-image/".length);
+    void db
+      .select()
+      .from(schema.communityImages)
+      .where(eq(schema.communityImages.communityId, communityId))
+      .limit(1)
+      .then(([row]) => {
+        if (!row) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": row.mimeType,
+          // Safe to cache aggressively — the client busts this via
+          // ?v=<imageVersion> whenever the image actually changes.
+          "Cache-Control": "public, max-age=31536000, immutable",
+        });
+        res.end(Buffer.from(row.data, "base64"));
+      })
+      .catch((error) => {
+        console.error("[tabcom] community image fetch failed:", error);
+        res.writeHead(500);
+        res.end();
+      });
+    return;
+  }
+
+  // Per-user activity report — membership + board (tabs/pins/areas)
+  // events only, exported as CSV. Deliberately requires a real session
+  // (not available to guests, who have no durable identity to attach
+  // a downloadable report to) — see communityActivity's schema comment
+  // for why message content is never in scope for this at all.
+  if (req.method === "GET" && url.pathname === "/activity-report") {
+    void validateSession(url.searchParams.get("sessionToken") ?? "")
+      .then(async (authedUser) => {
+        if (!authedUser?.username) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, reason: "invalid_session" }));
+          return;
+        }
+
+        const rows = await db
+          .select()
+          .from(schema.communityActivity)
+          .where(eq(schema.communityActivity.username, authedUser.username))
+          .orderBy(desc(schema.communityActivity.createdAt));
+
+        const escapeCsv = (value: string) =>
+          /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+
+        const header = "date,community,action,detail\n";
+        const body = rows
+          .map((row) =>
+            [
+              row.createdAt.toISOString(),
+              row.communityName,
+              row.action,
+              row.detail ?? "",
+            ]
+              .map((field) => escapeCsv(String(field)))
+              .join(",")
+          )
+          .join("\n");
+
+        res.writeHead(200, {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="tabcom-activity-${authedUser.username}.csv"`,
+        });
+        res.end(header + body);
+      })
+      .catch((error) => {
+        console.error("[tabcom] activity report export failed:", error);
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, reason: "server_error" }));
       });
@@ -501,6 +686,11 @@ interface Community {
    *  unlike chat messages. Cleared explicitly via board_clear. */
   board: Map<string, BoardItem>;
   boardDecidedId?: string;
+  /** Bumped on every community_set_image — the client appends this to
+   *  the image URL as a cache-busting query param, since the URL
+   *  itself (/community-image/:id) doesn't change when the image is
+   *  replaced and browsers would otherwise keep showing the old one. */
+  imageVersion?: number;
 }
 
 const communities = new Map<string, Community>();
@@ -587,9 +777,19 @@ function serializeCommunity(c: Community, forUsername?: string) {
       .sort((a, b) => b.votes.size - a.votes.size || b.addedAt - a.addedAt)
       .map(serializeBoardItem),
     boardDecidedId: c.boardDecidedId,
+    imageVersion: c.imageVersion,
   };
 }
 const pairs = new Map<string, Pair>(); // pairKey -> connection state
+
+/**
+ * socket.id -> the guest identity's stable instance id (see
+ * ensureUniqueGuestUsername below). NOT part of the `users` map or the
+ * WireUser type on purpose: this is a server-side-only disambiguation
+ * signal, never broadcast to anyone. Ephemeral like `users` itself —
+ * cleaned up on disconnect, never persisted.
+ */
+const guestInstanceIds = new Map<string, string>();
 const blocks = new Set<string>(); // "blocker|blocked"
 const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked, messages still flow
 
@@ -599,8 +799,19 @@ const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked,
 // change — with purely in-memory state, every patch applied wiped all
 // communities, connections, and boards, making features appear broken
 // when they were merely orphaned. Relationship state (communities incl.
-// boards/pins/highlights, connections, blocks, presence masks) now
-// snapshots to disk and reloads on boot.
+// boards/pins/highlights, connections, blocks, presence masks) snapshots
+// to Postgres (Neon) and reloads on boot.
+//
+// THIS WAS PREVIOUSLY A LOCAL JSON FILE (data/tabcom-state.json), which
+// is durable under `tsx watch` (same disk survives that kind of
+// restart) but NOT durable on Render: a spin-down/spin-up cycle (free
+// tier idles after ~15 min) or any redeploy starts a brand-new
+// container with a wiped filesystem, silently resetting the file to
+// nonexistent — every community, tab, pin, and area was gone on the
+// next request, looking exactly like "a community got automatically
+// deleted." Postgres is the durable store this project already has;
+// moving the exact same snapshot into one JSONB row fixes this with no
+// change to the in-memory model or the save/load cadence.
 //
 // Deliberately NOT persisted, by design:
 //   - chat messages (zero-retention privacy guarantee)
@@ -609,89 +820,138 @@ const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked,
 //
 // TABCOM_EPHEMERAL=1 disables persistence entirely (used by tests).
 
-const STATE_FILE = process.env.TABCOM_STATE_FILE ?? "data/tabcom-state.json";
 const EPHEMERAL = process.env.TABCOM_EPHEMERAL === "1";
+const BOARD_STATE_KEY = "singleton";
+// Legacy path from the old file-based mechanism — read ONCE on boot as
+// a rescue import (whatever's still sitting on THIS instance's disk,
+// if this hasn't already been wiped by a prior restart) so nothing
+// still-recoverable gets thrown away on the cutover to Postgres. Never
+// written to again after that.
+const LEGACY_STATE_FILE = process.env.TABCOM_STATE_FILE ?? "data/tabcom-state.json";
 
-function saveState(): void {
+function buildSnapshot() {
+  return {
+    version: 1,
+    communities: [...communities.values()].map((c) => ({
+      id: c.id,
+      name: c.name,
+      admin: c.admin,
+      members: [...c.members],
+      memberInfo: [...c.memberInfo.entries()],
+      invites: [...c.invites.entries()],
+      board: [...c.board.values()].map((item) => ({
+        ...item,
+        votes: [...item.votes],
+      })),
+      boardDecidedId: c.boardDecidedId,
+      imageVersion: c.imageVersion,
+    })),
+    pairs: [...pairs.entries()],
+    blocks: [...blocks],
+    presenceHidden: [...presenceHidden],
+  };
+}
+
+async function saveState(): Promise<void> {
   if (EPHEMERAL) return;
   try {
-    const snapshot = {
-      version: 1,
-      communities: [...communities.values()].map((c) => ({
-        id: c.id,
-        name: c.name,
-        admin: c.admin,
-        members: [...c.members],
-        memberInfo: [...c.memberInfo.entries()],
-        invites: [...c.invites.entries()],
-        board: [...c.board.values()].map((item) => ({
-          ...item,
-          votes: [...item.votes],
-        })),
-        boardDecidedId: c.boardDecidedId,
-      })),
-      pairs: [...pairs.entries()],
-      blocks: [...blocks],
-      presenceHidden: [...presenceHidden],
-    };
-    mkdirSync(dirname(STATE_FILE), { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(snapshot));
+    await db
+      .insert(schema.boardState)
+      .values({ key: BOARD_STATE_KEY, data: buildSnapshot(), updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: schema.boardState.key,
+        set: { data: buildSnapshot(), updatedAt: new Date() },
+      });
   } catch (error) {
     console.error("[tabcom] state save failed:", error);
   }
 }
 
-function loadState(): void {
-  if (EPHEMERAL || !existsSync(STATE_FILE)) return;
+function applySnapshot(snapshot: {
+  communities?: unknown[];
+  pairs?: [string, Pair][];
+  blocks?: string[];
+  presenceHidden?: string[];
+}) {
+  for (const c of (snapshot.communities ?? []) as Array<Record<string, unknown>>) {
+    communities.set(c.id as string, {
+      id: c.id,
+      name: c.name,
+      admin: c.admin,
+      members: new Set(c.members as string[]),
+      memberInfo: new Map(c.memberInfo as [string, unknown][]),
+      invites: new Map(c.invites as [string, unknown][]),
+      board: new Map(
+        ((c.board ?? []) as Record<string, unknown>[]).map((item) => [
+          item.id,
+          {
+            ...item,
+            comments: item.comments ?? [],
+            // Pins/highlights created before comment threads existed
+            // are missing this field entirely in the persisted data —
+            // backfill it here rather than crash the client trying to
+            // read .comments.length on old data.
+            pins: ((item.pins as Record<string, unknown>[]) ?? []).map((pin) => ({
+              ...pin,
+              comments: pin.comments ?? [],
+            })),
+            highlights: ((item.highlights as Record<string, unknown>[]) ?? []).map(
+              (highlight) => ({
+                ...highlight,
+                comments: highlight.comments ?? [],
+              })
+            ),
+            areas: ((item.areas as Record<string, unknown>[]) ?? []).map((area) => ({
+              ...area,
+              comments: area.comments ?? [],
+            })),
+            votes: new Set(item.votes as string[]),
+          },
+        ])
+      ),
+      boardDecidedId: c.boardDecidedId,
+      imageVersion: c.imageVersion as number | undefined,
+    } as Community);
+  }
+  for (const [key, value] of snapshot.pairs ?? []) pairs.set(key, value);
+  for (const key of snapshot.blocks ?? []) blocks.add(key);
+  for (const key of snapshot.presenceHidden ?? []) presenceHidden.add(key);
+}
+
+async function loadState(): Promise<void> {
+  if (EPHEMERAL) return;
   try {
-    const snapshot = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    const rows = await db
+      .select()
+      .from(schema.boardState)
+      .where(eq(schema.boardState.key, BOARD_STATE_KEY))
+      .limit(1);
 
-    for (const c of snapshot.communities ?? []) {
-      communities.set(c.id, {
-        id: c.id,
-        name: c.name,
-        admin: c.admin,
-        members: new Set(c.members),
-        memberInfo: new Map(c.memberInfo),
-        invites: new Map(c.invites),
-        board: new Map(
-          (c.board ?? []).map((item: Record<string, unknown>) => [
-            item.id,
-            {
-              ...item,
-              comments: item.comments ?? [],
-              // Pins/highlights created before comment threads existed
-              // are missing this field entirely in the persisted file —
-              // backfill it here rather than crash the client trying to
-              // read .comments.length on old data.
-              pins: ((item.pins as Record<string, unknown>[]) ?? []).map((pin) => ({
-                ...pin,
-                comments: pin.comments ?? [],
-              })),
-              highlights: ((item.highlights as Record<string, unknown>[]) ?? []).map(
-                (highlight) => ({
-                  ...highlight,
-                  comments: highlight.comments ?? [],
-                })
-              ),
-              areas: ((item.areas as Record<string, unknown>[]) ?? []).map((area) => ({
-                ...area,
-                comments: area.comments ?? [],
-              })),
-              votes: new Set(item.votes as string[]),
-            },
-          ])
-        ),
-        boardDecidedId: c.boardDecidedId,
-      } as Community);
+    if (rows[0]) {
+      applySnapshot(rows[0].data as Parameters<typeof applySnapshot>[0]);
+      console.log(
+        `[tabcom] durable state restored from Postgres: ${communities.size} communities, ${pairs.size} connections`
+      );
+      return;
     }
-    for (const [key, value] of snapshot.pairs ?? []) pairs.set(key, value);
-    for (const key of snapshot.blocks ?? []) blocks.add(key);
-    for (const key of snapshot.presenceHidden ?? []) presenceHidden.add(key);
 
-    console.log(
-      `[tabcom] durable state restored: ${communities.size} communities, ${pairs.size} connections`
-    );
+    // Nothing in Postgres yet — this is either a genuinely fresh
+    // server, or this is the FIRST boot after upgrading to this
+    // Postgres-backed version. In the latter case, THIS instance's
+    // local disk may still hold the old file from before the cutover
+    // (if it hasn't already been wiped by an earlier restart) — a
+    // one-time rescue import so the upgrade itself doesn't cause the
+    // exact data loss it's meant to fix.
+    if (existsSync(LEGACY_STATE_FILE)) {
+      const legacy = JSON.parse(readFileSync(LEGACY_STATE_FILE, "utf8"));
+      applySnapshot(legacy);
+      console.log(
+        `[tabcom] rescued legacy file-based state into Postgres: ${communities.size} communities, ${pairs.size} connections`
+      );
+      await saveState(); // commit the rescued data before anything can wipe the file again
+    } else {
+      console.log("[tabcom] durable state: nothing in Postgres and no legacy file — starting fresh");
+    }
   } catch (error) {
     console.error("[tabcom] state load failed (starting fresh):", error);
   }
@@ -699,15 +959,100 @@ function loadState(): void {
 
 // Snapshot every 2s (small data, unconditional) and on shutdown — no
 // per-mutation bookkeeping to forget in a future handler.
-loadState();
+void loadState();
 if (!EPHEMERAL) {
-  setInterval(saveState, 2000);
+  setInterval(() => void saveState(), 2000);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      saveState();
-      process.exit(0);
+      void saveState().finally(() => process.exit(0));
     });
   }
+}
+
+// Moves sessions whose time has passed from "active" to "expired" —
+// same cadence class as the other periodic housekeeping here. Every
+// 60s is plenty; nothing time-sensitive reads `status` more urgently
+// than that (findActiveSessionForDevice also double-checks expiresAt
+// directly, so a session doesn't briefly look valid in the gap
+// between actually expiring and this sweep catching up to it).
+//
+// Presence enforcement lives here too: a socket staying CONNECTED and
+// a guest's SESSION being EXPIRED are two different facts, and only
+// the second one is what should decide whether that identity shows as
+// "online" anywhere. Without this, a guest's background-script socket
+// (which has no concept of the 30-minute session timer at all —
+// that's tracked client-side, in the popup UI only) would keep
+// reporting them as live indefinitely, which is exactly the "expired
+// session still shows as Live" bug this closes: the database's
+// expiry is now enforced against the actual live connection, not the
+// other way around.
+if (!EPHEMERAL) {
+  setInterval(() => {
+    void sweepExpiredSessions().then(({ expiredGuestUsernames }) => {
+      if (expiredGuestUsernames.length === 0) return;
+      const expired = new Set(expiredGuestUsernames);
+
+      for (const [socketId, user] of users) {
+        if (!expired.has(user.username)) continue;
+        console.log(
+          "[tabcom] disconnecting socket for expired guest session:",
+          user.username
+        );
+        io.sockets.sockets.get(socketId)?.disconnect(true);
+        // The socket's own "disconnect" handler also does this, but
+        // don't wait on that round trip — remove it from the roster
+        // immediately so presence reflects reality the instant the
+        // database says the session is gone, not one event-loop tick
+        // later.
+        users.delete(socketId);
+        guestInstanceIds.delete(socketId);
+      }
+      broadcastRoster();
+    });
+  }, 60_000);
+}
+
+// ---- Per-user activity log (membership + board only, never messages) -----
+
+type ActivityAction =
+  | "community_created"
+  | "joined"
+  | "left"
+  | "tab_added"
+  | "tab_removed"
+  | "pin_added"
+  | "pin_removed"
+  | "area_added"
+  | "area_removed";
+
+/**
+ * Fire-and-forget by design: a logging failure must never break the
+ * actual feature it's describing (creating a pin still has to work
+ * even if, say, the DB briefly hiccups on the log insert). Errors are
+ * caught and reported, never thrown back into the caller.
+ *
+ * `detail` is intentionally restricted to short, non-sensitive context
+ * (a page title, truncated) — never pin/area text, never message
+ * content. See the schema comment on communityActivity for why.
+ */
+function logActivity(
+  communityId: string,
+  communityName: string,
+  username: string,
+  action: ActivityAction,
+  detail?: string
+): void {
+  db.insert(schema.communityActivity)
+    .values({
+      communityId,
+      communityName,
+      username,
+      action,
+      detail: detail ? detail.slice(0, 200) : null,
+    })
+    .catch((error) => {
+      console.error("[tabcom] activity log insert failed:", error);
+    });
 }
 
 function sanitizeVisibility(value: unknown): Visibility {
@@ -836,18 +1181,35 @@ io.on("connection", (socket) => {
  * on the same generated/typed name became indistinguishable to every
  * part of the system that keys by username string — same roster
  * entry, same community membership, same DM delivery target.
+ *
+ * myGuestInstanceId disambiguates the OPPOSITE case: one browser
+ * legitimately holds several simultaneous connections under the same
+ * guest identity (the panel, the background relay, the pip window),
+ * each a genuinely different socket. Without this, connection #2 and
+ * #3 collided against connection #1's already-claimed name every
+ * time, fragmenting one guest into two or three different suffixed
+ * usernames that show up as separate strangers in Discover — this was
+ * the actual mechanism behind that bug, not a display issue.
  */
 async function ensureUniqueGuestUsername(
   candidate: string,
-  mySocketId: string
+  mySocketId: string,
+  myGuestInstanceId?: string
 ): Promise<string> {
   let attempt = candidate;
 
   for (let i = 0; i < 6; i++) {
     const takenByAccount = await isUsernameRegistered(attempt);
-    const takenByOtherSocket = [...users.entries()].some(
-      ([id, user]) => id !== mySocketId && user.username === attempt
-    );
+    const takenByOtherSocket = [...users.entries()].some(([id, user]) => {
+      if (id === mySocketId) return false;
+      if (user.username !== attempt) return false;
+      // Same username, different socket — only a REAL collision if
+      // it's not just another connection of this same guest identity.
+      if (myGuestInstanceId && guestInstanceIds.get(id) === myGuestInstanceId) {
+        return false;
+      }
+      return true;
+    });
 
     if (!takenByAccount && !takenByOtherSocket) return attempt;
 
@@ -862,7 +1224,10 @@ async function ensureUniqueGuestUsername(
 
   socket.on(
     "hello",
-    (raw: Partial<WireUser>, ack?: (response: { username: string }) => void) => {
+    (
+      raw: Partial<WireUser> & { guestInstanceId?: string },
+      ack?: (response: { username: string }) => void
+    ) => {
       void (sessionToken ? validateSession(sessionToken) : Promise.resolve(null)).then(
       async (authedUser) => {
         // Re-checked on every "hello", not cached once at connection
@@ -889,7 +1254,15 @@ async function ensureUniqueGuestUsername(
         // and the pre-auth demo/dev fallback — ever needs this, since
         // it used to trust the client's self-reported name completely.
         if (!authedUsername) {
-          claimedUsername = await ensureUniqueGuestUsername(claimedUsername, socket.id);
+          const guestInstanceId = raw?.guestInstanceId
+            ? String(raw.guestInstanceId).slice(0, 64)
+            : undefined;
+          if (guestInstanceId) guestInstanceIds.set(socket.id, guestInstanceId);
+          claimedUsername = await ensureUniqueGuestUsername(
+            claimedUsername,
+            socket.id,
+            guestInstanceId
+          );
         }
 
         const user: WireUser = {
@@ -1042,6 +1415,188 @@ async function ensureUniqueGuestUsername(
     }
   );
 
+  // Mirror of connect_response's "deny" branch, but triggered by the
+  // ORIGINAL REQUESTER withdrawing their own still-pending request
+  // (the "Revoke" action) rather than the recipient declining it.
+  socket.on("connect_cancel", ({ to }: { to: string }) => {
+    const me = users.get(socket.id);
+    if (!me || !to) return;
+
+    const key = pairKey(me.username, to);
+    const pair = pairs.get(key);
+
+    // Only the person who SENT the still-pending request may cancel
+    // it — same "only the right side of this pair may act" guard
+    // connect_response uses, just checking the opposite party.
+    if (!pair || pair.status !== "pending" || pair.requester !== me.username) return;
+
+    pairs.delete(key);
+    notify(me.username, "connect_update", { username: to, status: "none" });
+    notify(to, "connect_update", { username: me.username, status: "none" });
+  });
+
+  // Extends Phase 2 (registered-user persistence) to contacts. The
+  // `pairs` map is already durable (see boardState's snapshot — pairs
+  // ride along with it), so an accepted connection surviving a restart
+  // was never the gap; the gap was that a FRESH client (new device, or
+  // this one after a reinstall) had no way to ask for that history at
+  // all — its local `contacts` array started empty and only ever grew
+  // from live roster/DM activity, silently losing every OFFLINE
+  // contact the moment local storage did.
+  //
+  // Only returns connections to REGISTERED accounts, deliberately — a
+  // guest contact's username is inherently a dead end once that guest
+  // session has ended (a new guest session picks a fresh, unrelated
+  // username), so "restoring" one would just repopulate the contact
+  // list with people who can never be reached again. A registered
+  // account's username is permanent, so restoring those is genuinely
+  // useful.
+  socket.on(
+    "get_my_connections",
+    async (_: unknown, ack?: (response: { connections: Array<{ username: string; displayName: string | null; avatarColor: string | null }> }) => void) => {
+      const me = users.get(socket.id);
+      if (!me || !ack) return;
+
+      const connectedUsernames = [...pairs.entries()]
+        .filter(([key, pair]) => pair.status === "accepted" && key.split("|").includes(me.username))
+        .map(([key]) => key.split("|").find((u) => u !== me.username)!)
+        .filter(Boolean);
+
+      if (connectedUsernames.length === 0) {
+        ack({ connections: [] });
+        return;
+      }
+
+      try {
+        const rows = await db
+          .select({
+            username: schema.users.username,
+            displayName: schema.users.displayName,
+            avatarColor: schema.users.avatarColor,
+          })
+          .from(schema.users)
+          .where(inArray(schema.users.username, connectedUsernames));
+
+        ack({
+          connections: rows
+            .filter((r) => r.username)
+            .map((r) => ({
+              username: r.username!,
+              displayName: r.displayName,
+              avatarColor: r.avatarColor,
+            })),
+        });
+      } catch (error) {
+        console.error("[tabcom] get_my_connections failed:", error);
+        ack({ connections: [] });
+      }
+    }
+  );
+
+  /**
+   * "Clear history" — resets this user's own activity while keeping
+   * their identity, session, contacts, and community memberships
+   * completely untouched. Works for both registered accounts AND
+   * guests — a guest session already resets everything automatically
+   * after 30 minutes, but there's no real reason to force someone to
+   * wait that long if they want a clean slate for the REST of an
+   * otherwise still-active session.
+   *
+   * The board-content cleanup below only ever removes THIS user's own
+   * pins/areas/votes, and only removes a TAB they added if nobody
+   * else has since contributed anything to it — pins/tabs/areas are
+   * shared community objects other members may be actively relying
+   * on, and this project has already paid for the mistake of treating
+   * per-user cleanup as "delete the shared thing" once before (see the
+   * guest cascading-cleanup comment on sweepExpiredSessions). Deleting
+   * someone else's contribution because IT happened to live on a tab
+   * this user added would be that same mistake again.
+   *
+   * The board mutation is applied in-memory and durably persisted via
+   * the same board_state snapshot every other board write already
+   * uses — it is NOT part of the SQL transaction below, because that
+   * data was never in a relational table to begin with; wrapping only
+   * the two genuinely relational deletes (activity log, settings) in
+   * a real transaction is the honest scope of "transactional" this
+   * architecture actually supports.
+   */
+  socket.on(
+    "clear_my_history",
+    async (_: unknown, ack?: (response: { ok: boolean; reason?: string }) => void) => {
+      const me = users.get(socket.id);
+      if (!me || !ack) return;
+
+      // Only registered accounts have a users-table row (and
+      // therefore a user_settings row to clear) — guests legitimately
+      // have neither, which is fine, not an error condition.
+      const [registeredUser] = await db
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(eq(schema.users.username, me.username))
+        .limit(1)
+        .catch(() => [] as { id: string }[]);
+
+      // ---- In-memory board cleanup: only this user's own contributions ----
+      for (const community of communities.values()) {
+        if (!community.members.has(me.username)) continue;
+        let touched = false;
+
+        for (const item of community.board.values()) {
+          const beforePins = item.pins.length;
+          const beforeAreas = item.areas.length;
+          item.pins = item.pins.filter((p) => p.author !== me.username);
+          item.areas = item.areas.filter((a) => a.author !== me.username);
+          if (item.pins.length !== beforePins || item.areas.length !== beforeAreas) touched = true;
+          if (item.votes.delete(me.username)) touched = true;
+        }
+
+        // A tab this user added is only removed if NO ONE ELSE has
+        // contributed anything to it since — otherwise it stays, with
+        // just this user's own pieces of it already stripped above.
+        for (const [itemId, item] of [...community.board.entries()]) {
+          if (item.addedBy !== me.username) continue;
+          const hasOthersContent =
+            item.pins.some((p) => p.author !== me.username) ||
+            item.areas.some((a) => a.author !== me.username) ||
+            item.highlights.some((h) => h.author !== me.username) ||
+            item.comments.some((c) => c.author !== me.username) ||
+            item.votes.size > 0;
+          if (!hasOthersContent) {
+            community.board.delete(itemId);
+            if (community.boardDecidedId === itemId) community.boardDecidedId = undefined;
+            touched = true;
+          }
+        }
+
+        if (touched) {
+          for (const member of community.members) {
+            notify(member, "community_update", {
+              community: serializeCommunity(community, member),
+            });
+          }
+        }
+      }
+
+      // ---- Durable cleanup: activity log + settings ----
+      try {
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(schema.communityActivity)
+            .where(eq(schema.communityActivity.username, me.username));
+          if (registeredUser) {
+            await tx
+              .delete(schema.userSettings)
+              .where(eq(schema.userSettings.userId, registeredUser.id));
+          }
+        });
+        ack({ ok: true });
+      } catch (error) {
+        console.error("[tabcom] clear-history failed:", error);
+        ack({ ok: false, reason: "server_error" });
+      }
+    }
+  );
+
   socket.on("block", ({ username }: { username: string }) => {
     const me = users.get(socket.id);
     if (!me || !username) return;
@@ -1082,25 +1637,33 @@ async function ensureUniqueGuestUsername(
 
   // ---- Communities (consent-gated membership) ---------------------------
 
-  socket.on("community_create", ({ name }: { name: string }) => {
-    const me = users.get(socket.id);
-    if (!me || !name?.trim()) return;
-    if (me.visibility === "private") return;
+  socket.on(
+    "community_create",
+    ({ name }: { name: string }, ack?: (response: { communityId: string }) => void) => {
+      const me = users.get(socket.id);
+      if (!me || !name?.trim()) return;
+      if (me.visibility === "private") return;
 
-    const community: Community = {
-      id: crypto.randomUUID(),
-      name: String(name).trim().slice(0, 40),
-      admin: me.username,
-      members: new Set([me.username]),
-      memberInfo: new Map([[me.username, { name: me.name, color: me.color }]]),
-      invites: new Map(),
-      board: new Map(),
-    };
-    communities.set(community.id, community);
-    notify(me.username, "community_update", {
-      community: serializeCommunity(community, me.username),
-    });
-  });
+      const community: Community = {
+        id: crypto.randomUUID(),
+        name: String(name).trim().slice(0, 40),
+        admin: me.username,
+        members: new Set([me.username]),
+        memberInfo: new Map([[me.username, { name: me.name, color: me.color }]]),
+        invites: new Map(),
+        board: new Map(),
+      };
+      communities.set(community.id, community);
+      logActivity(community.id, community.name, me.username, "community_created");
+      notify(me.username, "community_update", {
+        community: serializeCommunity(community, me.username),
+      });
+      // Lets the client immediately follow up with community_set_image
+      // for the "add a logo while creating" flow, without waiting on
+      // (and having to correlate itself against) the broadcast above.
+      ack?.({ communityId: community.id });
+    }
+  );
 
   socket.on(
     "community_invite",
@@ -1186,6 +1749,7 @@ async function ensureUniqueGuestUsername(
           name: me.name,
           color: me.color,
         });
+        logActivity(community.id, community.name, me.username, "joined");
         for (const member of community.members) {
           notify(member, "community_update", {
             community: serializeCommunity(community, member),
@@ -1216,6 +1780,7 @@ async function ensureUniqueGuestUsername(
     if (!me || !community || !community.members.has(me.username)) return;
 
     community.members.delete(me.username);
+    logActivity(community.id, community.name, me.username, "left");
 
     // Leaving counts toward the 3-strike limit (a revocation).
     const invite = community.invites.get(me.username) ?? {
@@ -1252,6 +1817,7 @@ async function ensureUniqueGuestUsername(
 
       community.members.delete(username);
       community.memberInfo.delete(username);
+      logActivity(community.id, community.name, username, "left");
 
       // A removal counts as a strike, same as declining or leaving —
       // consistent with the existing 3-strike re-invite protection.
@@ -1311,6 +1877,67 @@ async function ensureUniqueGuestUsername(
           community: serializeCommunity(community, member),
         });
       }
+    }
+  );
+
+  // Routed through the socket rather than a REST endpoint on purpose:
+  // REST auth here would need a session token, which guests (a
+  // legitimate kind of community admin in this app) don't have —
+  // sockets already resolve identity uniformly for both. maxHttpBufferSize
+  // is raised (see the Server(...) config below) so a base64-encoded
+  // ~2MB image comfortably fits under socket.io's per-message cap.
+  socket.on(
+    "community_set_image",
+    ({
+      communityId,
+      mimeType,
+      data,
+    }: {
+      communityId: string;
+      mimeType: string;
+      data: string; // base64
+    }) => {
+      const me = users.get(socket.id);
+      const community = communities.get(communityId);
+      if (!me || !community) return;
+      if (community.admin !== me.username) return; // admin only
+
+      const allowedMimeTypes = ["image/png", "image/jpeg", "image/webp"];
+      if (!allowedMimeTypes.includes(mimeType)) return;
+
+      // Reject oversized uploads before writing anything — base64 is
+      // ~4/3 the size of the original bytes, so 2MB of actual image
+      // data is roughly 2.7M base64 characters.
+      const MAX_BASE64_LENGTH = 2_800_000;
+      if (typeof data !== "string" || data.length === 0 || data.length > MAX_BASE64_LENGTH) {
+        notify(me.username, "community_image_error", {
+          communityId,
+          reason: "too_large",
+        });
+        return;
+      }
+
+      db.insert(schema.communityImages)
+        .values({ communityId, mimeType, data, updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: schema.communityImages.communityId,
+          set: { mimeType, data, updatedAt: new Date() },
+        })
+        .then(() => {
+          community.imageVersion = (community.imageVersion ?? 0) + 1;
+          for (const member of community.members) {
+            notify(member, "community_update", {
+              community: serializeCommunity(community, member),
+            });
+          }
+        })
+        .catch((error) => {
+          console.error("[tabcom] community image save failed:", error);
+          notify(me.username, "community_image_error", {
+            communityId,
+            reason: "server_error",
+          });
+        });
     }
   );
 
@@ -1404,6 +2031,7 @@ async function ensureUniqueGuestUsername(
       if (!community.members.has(me.username)) return;
 
       ensureBoardItem(community, me, { url, canonicalKey, title, image, siteName });
+      logActivity(community.id, community.name, me.username, "tab_added", title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -1432,6 +2060,7 @@ async function ensureUniqueGuestUsername(
       if (community.boardDecidedId === itemId) {
         community.boardDecidedId = undefined;
       }
+      logActivity(community.id, community.name, me.username, "tab_removed", item.title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -1620,6 +2249,9 @@ async function ensureUniqueGuestUsername(
             ? Math.max(0, Math.min(100, Number(input.elYPercent) || 0))
             : undefined,
       });
+      // detail is the PAGE title, never the pin's own text — see the
+      // schema comment on communityActivity for why that line matters.
+      logActivity(community.id, community.name, me.username, "pin_added", item.title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -1650,6 +2282,7 @@ async function ensureUniqueGuestUsername(
       if (community.admin !== me.username && pin.author !== me.username) return;
 
       item.pins = item.pins.filter((p) => p.id !== pinId);
+      logActivity(community.id, community.name, me.username, "pin_removed", item.title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -1717,6 +2350,7 @@ async function ensureUniqueGuestUsername(
             : undefined,
         comments: [],
       });
+      logActivity(community.id, community.name, me.username, "area_added", item.title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -1747,6 +2381,7 @@ async function ensureUniqueGuestUsername(
       if (community.admin !== me.username && area.author !== me.username) return;
 
       item.areas = item.areas.filter((a) => a.id !== areaId);
+      logActivity(community.id, community.name, me.username, "area_removed", item.title);
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -2307,6 +2942,7 @@ async function ensureUniqueGuestUsername(
   socket.on("disconnect", () => {
     const user = users.get(socket.id);
     users.delete(socket.id);
+    guestInstanceIds.delete(socket.id);
     if (user) broadcastRoster();
   });
 });

@@ -1,6 +1,7 @@
 import { useChatStore } from "../../../stores/chat.store";
 
 import ChatView from "./chat/ChatView";
+import CommunitySwitcherStrip from "./chat/CommunitySwitcherStrip";
 import ConversationList from "./chat/ConversationList";
 
 export default function InboxView() {
@@ -12,5 +13,10 @@ export default function InboxView() {
     return <ChatView conversationId={activeConversationId} />;
   }
 
-  return <ConversationList />;
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <CommunitySwitcherStrip />
+      <ConversationList />
+    </div>
+  );
 }

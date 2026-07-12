@@ -2,7 +2,8 @@ import { useEffect } from "react";
 
 import AppShell from "../../components/layout/AppShell";
 import { fetchMe } from "../../lib/auth-client";
-import { disconnectRealtime, initRealtime } from "../../lib/realtime";
+import { loadSettingsFromServer } from "../../lib/settings-sync";
+import { disconnectAllContexts, initRealtime } from "../../lib/realtime";
 import { useAppStore } from "../../stores/app.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useProfileStore } from "../../stores/profile.store";
@@ -31,6 +32,7 @@ const titles = {
 export default function WorkspaceScreen() {
   const tab = useWorkspaceStore((state) => state.tab);
   const ensureSeeded = useChatStore((state) => state.ensureSeeded);
+  const restoreConnections = useChatStore((state) => state.restoreConnections);
 
   // Drilling into a conversation replaces the shell chrome rather than
   // stacking on top of it: the thread's own header (back arrow + name)
@@ -50,6 +52,7 @@ export default function WorkspaceScreen() {
   const photo = useProfileStore((state) => state.photo);
   const myPresence = useProfileStore((state) => state.presence);
   const sessionToken = useProfileStore((state) => state.sessionToken);
+  const guestInstanceId = useProfileStore((state) => state.guestInstanceId);
   const setVerified = useProfileStore((state) => state.setVerified);
   const isGuest = useProfileStore((state) => state.isGuest);
   const isGuestSessionExpired = useProfileStore(
@@ -75,7 +78,7 @@ export default function WorkspaceScreen() {
       if (isGuestSessionExpired()) {
         endGuestSession();
         resetChat();
-        disconnectRealtime();
+        disconnectAllContexts();
         setScreen("guest-expired");
       }
     };
@@ -94,7 +97,18 @@ export default function WorkspaceScreen() {
     void fetchMe(sessionToken).then((result) => {
       if (result.ok) setVerified(result.user.verified);
     });
-  }, [sessionToken, setVerified]);
+    // Phase 2 of session management: restore settings/preferences
+    // (visibility, live cursors, animations, floating chat, photo)
+    // from the server on every app open for a registered user —
+    // "restore everything exactly as it was" from any device, not
+    // just whatever this browser's local storage happens to have.
+    void loadSettingsFromServer(sessionToken);
+    // Extends the same idea to contacts — merges in accepted
+    // connections the server remembers durably but this client's
+    // local list might have lost (fresh device, or this one after a
+    // reinstall). No-op for any connection already known locally.
+    void restoreConnections();
+  }, [sessionToken, setVerified, restoreConnections]);
 
   useEffect(() => {
     ensureSeeded();
@@ -207,7 +221,8 @@ export default function WorkspaceScreen() {
         onCommunityError: (payload) =>
           useChatStore.getState().receiveCommunityError(payload),
       },
-      sessionToken
+      sessionToken,
+      guestInstanceId
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect once; visibility changes push via updateVisibility
   }, []);

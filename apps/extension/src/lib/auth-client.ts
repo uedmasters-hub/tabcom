@@ -1,3 +1,4 @@
+import { getBrowserInfo, getDeviceId } from "./device-id";
 import { REALTIME_URL } from "./realtime";
 
 /**
@@ -66,7 +67,13 @@ export type PollResult =
   | { status: "unreachable" };
 
 export async function pollLoginRequest(pollId: string): Promise<PollResult> {
-  const result = await authFetch<PollResult>(`/auth/poll?pollId=${encodeURIComponent(pollId)}`);
+  const deviceId = await getDeviceId();
+  const params = new URLSearchParams({
+    pollId,
+    deviceId,
+    browserInfo: getBrowserInfo(),
+  });
+  const result = await authFetch<PollResult>(`/auth/poll?${params.toString()}`);
   if ("reason" in result && result.reason === "unreachable") {
     return { status: "unreachable" };
   }
@@ -143,10 +150,19 @@ export async function registerAccount(
   avatarColor: string,
   inviteCode: string
 ): Promise<RegisterResult> {
+  const deviceId = await getDeviceId();
   return authFetch<RegisterResult>("/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, username, displayName, avatarColor, inviteCode }),
+    body: JSON.stringify({
+      email,
+      username,
+      displayName,
+      avatarColor,
+      inviteCode,
+      deviceId,
+      browserInfo: getBrowserInfo(),
+    }),
   });
 }
 
@@ -219,4 +235,31 @@ export async function deleteAccount(sessionToken: string): Promise<DeleteAccount
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionToken }),
   });
+}
+
+// ---- Session management (Phase 1): device recognition -------------------
+
+/** Records a new guest session server-side — call once, right when a
+ *  guest session starts (see profile.store's startGuestSession). */
+export async function registerGuestSession(guestUsername: string): Promise<void> {
+  const deviceId = await getDeviceId();
+  await authFetch("/session/register-guest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ guestUsername, deviceId, browserInfo: getBrowserInfo() }),
+  });
+}
+
+export type DeviceRecognition =
+  | { ok: true; session: { sessionType: "registered" | "guest"; expiresAt: string; guestUsername?: string } | null }
+  | { ok: false; reason: "unreachable" | "server_error" };
+
+/** Checked once on app startup — "is there an active session for this
+ *  device?" Never returns a bearer token (see the backend's doc
+ *  comment on findActiveSessionForDevice) — this is a hint the
+ *  client's own already-stored local state is still good, not a
+ *  credential in itself. */
+export async function recognizeDevice(): Promise<DeviceRecognition> {
+  const deviceId = await getDeviceId();
+  return authFetch<DeviceRecognition>(`/session/recognize?deviceId=${encodeURIComponent(deviceId)}`);
 }

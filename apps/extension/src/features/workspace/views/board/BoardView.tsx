@@ -45,18 +45,53 @@ import { formatRelativeTime } from "../../../../utils/time";
 
 type Section = "tabs" | "pins" | "areas";
 
-async function sendToActiveTab(message: Record<string, unknown>) {
+/**
+ * Getting a message into the active tab used to be fire-and-forget with
+ * a silent catch — on any tab whose content script wasn't alive (every
+ * tab opened before the extension was installed/reloaded, which during
+ * development is EVERY test tab), "Annotate" did nothing with zero
+ * feedback. Now: ping first; if no live script responds, inject it
+ * programmatically and retry. Returns false only for pages that truly
+ * can't run content scripts (chrome://, the Web Store, PDFs viewer),
+ * so the caller can tell the person instead of failing silently.
+ */
+async function ensureContentScript(tabId: number): Promise<boolean> {
+  try {
+    const pong = await browser.tabs.sendMessage(tabId, { type: "tabcom:ping" });
+    if (pong?.ok) return true;
+  } catch {
+    // no live script in this tab — fall through to injection
+  }
+
+  try {
+    await browser.scripting.executeScript({
+      target: { tabId },
+      files: ["/content-scripts/content.js"],
+    });
+    const pong = await browser.tabs.sendMessage(tabId, { type: "tabcom:ping" });
+    return !!pong?.ok;
+  } catch {
+    return false; // restricted page — injection not allowed here
+  }
+}
+
+async function sendToActiveTab(message: Record<string, unknown>): Promise<boolean> {
   const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  if (!tab?.id) return false;
+
+  if (!(await ensureContentScript(tab.id))) return false;
+
   try {
     await browser.tabs.sendMessage(tab.id, message);
+    return true;
   } catch {
-    // content script not present on this page (e.g. chrome://)
+    return false;
   }
 }
 
 export default function BoardView({ community }: { community: Community }) {
   const [section, setSection] = useState<Section>("tabs");
+  const [annotateNote, setAnnotateNote] = useState<string | null>(null);
   const addCurrentTabToBoard = useChatStore((state) => state.addCurrentTabToBoard);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -71,6 +106,19 @@ export default function BoardView({ community }: { community: Community }) {
     { id: "areas", label: "Areas", count: areaCount },
   ];
 
+  const startAnnotate = async () => {
+    const ok = await sendToActiveTab({
+      type: "tabcom:enter-annotate-mode",
+      communityId: community.id,
+    });
+    if (!ok) {
+      setAnnotateNote(
+        "Can't annotate this page — switch to the tab you want to annotate and try again."
+      );
+      setTimeout(() => setAnnotateNote(null), 5000);
+    }
+  };
+
   // The add action is contextual: adding a page only makes sense from
   // Tabs, while Pins/Areas both funnel into the same unified on-page
   // annotate mode (one click = pin, click-and-drag = area).
@@ -84,11 +132,7 @@ export default function BoardView({ community }: { community: Community }) {
       : {
           label: "Annotate",
           icon: section === "pins" ? <MapPin size={13} /> : <Square size={13} />,
-          onClick: () =>
-            void sendToActiveTab({
-              type: "tabcom:enter-annotate-mode",
-              communityId: community.id,
-            }),
+          onClick: () => void startAnnotate(),
         };
 
   return (
@@ -131,6 +175,12 @@ export default function BoardView({ community }: { community: Community }) {
           </button>
         </div>
 
+        {annotateNote && (
+          <p className="mx-4 mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+            {annotateNote}
+          </p>
+        )}
+
         {section === "tabs" && <TabsSection community={community} />}
         {section === "pins" && <PinsSection community={community} />}
         {section === "areas" && <AreasSection community={community} />}
@@ -172,6 +222,8 @@ function TabsSection({ community }: { community: Community }) {
         <EmptyState
           className="flex-1"
           icon={<ThumbsUp size={24} />}
+          illustrationName="tabs-empty.png"
+          illustrationAlt="Illustration of a stack of pages with a pin"
           title="No pages yet"
           description="Browse to a page and tap 'Add tab' above to bring it onto the board."
         />
@@ -203,6 +255,8 @@ function PinsSection({ community }: { community: Community }) {
         <EmptyState
           className="flex-1"
           icon={<MapPin size={24} />}
+          illustrationName="pins-empty.png"
+          illustrationAlt="Illustration of a pinned note"
           title="No pins yet"
           description="Tap 'Annotate' above, then click anywhere on the page to drop a pin — everyone in the community can jump straight to it from here."
         />
@@ -320,6 +374,8 @@ function AreasSection({ community }: { community: Community }) {
         <EmptyState
           className="flex-1"
           icon={<Square size={24} />}
+          illustrationName="areas-empty.png"
+          illustrationAlt="Illustration of a dashed area selection"
           title="No areas yet"
           description="Tap 'Annotate' above, then click and drag over any part of a page — works over images and mixed content, not just text."
         />

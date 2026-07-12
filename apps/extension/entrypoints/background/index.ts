@@ -4,7 +4,11 @@ import {
   addBoardItem,
   addBoardPin,
   addBoardArea,
+  disconnectRealtime,
   initRealtime,
+  isRealtimeConnected,
+  waitForRealtimeConnection,
+  REALTIME_URL,
   removeBoardHighlight,
   removeBoardPin,
   removeBoardArea,
@@ -48,6 +52,20 @@ interface StoredProfile {
   displayName: string;
   avatarColor: string;
   photo?: string;
+  guestInstanceId?: string;
+  /**
+   * Was missing entirely before this fix — background's write
+   * connection never presented a session token, so even a REGISTERED
+   * account's background socket went through the unauthenticated path
+   * and could get its OWN real username suffixed by the server's guest
+   * collision check (colliding against the panel's correctly
+   * authenticated connection using the exact same username). Board
+   * writes and cursor moves from a real account could end up signed
+   * under a randomly-mangled identity instead of the account's actual
+   * one. Threading this through makes background authenticate exactly
+   * like the panel and pip window already do.
+   */
+  sessionToken?: string;
 }
 
 // Previously disconnected after 5s of write-inactivity to avoid
@@ -201,6 +219,8 @@ async function readStoredProfile(): Promise<StoredProfile | null> {
       displayName: state.displayName,
       avatarColor: state.avatarColor,
       photo: state.photo,
+      guestInstanceId: state.guestInstanceId,
+      sessionToken: state.sessionToken,
     };
   } catch {
     return null;
@@ -234,32 +254,37 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
   }
 }
 
-async function ensureWriteConnection(): Promise<boolean> {
+/** Default write patience: long enough for a sleeping Render free
+ *  instance to cold-start (observed 30-60s). A write made during the
+ *  wake-up window WAITS for the server instead of being rejected. */
+const WRITE_WAIT_MS = 45_000;
+
+let realtimeInitialized = false;
+
+async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<boolean> {
   const profile = await readStoredProfile();
   if (!profile) return false;
 
-  if (!writeConnected) {
-    let resolved = false;
-
-    await new Promise<void>((resolve) => {
-      initRealtime(
-        {
-          username: profile.username,
-          name: profile.displayName,
-          color: profile.avatarColor,
-          visibility: "public",
-          presence: "online",
-          photo: profile.photo,
+  if (!realtimeInitialized) {
+    realtimeInitialized = true;
+    console.info("[tabcom:background] realtime server:", REALTIME_URL);
+    initRealtime(
+      {
+        username: profile.username,
+        name: profile.displayName,
+        color: profile.avatarColor,
+        visibility: "public",
+        presence: "online",
+        photo: profile.photo,
+      },
+      {
+        onConnectionChange: (live) => {
+          writeConnected = live;
+          console.info(
+            `[tabcom:background] realtime ${live ? "CONNECTED" : "disconnected"} (${REALTIME_URL})`
+          );
         },
-        {
-          onConnectionChange: (live) => {
-            writeConnected = live;
-            if (!resolved) {
-              resolved = true;
-              resolve();
-            }
-          },
-          onRoster: () => {},
+        onRoster: () => {},
           onDm: () => {},
           onTyping: () => {},
           onDmError: () => {},
@@ -324,23 +349,50 @@ async function ensureWriteConnection(): Promise<boolean> {
           onCommunityLeft: () => {},
           onCommunityMessage: () => {},
           onCommunityError: () => {},
-        }
-      );
-
-      // Don't hang forever if the server is unreachable.
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          resolve();
-        }
-      }, 3000);
-    });
+      },
+      profile.sessionToken,
+      profile.guestInstanceId
+    );
   }
 
-  return writeConnected;
+  if (isRealtimeConnected()) return true;
+
+  // Waiting out a server cold start can exceed MV3's ~30s service
+  // worker idle timeout. Touching an extension API resets that timer,
+  // so a periodic no-op call keeps this worker (and the pending
+  // sendResponse the caller is holding) alive until the wait settles.
+  const keepalive = setInterval(() => {
+    void browser.runtime.getPlatformInfo().catch(() => {});
+  }, 20_000);
+
+  try {
+    const connected = await waitForRealtimeConnection(waitMs);
+    writeConnected = connected;
+    return connected;
+  } finally {
+    clearInterval(keepalive);
+  }
 }
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Background maintains its OWN persistent connection (for board
+  // writes / cursors while the panel is closed), entirely separate
+  // from — and with zero built-in awareness of — whatever ended the
+  // session in the panel's UI (guest timer running out, manual sign
+  // out, ending a guest session, or deleting the account). Without
+  // this, that connection stayed alive indefinitely regardless of WHY
+  // the session ended, which is exactly why an ended identity kept
+  // showing up as online to everyone else. The server's own periodic
+  // sweep (see index.ts) is a backing safety net for the guest-timer
+  // case specifically; this is what makes it instant, and covers
+  // every OTHER way a session can end too.
+  if (message?.type === "tabcom:session-ended") {
+    disconnectRealtime();
+    realtimeInitialized = false;
+    writeConnected = false;
+    return undefined;
+  }
+
   if (message?.type === "tabcom:cursor-start") {
     const tabId = sender.tab?.id;
     if (tabId != null) {
@@ -348,7 +400,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         communityId: message.communityId,
         canonicalKey: message.canonicalKey,
       });
-      void ensureWriteConnection().then((connected) =>
+      void ensureWriteConnection(5_000).then((connected) =>
         sendResponse({ ok: connected })
       );
       return true;
@@ -407,7 +459,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, reason: "call_in_progress" });
         return;
       }
-      const connected = await ensureWriteConnection();
+      const connected = await ensureWriteConnection(15_000);
       if (!connected) {
         sendResponse({ ok: false, reason: "offline" });
         return;
@@ -426,7 +478,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "tabcom:annotation-send") {
     (async () => {
-      const connected = await ensureWriteConnection();
+      const connected = await ensureWriteConnection(10_000);
       if (connected) {
         sendAnnotationEphemeral(message.communityId, message.canonicalKey, {
           text: message.text,
@@ -450,7 +502,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const connected = await ensureWriteConnection();
     console.log("[tabcom:background] write connection status:", connected);
     if (!connected) {
-      sendResponse({ ok: false, reason: "offline" });
+      sendResponse({ ok: false, reason: "offline", target: REALTIME_URL });
       return;
     }
 

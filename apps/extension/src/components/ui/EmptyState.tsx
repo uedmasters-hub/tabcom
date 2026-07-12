@@ -1,8 +1,15 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
+import Illustration from "./Illustration";
 
 interface EmptyStateProps {
-  icon: ReactNode;
+  /** Small line-icon badge — original treatment, still used wherever a
+   *  full illustration hasn't been designed for that spot. */
+  icon?: ReactNode;
+  /** Bigger illustration treatment (see Illustration.tsx). When given,
+   *  this takes over from `icon` entirely. */
+  illustrationName?: string;
+  illustrationAlt?: string;
   title: string;
   description: string;
   action?: ReactNode;
@@ -12,6 +19,8 @@ interface EmptyStateProps {
 /** Centered empty state for views with no content yet. */
 export default function EmptyState({
   icon,
+  illustrationName,
+  illustrationAlt,
   title,
   description,
   action,
@@ -24,9 +33,13 @@ export default function EmptyState({
         className
       )}
     >
-      <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
-        {icon}
-      </span>
+      {illustrationName ? (
+        <Illustration name={illustrationName} alt={illustrationAlt ?? title} size={168} />
+      ) : (
+        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-400">
+          {icon}
+        </span>
+      )}
 
       <h2 className="mt-6 text-lg font-bold tracking-tight">{title}</h2>
 

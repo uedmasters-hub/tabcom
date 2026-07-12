@@ -1,5 +1,6 @@
-import { Camera, Check, Copy, Globe, Lock, LogOut, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Ticket, Trash2 } from "lucide-react";
+import { Camera, Check, Copy, Download, Eraser, Globe, Lock, LogOut, MousePointer2, PictureInPicture2, ShieldAlert, Sparkles, Ticket, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { browser } from "wxt/browser";
 
 import {
   Avatar,
@@ -11,8 +12,9 @@ import {
 import { cn } from "../../../lib/cn";
 import { deleteAccount, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
+import { syncSettingsToServer } from "../../../lib/settings-sync";
 import { FLOATING_PILL_ENABLED } from "../../../lib/feature-flags";
-import { disconnectRealtime, reannounce, updateVisibility } from "../../../lib/realtime";
+import { clearMyHistory, disconnectAllContexts, reannounce, REALTIME_URL, updateVisibility } from "../../../lib/realtime";
 import { useAppStore } from "../../../stores/app.store";
 import { useChatStore } from "../../../stores/chat.store";
 import {
@@ -117,6 +119,7 @@ export default function SettingsView() {
   const guestExpiresAt = useProfileStore((state) => state.guestExpiresAt);
   const resetProfile = useProfileStore((state) => state.resetProfile);
   const resetChat = useChatStore((state) => state.resetChat);
+  const clearAllHistoryLocal = useChatStore((state) => state.clearAllHistory);
 
   const [cursorsEnabled, setCursorsEnabledState] = useState(true);
 
@@ -128,6 +131,7 @@ export default function SettingsView() {
     const next = !cursorsEnabled;
     setCursorsEnabledState(next);
     void setCursorsEnabled(next);
+    syncSettingsToServer(sessionToken);
   };
 
   const setIdentity = useProfileStore((state) => state.setIdentity);
@@ -145,6 +149,10 @@ export default function SettingsView() {
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [clearedJustNow, setClearedJustNow] = useState(false);
 
   // Invitations — signed-in accounts each hold 5 single-use codes.
   const [invites, setInvites] = useState<InviteSummary[] | null>(null);
@@ -208,7 +216,7 @@ export default function SettingsView() {
   // starts from a genuinely clean slate, not a carried-over one.
   const signOut = async () => {
     if (!sessionToken) {
-      disconnectRealtime();
+      disconnectAllContexts();
       resetProfile();
       resetChat();
       setScreen("welcome");
@@ -219,7 +227,7 @@ export default function SettingsView() {
       await logout(sessionToken); // best-effort — proceed either way
     } finally {
       setSigningOut(false);
-      disconnectRealtime();
+      disconnectAllContexts();
       resetProfile();
       setScreen("welcome");
     }
@@ -244,9 +252,43 @@ export default function SettingsView() {
       return;
     }
 
-    disconnectRealtime();
+    disconnectAllContexts();
     resetProfile();
     setScreen("welcome");
+  };
+
+  const handleClearHistory = async () => {
+    setClearingHistory(true);
+    setClearError(null);
+    const result = await clearMyHistory();
+    setClearingHistory(false);
+
+    if (!result.ok) {
+      setClearError(
+        result.reason === "timeout" || result.reason === "not_connected"
+          ? "Couldn't reach Tabcom's server — make sure it's running and try again."
+          : "Couldn't clear your history right now. Try again in a moment."
+      );
+      return;
+    }
+
+    // Local reset, mirroring exactly what the server just did: wipe
+    // messages/conversations (contacts, communities, and connections
+    // are deliberately untouched — clearHistory() is NOT resetChat()),
+    // and reset the same preferences the server just cleared from
+    // user_settings so this device and the server agree immediately
+    // rather than waiting on the next sync round trip.
+    clearAllHistoryLocal();
+    setAnimations(true);
+    setPipEnabled(true);
+    void setCursorsEnabled(true);
+    setCursorsEnabledState(true);
+    setPhoto(undefined);
+    syncSettingsToServer(sessionToken);
+
+    setConfirmingClear(false);
+    setClearedJustNow(true);
+    setTimeout(() => setClearedJustNow(false), 4000);
   };
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -279,16 +321,19 @@ export default function SettingsView() {
     const dataUrl = await compressImage(file);
     setPhoto(dataUrl);
     announce({ photo: dataUrl });
+    syncSettingsToServer(sessionToken);
   };
 
   const removePhoto = () => {
     setPhoto(undefined);
     announce({ photo: undefined });
+    syncSettingsToServer(sessionToken);
   };
 
   const setVisibility = (value: ProfileVisibility) => {
     setVisibilityLocal(value);
     updateVisibility(value);
+    syncSettingsToServer(sessionToken);
   };
 
   return (
@@ -535,7 +580,10 @@ export default function SettingsView() {
           label="Message animations"
           description="Spring animation on new messages"
           checked={animations}
-          onToggle={() => setAnimations(!animations)}
+          onToggle={() => {
+            setAnimations(!animations);
+            syncSettingsToServer(sessionToken);
+          }}
         />
         {FLOATING_PILL_ENABLED && (
           <SettingRow
@@ -543,8 +591,71 @@ export default function SettingsView() {
             label="Floating chat"
             description="Pop out a chat into its own window"
             checked={pipEnabled}
-            onToggle={() => setPipEnabled(!pipEnabled)}
+            onToggle={() => {
+              setPipEnabled(!pipEnabled);
+              syncSettingsToServer(sessionToken);
+            }}
           />
+        )}
+      </div>
+
+      {/* Data — a reset short of ending the session entirely. Available
+          to guests too now: a guest session already resets everything
+          automatically after 30 minutes, but there's no reason to make
+          someone wait that long for a clean slate if they want one now. */}
+      <SectionLabel className="mt-8">Data</SectionLabel>
+      <div className="mt-2 rounded-xl border border-slate-200">
+        {confirmingClear ? (
+          <div className="flex flex-col gap-2 px-4 py-3">
+            <p className="text-xs leading-5 text-slate-500">
+              This permanently clears your chats, tabs, pins, areas, and
+              preferences on this device and the server. Your identity,
+              contacts, and communities are not affected — you stay
+              connected on the same session. This can't be undone.
+            </p>
+            {clearError && <p className="text-xs text-red-600">{clearError}</p>}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleClearHistory()}
+                disabled={clearingHistory}
+                className="flex-1 rounded-lg bg-red-600 py-2 text-xs font-semibold text-white transition disabled:opacity-60"
+              >
+                {clearingHistory ? "Clearing…" : "Clear everything"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmingClear(false);
+                  setClearError(null);
+                }}
+                disabled={clearingHistory}
+                className="rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-500"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingClear(true)}
+            className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-medium text-red-600 transition hover:bg-red-50"
+          >
+            <Eraser size={17} />
+            <span>
+              Clear history
+              {clearedJustNow && (
+                <span className="ml-2 text-xs font-normal text-emerald-600">
+                  Cleared
+                </span>
+              )}
+              <span className="block text-xs font-normal text-slate-400">
+                Fresh workspace, same session — chats, tabs, pins, areas,
+                and preferences reset
+              </span>
+            </span>
+          </button>
         )}
       </div>
 
@@ -553,6 +664,27 @@ export default function SettingsView() {
       <SectionLabel className="mt-8">Account</SectionLabel>
 
       <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {sessionToken && (
+          <button
+            type="button"
+            onClick={() =>
+              void browser.tabs.create({
+                url: `${REALTIME_URL}/activity-report?sessionToken=${encodeURIComponent(sessionToken)}`,
+              })
+            }
+            className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm font-medium transition hover:bg-slate-50"
+          >
+            <Download size={17} className="shrink-0 text-slate-400" />
+            <span>
+              Export my activity
+              <span className="block text-xs font-normal text-slate-400">
+                A CSV of your communities, tabs, pins, and areas — never
+                message content
+              </span>
+            </span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => void signOut()}

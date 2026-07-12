@@ -149,6 +149,7 @@ export interface Community {
   pendingInvites: PendingInvite[];
   board: BoardItem[];
   boardDecidedId?: string;
+  imageVersion?: number;
 }
 
 export type ConversationKind = "dm" | "community";

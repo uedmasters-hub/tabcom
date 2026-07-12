@@ -4,7 +4,8 @@ import { useState } from "react";
 import AppShell from "../../components/layout/AppShell";
 import ScreenFooter from "../../components/layout/ScreenFooter";
 import ScreenHeader from "../../components/layout/ScreenHeader";
-import { Avatar, Button, Input, SectionLabel } from "../../components/ui";
+import { Avatar, Button, Input } from "../../components/ui";
+import { registerGuestSession } from "../../lib/auth-client";
 import { generateGuestUsername } from "../../lib/guest-username";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
@@ -38,6 +39,11 @@ export default function GuestSetupScreen() {
     try {
       const username = await generateGuestUsername();
       startGuestSession({ displayName: displayName.trim(), username });
+      // Fire-and-forget — server-side session tracking (Phase 1 of
+      // session management) shouldn't block or fail the actual guest
+      // flow if the server's briefly unreachable; the guest experience
+      // itself is fully local either way.
+      void registerGuestSession(username);
       completeProfile();
       setScreen("workspace");
     } catch {
@@ -52,7 +58,6 @@ export default function GuestSetupScreen() {
         <ScreenHeader onBack={() => goBack("welcome")} />
 
         <section className="flex flex-1 flex-col px-6">
-          <SectionLabel>Try it out</SectionLabel>
           <h1 className="mt-3 text-2xl font-bold tracking-tight">
             What should people call you?
           </h1>
@@ -65,9 +70,13 @@ export default function GuestSetupScreen() {
             <Avatar name={displayName || "Guest"} color={avatarColor} size="xl" />
           </div>
 
-          <div className="mt-6">
+          <h2 className="mt-6 text-center text-xl font-bold tracking-tight">
+            Display name
+          </h2>
+
+          <div className="mt-4">
             <Input
-              label="Display name"
+              aria-label="Display name"
               placeholder="Your name"
               autoFocus
               autoComplete="name"

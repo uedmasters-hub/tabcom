@@ -10,6 +10,7 @@ import {
   hidePresenceFrom,
   removeConnection,
   createCommunity as rtCreateCommunity,
+  setCommunityImage as rtSetCommunityImage,
   inviteToCommunity as rtInviteToCommunity,
   leaveCommunity as rtLeaveCommunity,
   removeCommunityMember as rtRemoveCommunityMember,
@@ -20,6 +21,8 @@ import {
   reportUser,
   respondToCommunityInvite,
   respondToConnectRequest,
+  cancelConnectRequest,
+  getMyConnections,
   sendCommunityMessage,
   removeBoardItem,
   commentOnBoardItem,
@@ -205,6 +208,9 @@ interface ChatState {
   receiveConnectUpdate: (username: string, status: ConnectionStatus) => void;
   requestConnect: (contact: Contact) => void;
   respondToRequest: (contact: Contact, action: "accept" | "deny") => void;
+  /** Withdraws a request THIS user sent, before the other side acts on
+   *  it — the "Revoke" action on an outgoing pending request. */
+  revokeConnectRequest: (contact: Contact) => void;
   block: (contact: Contact) => void;
   unblock: (contact: Contact) => void;
   report: (contact: Contact, reason?: string) => void;
@@ -219,7 +225,16 @@ interface ChatState {
   ) => void;
 
   // communities
-  createCommunity: (name: string) => void;
+  createCommunity: (name: string) => Promise<string | undefined>;
+  /** Merges in accepted connections the server remembers durably but
+   *  this client's local contacts list might not (a fresh device,
+   *  or this one after a reinstall) — see realtime.ts's
+   *  getMyConnections for what it does and doesn't cover. Never
+   *  overwrites an existing contact entry, only adds ones missing. */
+  restoreConnections: () => Promise<void>;
+  /** Uploads/replaces a community's logo. base64Data should already
+   *  be stripped of the "data:image/...;base64," prefix. */
+  uploadCommunityImage: (communityId: string, mimeType: string, base64Data: string) => void;
   inviteToCommunity: (communityId: string, username: string) => void;
   respondToCommunityInvite: (
     communityId: string,
@@ -280,6 +295,15 @@ interface ChatState {
   }) => void;
 
   resetChat: () => void;
+  /** "Clear history" (the Settings-level, whole-account reset) —
+   *  resets messages/conversations/typing state ONLY. Deliberately
+   *  preserves contacts, connections, communities, community invites,
+   *  and mutes — none of that is "activity", it's identity/
+   *  relationship state, and this action must never touch it (see
+   *  SettingsView's confirmation copy, which promises exactly this).
+   *  Distinct from the per-conversation clearHistory(conversationId)
+   *  above, and from resetChat() (full wipe, used for guest expiry). */
+  clearAllHistory: () => void;
 }
 
 function toCommunity(wire: WireCommunity): Community {
@@ -294,8 +318,10 @@ function toCommunity(wire: WireCommunity): Community {
       ...item,
       pins: item.pins ?? [],
       highlights: item.highlights ?? [],
+      areas: item.areas ?? [],
     })),
     boardDecidedId: wire.boardDecidedId,
+    imageVersion: wire.imageVersion,
   };
 }
 
@@ -1013,6 +1039,20 @@ export const useChatStore = create<ChatState>()(
           }
         },
 
+        revokeConnectRequest: (contact) => {
+          cancelConnectRequest(contact.username);
+          set((state) => {
+            const connections = { ...state.connections };
+            delete connections[contact.username];
+            return { connections };
+          });
+          systemNotice(
+            { contactId: contact.id },
+            `You withdrew your request to @${contact.username}.`,
+            false
+          );
+        },
+
         block: (contact) => {
           blockUser(contact.username);
           set((state) => ({
@@ -1184,6 +1224,30 @@ export const useChatStore = create<ChatState>()(
         // ---- communities --------------------------------------------------
 
         createCommunity: (name) => rtCreateCommunity(name),
+        restoreConnections: async () => {
+          const connections = await getMyConnections();
+          if (connections.length === 0) return;
+
+          set((state) => {
+            const existingUsernames = new Set(
+              state.contacts.filter((c) => c.id.startsWith("u-")).map((c) => c.username)
+            );
+            const restored: Contact[] = connections
+              .filter((c) => !existingUsernames.has(c.username))
+              .map((c) => ({
+                id: `u-${c.username}`,
+                name: c.displayName || c.username,
+                username: c.username,
+                color: c.avatarColor || "#334155",
+                presence: "offline" as const,
+              }));
+
+            if (restored.length === 0) return state;
+            return { contacts: [...state.contacts, ...restored] };
+          });
+        },
+        uploadCommunityImage: (communityId, mimeType, base64Data) =>
+          rtSetCommunityImage(communityId, mimeType, base64Data),
 
         inviteToCommunity: (communityId, username) =>
           rtInviteToCommunity(communityId, username),
@@ -1421,6 +1485,15 @@ export const useChatStore = create<ChatState>()(
             hiddenFrom: [],
             activeConversationId: null,
             typing: [],
+          }),
+
+        clearAllHistory: () =>
+          set({
+            conversations: [],
+            messages: {},
+            activeConversationId: null,
+            typing: [],
+            communityActionError: null,
           }),
       };
     },

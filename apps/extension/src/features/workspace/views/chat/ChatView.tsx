@@ -350,7 +350,7 @@ function MessageBubble({
 import { useEffect, useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
-import { Avatar } from "../../../../components/ui";
+import { Avatar, CommunityAvatar } from "../../../../components/ui";
 import NotificationBell from "../../../../components/layout/NotificationBell";
 import { cn } from "../../../../lib/cn";
 import { FLOATING_PILL_ENABLED } from "../../../../lib/feature-flags";
@@ -659,9 +659,12 @@ export default function ChatView({
               title={community.name}
               className="relative shrink-0 rounded-full transition hover:ring-2 hover:ring-slate-200"
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
-                {community.name.charAt(0).toUpperCase()}
-              </span>
+              <CommunityAvatar
+                name={community.name}
+                imageVersion={community.imageVersion}
+                communityId={community.id}
+                size="sm"
+              />
               <span
                 title={live ? "Connected to realtime server" : "Offline — local demo mode"}
                 className={cn(
@@ -812,7 +815,18 @@ export default function ChatView({
       ) : (
         <>
       {/* Messages */}
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div
+        className={cn(
+          "space-y-3 overflow-y-auto px-4 py-4",
+          // While consent is pending there's usually just the one
+          // system notice ("X wants to connect") — let it size to its
+          // content instead of flex-growing, so the illustrated
+          // ConsentPanel below gets the remaining space and the
+          // visual weight the mockups show, rather than splitting the
+          // screen into a mostly-blank message area + a thin bottom bar.
+          contact && isLiveContact && connection !== "accepted" ? "shrink-0" : "flex-1"
+        )}
+      >
         {messages.map((message) => (
           <MessageBubble
             key={message.id}

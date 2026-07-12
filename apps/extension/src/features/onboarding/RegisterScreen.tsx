@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import AppShell from "../../components/layout/AppShell";
 import ScreenHeader from "../../components/layout/ScreenHeader";
-import { Button, Input, SectionLabel } from "../../components/ui";
+import { Button, Illustration, Input, SectionLabel } from "../../components/ui";
 import { checkInvite, checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
@@ -203,13 +203,20 @@ export default function RegisterScreen() {
 
         {step === "invite" ? (
           <section className="flex flex-1 flex-col px-6">
-            <SectionLabel>Join Tabcom</SectionLabel>
             <h1 className="mt-3 text-2xl font-bold tracking-tight">
               Enter your invite code.
             </h1>
             <p className="mt-2 text-sm leading-6 text-slate-500">
               Tabcom is invite-only. You'll set up your name and username next.
             </p>
+
+            <div className="mt-6 flex justify-center">
+              <Illustration
+                name="invite-code.png"
+                alt="Illustration of an unlocked padlock"
+                size={140}
+              />
+            </div>
 
             <div className="mt-8">
               <Input

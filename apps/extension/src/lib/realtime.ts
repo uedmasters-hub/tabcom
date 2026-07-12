@@ -1,4 +1,5 @@
 import { io, type Socket } from "socket.io-client";
+import { browser } from "wxt/browser";
 
 /**
  * Realtime transport (Socket.IO).
@@ -124,6 +125,11 @@ export interface WireCommunity {
   pendingInvites: Array<{ username: string; attemptsLeft: number }>;
   board: WireBoardItem[];
   boardDecidedId?: string;
+  /** Bumped by the server on every logo upload — undefined if the
+   *  community has never had one. Append as a ?v= query param when
+   *  building the image URL so the browser doesn't keep showing a
+   *  cached older logo after a re-upload. */
+  imageVersion?: number;
 }
 
 export type CommunityErrorReason =
@@ -254,17 +260,65 @@ export interface RealtimeHandlers {
 
 let socket: Socket | null = null;
 
+/** True while the socket is live. Exported so callers can gate
+ *  fire-and-forget emits without owning connection state themselves. */
+export function isRealtimeConnected(): boolean {
+  return !!socket?.connected;
+}
+
+/**
+ * Resolve true as soon as the socket is connected, or false after
+ * waitMs. This is the ONLY correct way to answer "can I write now?":
+ * the old pattern resolved false on the first connect_error, which
+ * against a cold-started server (Render free instances sleep and take
+ * 30-60s to wake) rejected every write in the wake-up window even
+ * though the connection was seconds away from succeeding.
+ */
+export function waitForRealtimeConnection(waitMs: number): Promise<boolean> {
+  if (socket?.connected) return Promise.resolve(true);
+  if (!socket) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    const target = socket!;
+    let settled = false;
+
+    const onConnect = () => settle(true);
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      target.off("connect", onConnect);
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => settle(false), waitMs);
+    target.on("connect", onConnect);
+  });
+}
+
 export function initRealtime(
   me: WireUser,
   handlers: RealtimeHandlers,
-  sessionToken?: string
+  sessionToken?: string,
+  guestInstanceId?: string
 ): void {
   if (socket) return;
 
   socket = io(REALTIME_URL, {
-    reconnectionAttempts: 5,
-    reconnectionDelay: 2000,
-    timeout: 4000,
+    // NEVER stop retrying. The previous reconnectionAttempts: 5 meant
+    // one cold-start window (server asleep on Render) permanently
+    // killed the socket for the rest of the service worker's life —
+    // every subsequent write failed with "unreachable" even after the
+    // server was long since awake. Infinite attempts with a capped
+    // delay costs one lightweight probe every few seconds while
+    // disconnected, and removes the permanent-death failure mode.
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    // 10s per attempt: a waking server can be slow to accept the
+    // handshake; 4s was routinely too short for Render cold starts.
+    timeout: 10000,
     // Polling (the default first transport) uses XMLHttpRequest, which
     // does not exist in MV3 service workers — the background relay
     // could never connect. WebSocket works in every context we run in.
@@ -277,7 +331,13 @@ export function initRealtime(
   });
 
   socket.on("connect", () => {
-    socket?.emit("hello", me, (ack?: { username: string }) => {
+    // guestInstanceId rides alongside the WireUser fields but is
+    // deliberately never PART of WireUser — it's a server-side-only
+    // signal for disambiguating this browser's own multiple
+    // connections (panel/background/pip) from a genuine stranger, and
+    // has no reason to be broadcast to peers via the roster.
+    const helloPayload = guestInstanceId ? { ...me, guestInstanceId } : me;
+    socket?.emit("hello", helloPayload, (ack?: { username: string }) => {
       if (ack?.username && ack.username !== me.username) {
         handlers.onUsernameAssigned?.(ack.username);
       }
@@ -504,8 +564,44 @@ export function reannounce(me: WireUser): void {
   socket?.emit("hello", me);
 }
 
-export function createCommunity(name: string): void {
-  socket?.emit("community_create", { name });
+/** Resolves with the new community's id once the server confirms
+ *  creation — lets the caller immediately follow up with
+ *  setCommunityImage without needing to correlate against the
+ *  community_update broadcast. Resolves undefined if the socket isn't
+ *  connected or the server never acks (e.g. private visibility). */
+export function createCommunity(name: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    if (!socket) {
+      resolve(undefined);
+      return;
+    }
+    let settled = false;
+    const settle = (id: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(id);
+    };
+    socket.emit("community_create", { name }, (ack?: { communityId: string }) => {
+      settle(ack?.communityId);
+    });
+    // The server silently no-ops on some rejections (private
+    // visibility) rather than nak'ing — don't hang forever waiting
+    // for an ack that will never come.
+    const timer = setTimeout(() => settle(undefined), 5000);
+  });
+}
+
+/** Upload/replace a community's logo. Admin-only server-side. Caller
+ *  is responsible for keeping the upload within a sane size — this
+ *  just relays whatever it's given; the server enforces the real
+ *  limit (~2MB decoded) and mime-type allowlist. */
+export function setCommunityImage(
+  communityId: string,
+  mimeType: string,
+  base64Data: string
+): void {
+  socket?.emit("community_set_image", { communityId, mimeType, data: base64Data });
 }
 
 export function inviteToCommunity(communityId: string, username: string): void {
@@ -771,6 +867,68 @@ export function respondToConnectRequest(
   socket?.emit("connect_response", { to: toUsername, action });
 }
 
+/** Withdraw a request THIS user sent, before the other side has acted
+ *  on it — the "Revoke" action on an outgoing pending request. */
+/** Restores a registered user's accepted connections list from the
+ *  server's durable pairs state — see the backend handler's doc
+ *  comment for why this only ever returns OTHER registered accounts,
+ *  never guest contacts. */
+export function getMyConnections(): Promise<
+  Array<{ username: string; displayName: string | null; avatarColor: string | null }>
+> {
+  return new Promise((resolve) => {
+    if (!socket) {
+      resolve([]);
+      return;
+    }
+    let settled = false;
+    const settle = (value: typeof result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    let result: Array<{ username: string; displayName: string | null; avatarColor: string | null }> = [];
+    socket.emit("get_my_connections", {}, (ack?: { connections: typeof result }) => {
+      settle(ack?.connections ?? []);
+    });
+    const timer = setTimeout(() => settle([]), 5000);
+  });
+}
+
+/**
+ * Resets a registered user's own activity — messages/conversations are
+ * purely client-side already (this project's zero-message-retention
+ * guarantee means there's nothing server-side to clear for those); the
+ * server side of this only ever touches this user's OWN pins/areas/
+ * votes and their activity log/settings rows, never anyone else's
+ * contributions to a shared community board, and never contacts,
+ * communities, or the account/session itself.
+ */
+export function clearMyHistory(): Promise<{ ok: boolean; reason?: string }> {
+  return new Promise((resolve) => {
+    if (!socket) {
+      resolve({ ok: false, reason: "not_connected" });
+      return;
+    }
+    let settled = false;
+    const settle = (value: { ok: boolean; reason?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    socket.emit("clear_my_history", {}, (ack?: { ok: boolean; reason?: string }) => {
+      settle(ack ?? { ok: false, reason: "no_response" });
+    });
+    const timer = setTimeout(() => settle({ ok: false, reason: "timeout" }), 10_000);
+  });
+}
+
+export function cancelConnectRequest(toUsername: string): void {
+  socket?.emit("connect_cancel", { to: toUsername });
+}
+
 export function blockUser(username: string): void {
   socket?.emit("block", { username });
 }
@@ -786,6 +944,25 @@ export function reportUser(username: string, reason?: string): void {
 export function disconnectRealtime(): void {
   socket?.disconnect();
   socket = null;
+}
+
+/**
+ * The ONLY correct way to end a session from any UI code — never call
+ * bare disconnectRealtime() directly for a real session-end (sign out,
+ * end guest session, delete account, guest expiry). That only tears
+ * down THIS context's own socket; background (and the pip window, if
+ * open) each hold a completely separate connection with zero built-in
+ * awareness that a session ended anywhere else, and just keep running
+ * indefinitely. That's exactly the mechanism behind guest identities
+ * that had already "ended" still showing up as online — this file has
+ * that exact bug fixed twice already, in two different call sites,
+ * because the fix lived at each call site instead of here. Putting it
+ * in one place is what actually closes it for every current AND
+ * future call site.
+ */
+export function disconnectAllContexts(): void {
+  disconnectRealtime();
+  void browser.runtime.sendMessage({ type: "tabcom:session-ended" }).catch(() => {});
 }
 
 /** Push a visibility change to the server (takes effect immediately). */

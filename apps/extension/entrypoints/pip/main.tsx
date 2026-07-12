@@ -18,7 +18,7 @@ import "../../src/styles/globals.css";
 import { Avatar } from "../../src/components/ui";
 import EmojiPicker from "../../src/features/workspace/views/chat/EmojiPicker";
 import { cn } from "../../src/lib/cn";
-import { initRealtime, sendTyping } from "../../src/lib/realtime";
+import { disconnectRealtime, initRealtime, sendTyping } from "../../src/lib/realtime";
 import { ME, useChatStore } from "../../src/stores/chat.store";
 import { useProfileStore } from "../../src/stores/profile.store";
 import { contactLabel } from "../../src/types/chat";
@@ -84,6 +84,8 @@ function FloatApp() {
   const displayName = useProfileStore((state) => state.displayName);
   const avatarColor = useProfileStore((state) => state.avatarColor);
   const photo = useProfileStore((state) => state.photo);
+  const sessionToken = useProfileStore((state) => state.sessionToken);
+  const guestInstanceId = useProfileStore((state) => state.guestInstanceId);
 
   const conversations = useChatStore((state) => state.conversations);
 
@@ -135,9 +137,24 @@ function FloatApp() {
           useChatStore.getState().receiveCommunityMessage(id, from, message),
         onCommunityError: (payload) =>
           useChatStore.getState().receiveCommunityError(payload),
-      }
+      },
+      sessionToken,
+      guestInstanceId
     );
-  }, [profileHydrated, username, displayName, avatarColor, photo]);
+  }, [profileHydrated, username, displayName, avatarColor, photo, sessionToken, guestInstanceId]);
+
+  // Same reasoning as background's own listener for this message: the
+  // pip window holds its own separate connection with no built-in
+  // awareness of the panel's session state either.
+  useEffect(() => {
+    const listener = (message: { type?: string }) => {
+      if (message?.type === "tabcom:session-ended") {
+        disconnectRealtime();
+      }
+    };
+    browser.runtime.onMessage.addListener(listener);
+    return () => browser.runtime.onMessage.removeListener(listener);
+  }, []);
 
   useEffect(() => {
     if (!hasHydrated || conversationId) return;

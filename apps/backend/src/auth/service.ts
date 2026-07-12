@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
 
 import { db, schema } from "../db/client";
 import { checkInvite, consumeInvite, ensureInviteAllowance } from "./invites";
@@ -124,6 +124,7 @@ export async function verifyMagicLink(rawToken: string): Promise<VerifyResult> {
     userId: user.id,
     tokenHash: hashToken(rawSessionToken),
     expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    sessionType: "registered",
   });
 
   pendingHandoff.set(request.pollId, {
@@ -151,7 +152,11 @@ export type PollResult =
     }
   | { status: "expired" };
 
-export async function pollLoginRequest(pollId: string): Promise<PollResult> {
+export async function pollLoginRequest(
+  pollId: string,
+  deviceId?: string,
+  browserInfo?: string
+): Promise<PollResult> {
   cleanupHandoffs();
 
   const handoff = pendingHandoff.get(pollId);
@@ -159,6 +164,19 @@ export async function pollLoginRequest(pollId: string): Promise<PollResult> {
     // Single collection only — delete on read so a leaked pollId
     // can't be replayed to steal a session after the fact.
     pendingHandoff.delete(pollId);
+
+    // The session row was created back in verifyMagicLink, when only
+    // the emailed link's browser tab was involved — THIS request is
+    // the first point the extension itself (which knows its own
+    // device id) is in the loop, so fill it in now rather than leave
+    // it permanently null for magic-link sessions.
+    if (deviceId) {
+      await db
+        .update(schema.sessions)
+        .set({ deviceId, browserInfo: browserInfo ?? null })
+        .where(eq(schema.sessions.tokenHash, hashToken(handoff.rawSessionToken)));
+    }
+
     return {
       status: "verified",
       sessionToken: handoff.rawSessionToken,
@@ -325,7 +343,9 @@ export async function registerAccount(
   rawUsername: string,
   displayName: string,
   avatarColor: string,
-  rawInviteCode: string
+  rawInviteCode: string,
+  deviceId?: string,
+  browserInfo?: string
 ): Promise<RegisterResult> {
   const email = rawEmail.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -398,6 +418,9 @@ export async function registerAccount(
     userId: user.id,
     tokenHash: hashToken(rawSessionToken),
     expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    sessionType: "registered",
+    deviceId: deviceId ?? null,
+    browserInfo: browserInfo ?? null,
   });
 
   return {
@@ -480,7 +503,11 @@ export async function validateSession(
     .catch(() => {}); // best-effort, never block auth on this
 
   return {
-    id: row.userId,
+    // userId is nullable at the column level now (guest sessions have
+    // none), but this specific query INNER JOINs on it matching a real
+    // users.id — a guest session (userId: null) can never satisfy that
+    // join, so any row reaching this point is guaranteed to have one.
+    id: row.userId!,
     email: row.email,
     username: row.username,
     displayName: row.displayName,
@@ -575,5 +602,219 @@ export async function deleteAccount(
   if (!user) return { ok: false, reason: "invalid_session" };
 
   await db.delete(schema.users).where(eq(schema.users.id, user.id));
+  return { ok: true };
+}
+
+// ---- Device recognition (Phase 1 of session management) -------------------
+//
+// "Device fingerprint" here means a random id the extension generates
+// once and keeps in a storage key that survives sign-out/guest-expiry
+// resets (see the client's device-id.ts) — NOT a hardware/MAC
+// fingerprint. Browsers deliberately expose no such thing to any web
+// or extension code, for the same privacy reasons this project cares
+// about; building a substitute (canvas/audio fingerprinting) would
+// actively work against that. This deviceId is a bearer-token-like
+// secret in the sense that its SECRECY (not complexity of lookup) is
+// what protects it — same trust model as a session token — so it's
+// generated with real randomness and never logged or sent anywhere
+// except this server.
+
+const GUEST_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes — matches the client's own guest session lifetime
+
+/**
+ * Records a NEW guest session server-side. Previously guest identity
+ * was purely client-side (a locally-generated username, never known
+ * to the server until the socket connects) — this gives the "single
+ * source of truth" sessions table real visibility into guest sessions
+ * too, and is what makes device recognition for RETURNING guests
+ * possible at all.
+ */
+export async function registerGuestSession(input: {
+  guestUsername: string;
+  deviceId: string;
+  browserInfo?: string;
+}): Promise<void> {
+  await db.insert(schema.sessions).values({
+    guestUsername: input.guestUsername,
+    deviceId: input.deviceId,
+    browserInfo: input.browserInfo ?? null,
+    sessionType: "guest",
+    status: "active",
+    expiresAt: new Date(Date.now() + GUEST_SESSION_TTL_MS),
+  });
+}
+
+export interface DeviceSessionInfo {
+  sessionType: "registered" | "guest";
+  expiresAt: Date;
+  /** Only set for sessionType "guest". */
+  guestUsername?: string;
+}
+
+/**
+ * The core of "device recognition" — given a deviceId, is there an
+ * active, non-expired session for it? Used on app startup so a
+ * returning device doesn't have to repeat onboarding.
+ *
+ * Deliberately does NOT return the session's bearer token, even for a
+ * registered session — a device id alone is not proof of anything
+ * beyond "the caller knows this device id" (unlike a session token,
+ * whose entire purpose IS to prove exactly that). For a registered
+ * account, this endpoint is a hint the client already has its own
+ * valid sessionToken and can keep using it; the client's own local
+ * copy is what actually authenticates every subsequent request, same
+ * as it always has. For a guest, there's no bearer token to withhold
+ * in the first place — the returned guestUsername/expiresAt IS
+ * everything needed to resume, since guests authenticate purely via
+ * their live socket identity.
+ */
+export async function findActiveSessionForDevice(
+  deviceId: string
+): Promise<DeviceSessionInfo | null> {
+  if (!deviceId) return null;
+
+  const [row] = await db
+    .select()
+    .from(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.deviceId, deviceId),
+        eq(schema.sessions.status, "active"),
+        eq(schema.sessions.revoked, false)
+      )
+    )
+    .orderBy(desc(schema.sessions.createdAt))
+    .limit(1);
+
+  if (!row) return null;
+  if (row.expiresAt < new Date()) return null;
+
+  return {
+    sessionType: (row.sessionType as "registered" | "guest") ?? "registered",
+    expiresAt: row.expiresAt,
+    guestUsername: row.guestUsername ?? undefined,
+  };
+}
+
+/**
+ * Sweeps every session whose expiresAt has passed but whose status is
+ * still "active" into "expired" — an explicit lifecycle transition
+ * rather than every reader independently re-deriving "expired" from a
+ * timestamp comparison. Cheap and safe to run frequently; called from
+ * index.ts on the same kind of interval as the other periodic
+ * housekeeping in this project.
+ */
+/**
+ * Registered sessions: marked "expired", never deleted — per the
+ * spec's own framing, "only the session should expire, not the
+ * user's data," and their data lives in the users/invites tables
+ * regardless of session status.
+ *
+ * Guest sessions: the session row is DELETED outright once expired
+ * (not just marked), and — deliberately SCOPED — their own
+ * community_activity rows (their personal audit trail: which
+ * communities they joined/left, which tabs/pins/areas they added) are
+ * deleted alongside it. This is the guest cascading-cleanup the
+ * session-management spec asked for, scoped to what's genuinely the
+ * guest's OWN data.
+ *
+ * Explicitly NOT deleted: the pins/tabs/areas/community membership
+ * itself. Those are shared community objects other members are
+ * actively relying on — deleting a guest's contributions to a shared
+ * board out from under everyone else the moment their personal 30
+ * minutes run out would reintroduce the exact "pins vanish" failure
+ * this project already spent real effort fixing (see boardState's own
+ * doc comment), just reframed as an intentional feature. Their pin
+ * stays, still attributed to their now-expired guest username — the
+ * same way any other historical attribution in this app works once
+ * the person behind it has moved on.
+ */
+export async function sweepExpiredSessions(): Promise<{ expiredGuestUsernames: string[] }> {
+  const expiredGuestSessions = await db
+    .select({ guestUsername: schema.sessions.guestUsername })
+    .from(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.status, "active"),
+        eq(schema.sessions.sessionType, "guest"),
+        lt(schema.sessions.expiresAt, new Date())
+      )
+    );
+
+  const expiredGuestUsernames = expiredGuestSessions
+    .map((row) => row.guestUsername)
+    .filter((username): username is string => !!username);
+
+  for (const guestUsername of expiredGuestUsernames) {
+    await db
+      .delete(schema.communityActivity)
+      .where(eq(schema.communityActivity.username, guestUsername))
+      .catch((error) => {
+        console.error("[tabcom] guest activity cleanup failed:", guestUsername, error);
+      });
+  }
+
+  await db
+    .delete(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.status, "active"),
+        eq(schema.sessions.sessionType, "guest"),
+        lt(schema.sessions.expiresAt, new Date())
+      )
+    );
+
+  await db
+    .update(schema.sessions)
+    .set({ status: "expired" })
+    .where(
+      and(
+        eq(schema.sessions.status, "active"),
+        eq(schema.sessions.sessionType, "registered"),
+        lt(schema.sessions.expiresAt, new Date())
+      )
+    );
+
+  return { expiredGuestUsernames };
+}
+
+// ---- Registered-user settings sync (Phase 2 of session management) --------
+//
+// Guests are deliberately excluded — validateSession only ever
+// resolves a userId for a registered account (see its INNER JOIN doc
+// comment), and there's no guest equivalent here on purpose: a guest
+// identity has nothing durable to sync settings against once its
+// session ends, which is the whole point of it being disposable.
+
+export async function getUserSettings(
+  rawSessionToken: string
+): Promise<{ ok: true; settings: unknown } | { ok: false; reason: "invalid_session" }> {
+  const user = await validateSession(rawSessionToken);
+  if (!user) return { ok: false, reason: "invalid_session" };
+
+  const [row] = await db
+    .select()
+    .from(schema.userSettings)
+    .where(eq(schema.userSettings.userId, user.id))
+    .limit(1);
+
+  return { ok: true, settings: row?.data ?? null };
+}
+
+export async function saveUserSettings(
+  rawSessionToken: string,
+  settings: unknown
+): Promise<{ ok: true } | { ok: false; reason: "invalid_session" }> {
+  const user = await validateSession(rawSessionToken);
+  if (!user) return { ok: false, reason: "invalid_session" };
+
+  await db
+    .insert(schema.userSettings)
+    .values({ userId: user.id, data: settings, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.userSettings.userId,
+      set: { data: settings, updatedAt: new Date() },
+    });
+
   return { ok: true };
 }

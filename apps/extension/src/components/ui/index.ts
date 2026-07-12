@@ -1,6 +1,9 @@
 export { default as Avatar } from "./Avatar";
+export { default as CommunityAvatar } from "./CommunityAvatar";
 export { default as Button } from "./Button";
 export { default as EmptyState } from "./EmptyState";
+export { default as Illustration } from "./Illustration";
+export { default as NameCloud } from "./NameCloud";
 export { default as Input } from "./Input";
 export { default as OptionCard } from "./OptionCard";
 export { default as SectionLabel } from "./SectionLabel";

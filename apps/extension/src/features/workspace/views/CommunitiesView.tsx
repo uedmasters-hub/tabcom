@@ -1,6 +1,7 @@
 import {
   Check,
   Globe,
+  ImagePlus,
   MessageSquare,
   Plus,
   ShieldOff,
@@ -8,9 +9,9 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { Avatar, Button, EmptyState, Input } from "../../../components/ui";
+import { Avatar, Button, CommunityAvatar, EmptyState, Input, NameCloud } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
 import { updateVisibility } from "../../../lib/realtime";
 import { useChatStore } from "../../../stores/chat.store";
@@ -33,6 +34,7 @@ export default function CommunitiesView() {
     (state) => state.openCommunityConversation
   );
   const createCommunity = useChatStore((state) => state.createCommunity);
+  const uploadCommunityImage = useChatStore((state) => state.uploadCommunityImage);
   const respondToCommunityInvite = useChatStore(
     (state) => state.respondToCommunityInvite
   );
@@ -44,6 +46,41 @@ export default function CommunitiesView() {
   const [segment, setSegment] = useState<"groups" | "discover">("groups");
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [pendingImage, setPendingImage] = useState<{
+    previewUrl: string;
+    base64: string;
+    mimeType: string;
+  } | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+  const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // matches the server's cap
+
+  const pickImage = (file: File | undefined) => {
+    setImageError(null);
+    if (!file) return;
+
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setImageError("Use a PNG, JPEG, or WebP image.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError("Image is too large — 2MB max.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      // Strip the "data:image/png;base64," prefix — the server just
+      // wants the raw base64 payload alongside the mime type.
+      const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      setPendingImage({ previewUrl: dataUrl, base64, mimeType: file.type });
+    };
+    reader.onerror = () => setImageError("Couldn't read that file — try another.");
+    reader.readAsDataURL(file);
+  };
 
   const goPublic = () => {
     setVisibilityLocal("public");
@@ -86,10 +123,15 @@ export default function CommunitiesView() {
     setTab("inbox");
   };
 
-  const submitCreate = () => {
+  const submitCreate = async () => {
     if (!name.trim()) return;
-    createCommunity(name.trim());
+    const communityId = await createCommunity(name.trim());
+    if (communityId && pendingImage) {
+      uploadCommunityImage(communityId, pendingImage.mimeType, pendingImage.base64);
+    }
     setName("");
+    setPendingImage(null);
+    setImageError(null);
     setCreating(false);
   };
 
@@ -132,27 +174,61 @@ export default function CommunitiesView() {
       {segment === "groups" ? (
         <>
           {creating && (
-            <div className="flex gap-2 px-6 pt-4">
-              <Input
-                placeholder="Community name"
-                value={name}
-                maxLength={40}
-                onChange={(event) => setName(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submitCreate();
-                }}
-                className="h-10"
-              />
-              <Button size="md" onClick={submitCreate}>
-                Create
-              </Button>
-              <Button
-                size="md"
-                variant="ghost"
-                onClick={() => setCreating(false)}
-              >
-                <X size={16} />
-              </Button>
+            <div className="flex flex-col gap-3 px-6 pt-4">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  aria-label="Add a community logo"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-dashed border-slate-300 text-slate-400 transition hover:border-slate-400 hover:text-slate-600"
+                >
+                  {pendingImage ? (
+                    <img
+                      src={pendingImage.previewUrl}
+                      alt="Selected community logo preview"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <ImagePlus size={16} />
+                  )}
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(event) => pickImage(event.target.files?.[0])}
+                  className="hidden"
+                />
+
+                <Input
+                  placeholder="Community name"
+                  value={name}
+                  maxLength={40}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submitCreate();
+                  }}
+                  className="h-10"
+                />
+                <Button size="md" onClick={() => void submitCreate()}>
+                  Create
+                </Button>
+                <Button
+                  size="md"
+                  variant="ghost"
+                  onClick={() => {
+                    setCreating(false);
+                    setPendingImage(null);
+                    setImageError(null);
+                  }}
+                >
+                  <X size={16} />
+                </Button>
+              </div>
+
+              {imageError && <p className="text-xs text-red-600">{imageError}</p>}
+
+              <NameCloud selected={name} onSelect={setName} />
             </div>
           )}
 
@@ -203,8 +279,17 @@ export default function CommunitiesView() {
             <EmptyState
               className="py-10"
               icon={<Users2 size={24} />}
+              illustrationName="communities-empty.png"
+              illustrationAlt="Illustration of a group of people"
               title="No communities yet"
               description="Create one and invite your accepted contacts — every member joins by consent."
+              action={
+                !creating ? (
+                  <Button size="md" leftIcon={<Plus size={15} />} onClick={() => setCreating(true)}>
+                    Create
+                  </Button>
+                ) : undefined
+              }
             />
           ) : (
             <ul className="mt-4">
@@ -215,9 +300,12 @@ export default function CommunitiesView() {
                     onClick={() => openGroup(community.id)}
                     className="flex w-full items-center gap-3 border-b border-slate-100 px-6 py-4 text-left transition hover:bg-slate-50"
                   >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-900 font-bold text-white">
-                      {community.name.charAt(0).toUpperCase()}
-                    </span>
+                    <CommunityAvatar
+                      name={community.name}
+                      imageVersion={community.imageVersion}
+                      communityId={community.id}
+                      size="md"
+                    />
 
                     <span className="min-w-0 flex-1">
                       <span className="block font-medium">
@@ -246,6 +334,8 @@ export default function CommunitiesView() {
             <EmptyState
               className="py-10"
               icon={<Globe size={24} />}
+              illustrationName="discover-empty.png"
+              illustrationAlt="Illustration of a blocked person icon"
               title="No one else is online"
               description="You're visible to the community. People who sign in on public will appear here instantly."
             />

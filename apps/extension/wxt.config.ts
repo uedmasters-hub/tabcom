@@ -13,7 +13,7 @@ export default defineConfig({
     short_name: "Tabcom",
     description: "Browser-first communication platform",
 
-    permissions: ["storage", "sidePanel", "tabs"],
+    permissions: ["storage", "sidePanel", "tabs", "scripting"],
 
     host_permissions: ["<all_urls>"],
 

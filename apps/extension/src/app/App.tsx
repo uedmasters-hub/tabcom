@@ -10,7 +10,8 @@ import { DoneScreen, ProfileScreen, RegisterScreen, SetupScreen } from "../featu
 import { useAppStore } from "../stores/app.store";
 import { useChatStore } from "../stores/chat.store";
 import { useProfileStore } from "../stores/profile.store";
-import { disconnectRealtime } from "../lib/realtime";
+import { disconnectAllContexts } from "../lib/realtime";
+import { recognizeDevice } from "../lib/auth-client";
 
 export default function App() {
   const screen = useAppStore((state) => state.screen);
@@ -22,6 +23,9 @@ export default function App() {
     (state) => state.isGuestSessionExpired
   );
   const endGuestSession = useProfileStore((state) => state.endGuestSession);
+  const restoreRecognizedGuest = useProfileStore(
+    (state) => state.restoreRecognizedGuest
+  );
   const resetChat = useChatStore((state) => state.resetChat);
 
   // Returning users skip onboarding once storage has hydrated. The
@@ -37,18 +41,64 @@ export default function App() {
   // guest identity is disposable by design; nothing about it should
   // outlive the session it belonged to.
   useEffect(() => {
-    if (!hasHydrated || !isComplete) return;
+    if (!hasHydrated) return;
 
-    if (isGuestSessionExpired()) {
-      endGuestSession();
-      resetChat();
-      disconnectRealtime();
-      setScreen("guest-expired");
+    if (isComplete) {
+      if (isGuestSessionExpired()) {
+        endGuestSession();
+        resetChat();
+        // disconnectAllContexts (not bare disconnectRealtime) — see its
+        // doc comment. This is what makes background's separate
+        // connection actually notice the session ended, instead of
+        // continuing to report this identity as online indefinitely.
+        disconnectAllContexts();
+        setScreen("guest-expired");
+        return;
+      }
+      setScreen("workspace");
       return;
     }
 
-    setScreen("workspace");
-  }, [hasHydrated, isComplete, isGuestSessionExpired, endGuestSession, resetChat, setScreen]);
+    // Local profile state says onboarding is still needed — but device
+    // recognition (Phase 1 of session management) covers ONE concrete
+    // case local storage alone can't: THIS device already has an
+    // active, non-expired guest session server-side (started, say, by
+    // a different extension context, or after a partial local reset)
+    // that local state simply doesn't know about yet. Silently resume
+    // it rather than send the person through onboarding again for a
+    // session that's still genuinely running.
+    //
+    // Deliberately NOT attempted for registered accounts here: the
+    // recognition endpoint never returns a bearer token (see its doc
+    // comment) — without the actual sessionToken there's nothing valid
+    // to authenticate with, so there's no safe way to silently restore
+    // a registered account whose local session token is genuinely
+    // gone. That's a real re-auth, not a recognition problem.
+    let cancelled = false;
+    void recognizeDevice().then((result) => {
+      if (cancelled || !result.ok || !result.session) return;
+      if (result.session.sessionType !== "guest" || !result.session.guestUsername) return;
+      if (new Date(result.session.expiresAt) <= new Date()) return;
+
+      restoreRecognizedGuest({
+        username: result.session.guestUsername,
+        expiresAt: new Date(result.session.expiresAt).getTime(),
+      });
+      setScreen("workspace");
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    hasHydrated,
+    isComplete,
+    isGuestSessionExpired,
+    endGuestSession,
+    restoreRecognizedGuest,
+    resetChat,
+    setScreen,
+  ]);
 
   // Avoid a welcome-screen flash while browser.storage loads.
   if (!hasHydrated) {
