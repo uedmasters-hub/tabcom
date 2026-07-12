@@ -1455,6 +1455,8 @@ async function consumePendingNavigation(canonicalKey: string) {
 interface PeerPayload {
   xPercent: number;
   yPercent: number;
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -1476,6 +1478,14 @@ function positionCursor(el: HTMLElement, payload: PeerPayload) {
     el.style.top = `${point.y}px`;
     return;
   }
+  if (payload.pageX != null && payload.pageY != null) {
+    // Absolute document-pixel fallback — same 3-tier chain as pins:
+    // element anchor first, absolute pixels second, percent last.
+    el.style.left = `${payload.pageX - window.scrollX}px`;
+    el.style.top = `${payload.pageY - window.scrollY}px`;
+    return;
+  }
+  // Legacy percent fallback (peers running an older build).
   el.style.left = `${(payload.xPercent / 100) * Math.max(document.documentElement.scrollWidth, 1) - window.scrollX}px`;
   el.style.top = `${(payload.yPercent / 100) * documentHeight() - window.scrollY}px`;
 }
@@ -1627,6 +1637,12 @@ function handleCursorMove(event: MouseEvent) {
       xPercent:
         Math.min(100, (event.pageX / Math.max(document.documentElement.scrollWidth, 1)) * 100) || 0,
       yPercent: Math.min(100, (event.pageY / documentHeight()) * 100) || 0,
+      // Absolute document pixels: the receiver-side fallback when the
+      // element anchor doesn't resolve in THEIR DOM. Percents drift
+      // between peers whose pages have loaded different amounts of
+      // content (infinite scroll) — same fix already shipped for pins.
+      pageX: event.pageX,
+      pageY: event.pageY,
       anchorSelector: elementAnchor?.selector,
       elXPercent: elementAnchor?.elXPercent,
       elYPercent: elementAnchor?.elYPercent,
@@ -1959,6 +1975,8 @@ async function sendEphemeralAnnotation(
       text,
       xPercent,
       yPercent,
+      pageX: clientX + window.scrollX,
+      pageY: clientY + window.scrollY,
       anchorSelector: elementAnchor?.selector,
       elXPercent: elementAnchor?.elXPercent,
       elYPercent: elementAnchor?.elYPercent,
@@ -1972,10 +1990,17 @@ function handleAnnotationPeer(peer: AnnotationPeer) {
   if (peer.communityId !== annotationScope.communityId) return;
 
   const point = anchorViewportPoint(peer);
-  const fallback = point ?? {
-    x: (peer.xPercent / 100) * window.innerWidth,
-    y: (peer.yPercent / 100) * window.innerHeight,
-  };
+  const fallback =
+    point ??
+    // Absolute document pixels beat the old viewport-percent guess,
+    // which wasn't even page-relative — an unanchored bubble could land
+    // at an essentially arbitrary spot on a scrolled/taller page.
+    (peer.pageX != null && peer.pageY != null
+      ? { x: peer.pageX - window.scrollX, y: peer.pageY - window.scrollY }
+      : {
+          x: (peer.xPercent / 100) * window.innerWidth,
+          y: (peer.yPercent / 100) * window.innerHeight,
+        });
 
   renderSpeechBubble({
     text: peer.text,

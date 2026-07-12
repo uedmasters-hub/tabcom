@@ -416,6 +416,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendCursorMove(scope.communityId, scope.canonicalKey, {
         xPercent: message.xPercent,
         yPercent: message.yPercent,
+        pageX: message.pageX,
+        pageY: message.pageY,
         anchorSelector: message.anchorSelector,
         elXPercent: message.elXPercent,
         elYPercent: message.elYPercent,
@@ -484,6 +486,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
           text: message.text,
           xPercent: message.xPercent,
           yPercent: message.yPercent,
+          pageX: message.pageX,
+          pageY: message.pageY,
           anchorSelector: message.anchorSelector,
           elXPercent: message.elXPercent,
           elYPercent: message.elYPercent,

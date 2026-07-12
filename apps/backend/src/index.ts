@@ -2552,6 +2552,8 @@ async function ensureUniqueGuestUsername(
       canonicalKey,
       xPercent,
       yPercent,
+      pageX,
+      pageY,
       anchorSelector,
       elXPercent,
       elYPercent,
@@ -2560,6 +2562,11 @@ async function ensureUniqueGuestUsername(
       canonicalKey: string;
       xPercent: number;
       yPercent: number;
+      /** Absolute document pixels — receiver-side fallback when the
+       *  element anchor doesn't resolve; immune to page-height drift
+       *  between peers (infinite scroll), unlike the percents. */
+      pageX?: number;
+      pageY?: number;
       anchorSelector?: string;
       elXPercent?: number;
       elYPercent?: number;
@@ -2577,6 +2584,8 @@ async function ensureUniqueGuestUsername(
           from: { username: me.username, name: me.name, color: me.color },
           xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
           yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
+          pageX: pageX != null ? Math.max(0, Number(pageX) || 0) : undefined,
+          pageY: pageY != null ? Math.max(0, Number(pageY) || 0) : undefined,
           anchorSelector:
             typeof anchorSelector === "string"
               ? anchorSelector.slice(0, 500)
@@ -2628,6 +2637,8 @@ async function ensureUniqueGuestUsername(
       text,
       xPercent,
       yPercent,
+      pageX,
+      pageY,
       anchorSelector,
       elXPercent,
       elYPercent,
@@ -2637,6 +2648,9 @@ async function ensureUniqueGuestUsername(
       text: string;
       xPercent: number;
       yPercent: number;
+      /** Absolute document pixels — see cursor_move for why. */
+      pageX?: number;
+      pageY?: number;
       anchorSelector?: string;
       elXPercent?: number;
       elYPercent?: number;
@@ -2659,6 +2673,8 @@ async function ensureUniqueGuestUsername(
           text: trimmed,
           xPercent: Math.max(0, Math.min(100, Number(xPercent) || 0)),
           yPercent: Math.max(0, Math.min(100, Number(yPercent) || 0)),
+          pageX: pageX != null ? Math.max(0, Number(pageX) || 0) : undefined,
+          pageY: pageY != null ? Math.max(0, Number(pageY) || 0) : undefined,
           anchorSelector:
             typeof anchorSelector === "string"
               ? anchorSelector.slice(0, 500)

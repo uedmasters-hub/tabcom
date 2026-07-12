@@ -706,6 +706,12 @@ export interface CursorPeer {
   from: { username: string; name: string; color: string };
   xPercent: number;
   yPercent: number;
+  /** Absolute document pixels at capture time — preferred fallback over
+   *  xPercent/yPercent when the element anchor doesn't resolve, since
+   *  percents drift between peers whose pages have loaded different
+   *  amounts of content (infinite scroll). Same reasoning as BoardPin. */
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -724,6 +730,9 @@ export interface AnnotationPeer {
   text: string;
   xPercent: number;
   yPercent: number;
+  /** Absolute document pixels — see CursorPeer.pageX for why. */
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -732,6 +741,8 @@ export interface AnnotationPeer {
 export interface CursorMovePayload {
   xPercent: number;
   yPercent: number;
+  pageX?: number;
+  pageY?: number;
   anchorSelector?: string;
   elXPercent?: number;
   elYPercent?: number;
@@ -760,6 +771,8 @@ export function sendAnnotationEphemeral(
     text: string;
     xPercent: number;
     yPercent: number;
+    pageX?: number;
+    pageY?: number;
     anchorSelector?: string;
     elXPercent?: number;
     elYPercent?: number;
