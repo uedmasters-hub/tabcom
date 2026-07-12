@@ -38,6 +38,7 @@ type InviteState =
 export default function RegisterScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
   const goBack = useAppStore((state) => state.goBack);
+  const returnTo = useAppStore((state) => state.returnTo);
   const setSession = useProfileStore((state) => state.setSession);
   const setVerified = useProfileStore((state) => state.setVerified);
   const setIdentity = useProfileStore((state) => state.setIdentity);
@@ -266,7 +267,16 @@ export default function RegisterScreen() {
 
               <button
                 type="button"
-                onClick={() => setScreen("signin")}
+                onClick={() =>
+                  // Forward whatever returnTo brought us to Register in the
+                  // first place — e.g. the guest banner's "workspace" —
+                  // rather than letting setScreen's default clear it, which
+                  // previously meant SignIn's own Back button had nothing
+                  // left to return to and fell all the way back to Welcome,
+                  // making an in-progress guest session look like it had
+                  // ended when it hadn't.
+                  setScreen("signin", returnTo ? { returnTo } : undefined)
+                }
                 className="w-full text-center text-xs font-medium text-slate-400 transition hover:text-slate-600"
               >
                 Already have an account? Sign in
