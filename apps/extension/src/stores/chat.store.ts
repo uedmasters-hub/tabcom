@@ -165,8 +165,22 @@ interface ChatState {
   sendText: (conversationId: string, text: string, replyToId?: string) => void;
   sendMedia: (
     conversationId: string,
-    media: { kind: "voice" | "image"; dataUrl: string; durationMs?: number }
+    media: {
+      kind: "voice" | "image" | "video" | "file" | "contact" | "location";
+      dataUrl?: string;
+      durationMs?: number;
+      fileName?: string;
+      fileSize?: number;
+      mimeType?: string;
+      latitude?: number;
+      longitude?: number;
+      contactUsername?: string;
+      contactName?: string;
+      contactColor?: string;
+    }
   ) => void;
+  /** Re-attempt delivery of a failed outgoing message. */
+  retryMessage: (conversationId: string, messageId: string) => void;
   editMessage: (conversationId: string, messageId: string, text: string) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   reactToMessage: (conversationId: string, messageId: string, emoji: string) => void;
@@ -489,12 +503,31 @@ export const useChatStore = create<ChatState>()(
           url: message.url,
           dataUrl: message.dataUrl,
           durationMs: message.durationMs,
+          fileName: message.fileName,
+          fileSize: message.fileSize,
+          mimeType: message.mimeType,
+          latitude: message.latitude,
+          longitude: message.longitude,
+          contactUsername: message.contactUsername,
+          contactName: message.contactName,
+          contactColor: message.contactColor,
           sentAt: message.sentAt,
           replyToId: message.replyToId,
         };
 
+        // Full lifecycle: sending → sent (socket accepted) →
+        // delivered (relay handed it to a live recipient socket) →
+        // read (receipt) — or failed, with Retry in the bubble.
+        const onAck = (delivered: boolean) => {
+          mutateMessage(conversationId, message.id, (m) =>
+            m.authorId === ME && m.status !== "failed"
+              ? { ...m, status: delivered ? "delivered" : "failed" }
+              : m
+          );
+        };
+
         if (conversation.kind === "community" && conversation.communityId) {
-          sendCommunityMessage(conversation.communityId, wire);
+          sendCommunityMessage(conversation.communityId, wire, onAck);
           return;
         }
 
@@ -504,7 +537,7 @@ export const useChatStore = create<ChatState>()(
         if (!contact) return;
 
         if (contact.id.startsWith("u-")) {
-          sendDm(contact.username, wire);
+          sendDm(contact.username, wire, onAck);
         } else {
           scheduleReply(conversationId, contact.id);
         }
@@ -683,25 +716,57 @@ export const useChatStore = create<ChatState>()(
         },
 
         sendMedia: (conversationId, media) => {
-          if (!media.dataUrl) return;
+          // Payload-less kinds (contact, location) are valid without a
+          // dataUrl; everything else needs one.
+          const needsPayload = !["contact", "location"].includes(media.kind);
+          if (needsPayload && !media.dataUrl) return;
+
+          // `text` doubles as the conversation-list / notification
+          // preview everywhere previews read message.text — so media
+          // messages carry a human label there instead of an empty
+          // string, and every preview surface works with no changes.
+          const previewText =
+            media.kind === "voice"
+              ? "🎤 Voice message"
+              : media.kind === "image"
+                ? "📷 Photo"
+                : media.kind === "video"
+                  ? "🎬 Video"
+                  : media.kind === "file"
+                    ? `📎 ${media.fileName ?? "File"}`
+                    : media.kind === "contact"
+                      ? `👤 ${media.contactName ?? media.contactUsername ?? "Contact"}`
+                      : "📍 Location";
 
           const message: Message = {
             id: uid(),
             authorId: ME,
             kind: media.kind,
-            // `text` doubles as the conversation-list / notification
-            // preview everywhere previews read message.text — so media
-            // messages carry a human label there instead of an empty
-            // string, and every preview surface works with no changes.
-            text: media.kind === "voice" ? "🎤 Voice message" : "📷 Photo",
+            text: previewText,
             dataUrl: media.dataUrl,
             durationMs: media.durationMs,
+            fileName: media.fileName,
+            fileSize: media.fileSize,
+            mimeType: media.mimeType,
+            latitude: media.latitude,
+            longitude: media.longitude,
+            contactUsername: media.contactUsername,
+            contactName: media.contactName,
+            contactColor: media.contactColor,
             sentAt: Date.now(),
-            status: get().live ? "sent" : "failed",
+            status: get().live ? "sending" : "failed",
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
-          deliver(conversationId, message);
+          if (get().live) deliver(conversationId, message);
+        },
+
+        retryMessage: (conversationId, messageId) => {
+          const thread = get().messages[conversationId] ?? [];
+          const original = thread.find((m) => m.id === messageId);
+          if (!original || original.authorId !== ME || original.status !== "failed") return;
+          mutateMessage(conversationId, messageId, (m) => ({ ...m, status: "sending" }));
+          deliver(conversationId, { ...original, status: "sending" });
         },
 
         editMessage: (conversationId, messageId, text) => {
@@ -987,6 +1052,12 @@ export const useChatStore = create<ChatState>()(
         },
 
         receiveConnectRequest: (from) => {
+          // Idempotence: the same request can arrive twice (live socket
+          // + background queue drain, or a server re-send on reconnect).
+          // A request already pending must not stack duplicate notices
+          // or re-mark the thread unread after the user viewed it.
+          if (get().connections[from.username] === "pending_in") return;
+
           const contactId = `u-${from.username}`;
 
           set((state) => ({

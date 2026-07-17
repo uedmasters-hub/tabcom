@@ -353,10 +353,11 @@ const PENDING_INBOX_KEY = "tabcom:pending-inbox";
 const PENDING_INBOX_CAP = 500;
 
 export interface PendingInboxItem {
-  kind: "dm" | "community";
+  kind: "dm" | "community" | "connect_request";
   from: WireUser;
   communityId?: string;
-  message: WireMessage;
+  /** Absent for connect_request — the "payload" is the sender. */
+  message?: WireMessage;
   receivedAt: number;
 }
 
@@ -514,6 +515,16 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
           onDmError: () => {},
           onConnections: () => {},
           onConnectRequest: (from) => {
+            if (isUiOpen()) return; // panel's live socket handles it
+            // Queue it like a message: on next panel open the drain
+            // turns this into the unread "wants to connect" thread, so
+            // the inbox, bell, and toolbar badge all light up instead
+            // of the request hiding silently in Discover → Requests.
+            queuePendingInbox({
+              kind: "connect_request",
+              from,
+              receivedAt: Date.now(),
+            });
             notify(
               `connect:${from.username}`,
               "Connection request",

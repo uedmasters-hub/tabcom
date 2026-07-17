@@ -139,7 +139,15 @@ export type CommunityErrorReason =
 
 export interface WireMessage {
   id: string;
-  kind: "text" | "link" | "voice" | "image";
+  kind:
+    | "text"
+    | "link"
+    | "voice"
+    | "image"
+    | "video"
+    | "file"
+    | "contact"
+    | "location";
   text: string;
   url?: string;
   /** Data URL for voice/image messages — relayed and forgotten by the
@@ -148,6 +156,14 @@ export interface WireMessage {
    *  under the transport's 1MB frame limit. */
   dataUrl?: string;
   durationMs?: number;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  latitude?: number;
+  longitude?: number;
+  contactUsername?: string;
+  contactName?: string;
+  contactColor?: string;
   sentAt: number;
   replyToId?: string;
 }
@@ -656,9 +672,26 @@ export function deleteCommunity(communityId: string): void {
 
 export function sendCommunityMessage(
   communityId: string,
-  message: WireMessage
+  message: WireMessage,
+  onAck?: (delivered: boolean) => void
 ): void {
-  socket?.emit("community_message", { communityId, message });
+  if (!socket) {
+    onAck?.(false);
+    return;
+  }
+  if (onAck) {
+    socket
+      .timeout(10_000)
+      .emit(
+        "community_message",
+        { communityId, message },
+        (err: unknown, ack?: { delivered?: boolean }) => {
+          onAck(!err && ack?.delivered === true);
+        }
+      );
+    return;
+  }
+  socket.emit("community_message", { communityId, message });
 }
 
 export interface BoardAddItemInput {
@@ -998,8 +1031,26 @@ export function updateVisibility(visibility: Visibility): void {
   socket?.emit("visibility", visibility);
 }
 
-export function sendDm(toUsername: string, message: WireMessage): void {
-  socket?.emit("dm", { to: toUsername, message });
+export function sendDm(
+  toUsername: string,
+  message: WireMessage,
+  onAck?: (delivered: boolean) => void
+): void {
+  if (!socket) {
+    onAck?.(false);
+    return;
+  }
+  if (onAck) {
+    // 10s covers a waking server; past that the message is "failed"
+    // and the bubble offers Retry.
+    socket
+      .timeout(10_000)
+      .emit("dm", { to: toUsername, message }, (err: unknown, ack?: { delivered?: boolean }) => {
+        onAck(!err && ack?.delivered === true);
+      });
+  } else {
+    socket.emit("dm", { to: toUsername, message });
+  }
 }
 
 export function editDm(toUsername: string, messageId: string, text: string): void {

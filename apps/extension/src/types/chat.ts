@@ -16,13 +16,22 @@ export function contactLabel(contact: Contact): string {
   return contact.alias?.trim() || contact.name;
 }
 
-export type MessageKind = "text" | "link" | "system" | "voice" | "image";
+export type MessageKind =
+  | "text"
+  | "link"
+  | "system"
+  | "voice"
+  | "image"
+  | "video"
+  | "file"
+  | "contact"
+  | "location";
 
 /** Only meaningful for messages authored by "me" — a fire-and-forget
  *  socket emit doesn't give a real delivery guarantee, so this is a
  *  best-effort signal: sending while offline is the one case we can
  *  detect for certain. */
-export type MessageStatus = "sending" | "sent" | "failed";
+export type MessageStatus = "sending" | "sent" | "delivered" | "failed";
 
 export interface MessageReaction {
   emoji: string;
@@ -41,6 +50,19 @@ export interface Message {
   dataUrl?: string;
   /** Recorded length for kind "voice", in milliseconds. */
   durationMs?: number;
+  /** kind "file" (and video/image where known): original file metadata.
+   *  The payload itself is dataUrl — device-to-device only, never
+   *  stored server-side. */
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  /** kind "location". */
+  latitude?: number;
+  longitude?: number;
+  /** kind "contact" — a shared Tabcom contact card. */
+  contactUsername?: string;
+  contactName?: string;
+  contactColor?: string;
   sentAt: number;
   /** Community messages carry author display info. */
   authorName?: string;

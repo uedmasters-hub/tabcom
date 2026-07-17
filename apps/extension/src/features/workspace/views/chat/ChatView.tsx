@@ -8,9 +8,17 @@ import {
   ExternalLink,
   Link as LinkIcon,
   Mic,
+  FileText,
+  Image as ImageIcon,
+  MapPin,
+  Paperclip,
   Pause,
   Pencil,
   Phone,
+  Download,
+  Expand,
+  RotateCw,
+  UserRound,
   PictureInPicture2,
   Play,
   Plus,
@@ -71,6 +79,150 @@ function ReactionPills({
   );
 }
 
+/** In-chat attachment preview: the DEFAULT viewing experience. Covers
+ *  the conversation without leaving it — a richer full-tab viewer is
+ *  one explicit tap away. Blob URL for the iframe is minted in THIS
+ *  document so its lifetime matches the preview. */
+function AttachmentLightbox({
+  message,
+  onClose,
+  onFullScreen,
+}: {
+  message: Message;
+  onClose: () => void;
+  onFullScreen: () => void;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!message.dataUrl) return;
+    let revoked = false;
+    let url: string | null = null;
+    void (async () => {
+      try {
+        const blob = await (await fetch(message.dataUrl!)).blob();
+        const typed = message.mimeType
+          ? new Blob([blob], { type: message.mimeType })
+          : blob;
+        url = URL.createObjectURL(typed);
+        if (!revoked) setObjectUrl(url);
+      } catch {
+        setObjectUrl(null);
+      }
+    })();
+    return () => {
+      revoked = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [message.dataUrl, message.mimeType]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const browserViewable =
+    message.kind === "file" &&
+    (message.mimeType === "application/pdf" ||
+      message.mimeType?.startsWith("text/") ||
+      message.mimeType?.startsWith("image/"));
+
+  const title =
+    message.fileName ??
+    (message.kind === "image"
+      ? "Photo"
+      : message.kind === "video"
+        ? "Video"
+        : message.kind === "voice"
+          ? "Voice message"
+          : "File");
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Preview: ${title}`}
+      className="absolute inset-0 z-50 flex flex-col bg-slate-950/95"
+    >
+      <div className="flex items-center gap-2 px-3 py-2">
+        <p className="min-w-0 flex-1 truncate text-[12px] font-semibold text-white">
+          {title}
+          {message.fileSize ? (
+            <span className="ml-1.5 font-normal text-slate-400">
+              {formatFileSize(message.fileSize)}
+            </span>
+          ) : null}
+        </p>
+        <button
+          type="button"
+          onClick={onFullScreen}
+          title="Open full screen"
+          className="flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[11px] font-semibold text-white transition hover:bg-white/20"
+        >
+          <Expand size={12} />
+          Full screen
+        </button>
+        {objectUrl && (
+          <a
+            href={objectUrl}
+            download={message.fileName ?? title}
+            title="Download"
+            className="rounded-lg bg-white/10 p-1.5 text-white transition hover:bg-white/20"
+          >
+            <Download size={13} />
+          </a>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close preview"
+          className="rounded-lg bg-white/10 p-1.5 text-white transition hover:bg-white/20"
+        >
+          <X size={13} />
+        </button>
+      </div>
+
+      <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+        {!message.dataUrl ? (
+          <p className="px-6 text-center text-xs leading-5 text-slate-400">
+            This attachment is no longer on this device — Tabcom never keeps a
+            server copy, so it can't be re-downloaded.
+          </p>
+        ) : message.kind === "image" ? (
+          <img
+            src={message.dataUrl}
+            alt={title}
+            className="max-h-full max-w-full rounded-lg object-contain"
+          />
+        ) : message.kind === "video" ? (
+          <video
+            src={message.dataUrl}
+            controls
+            autoPlay
+            className="max-h-full max-w-full rounded-lg"
+          />
+        ) : message.kind === "voice" ? (
+          <audio src={message.dataUrl} controls autoPlay className="w-full max-w-xs" />
+        ) : browserViewable && objectUrl ? (
+          <iframe
+            src={objectUrl}
+            title={title}
+            className="h-full w-full rounded-lg border-0 bg-white"
+          />
+        ) : (
+          <p className="px-6 text-center text-xs leading-5 text-slate-400">
+            No inline preview for this file type — use Download above, or Full
+            screen for the dedicated viewer.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   showAuthor,
@@ -85,6 +237,8 @@ function MessageBubble({
   onReply,
   onReact,
   onOpenReplySource,
+  onRetry,
+  onOpenAttachment,
 }: {
   message: Message;
   showAuthor: boolean;
@@ -99,6 +253,8 @@ function MessageBubble({
   onReply: () => void;
   onReact: (emoji: string) => void;
   onOpenReplySource: () => void;
+  onRetry: () => void;
+  onOpenAttachment: () => void;
 }) {
   const isMine = message.authorId === ME;
   const [editDraft, setEditDraft] = useState(message.text);
@@ -216,11 +372,127 @@ function MessageBubble({
                 isMine={isMine}
               />
             ) : message.kind === "image" && message.dataUrl ? (
-              <img
-                src={message.dataUrl}
-                alt="Shared photo"
-                className="-mx-2 -my-1 max-h-64 max-w-full rounded-xl object-contain"
-              />
+              <button
+                type="button"
+                onClick={onOpenAttachment}
+                title="Open full-screen"
+                className="-mx-2 -my-1 block"
+              >
+                <img
+                  src={message.dataUrl}
+                  alt="Shared photo"
+                  className="max-h-64 max-w-full rounded-xl object-contain"
+                />
+              </button>
+            ) : message.kind === "video" && message.dataUrl ? (
+              <span className="-mx-2 -my-1 block">
+                <video
+                  src={message.dataUrl}
+                  controls
+                  preload="metadata"
+                  className="max-h-64 max-w-full rounded-xl bg-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={onOpenAttachment}
+                  className={cn(
+                    "mt-1 text-[11px] font-semibold underline underline-offset-2",
+                    isMine ? "text-slate-300" : "text-slate-500"
+                  )}
+                >
+                  Open full-screen
+                </button>
+              </span>
+            ) : message.kind === "file" && message.dataUrl ? (
+              <button
+                type="button"
+                onClick={onOpenAttachment}
+                title="Open file"
+                className="flex items-center gap-2.5 text-left"
+              >
+                <span
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+                    isMine ? "bg-white/10" : "bg-slate-100"
+                  )}
+                >
+                  <Paperclip size={16} className={isMine ? "text-white" : "text-slate-500"} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block max-w-[180px] truncate font-medium underline underline-offset-2">
+                    {message.fileName ?? "File"}
+                  </span>
+                  <span
+                    className={cn(
+                      "mt-0.5 block text-xs",
+                      isMine ? "text-slate-300" : "text-slate-500"
+                    )}
+                  >
+                    {formatFileSize(message.fileSize) || "File"}
+                  </span>
+                </span>
+              </button>
+            ) : message.kind === "contact" && message.contactUsername ? (
+              <span className="flex items-center gap-2.5">
+                <span
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white"
+                  style={{ backgroundColor: message.contactColor ?? "#64748b" }}
+                >
+                  {(message.contactName ?? message.contactUsername).charAt(0).toUpperCase()}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate font-medium">
+                    {message.contactName ?? message.contactUsername}
+                  </span>
+                  <span
+                    className={cn(
+                      "mt-0.5 block truncate text-xs",
+                      isMine ? "text-slate-300" : "text-slate-500"
+                    )}
+                  >
+                    @{message.contactUsername} · Tabcom contact
+                  </span>
+                </span>
+              </span>
+            ) : message.kind === "location" &&
+              message.latitude != null &&
+              message.longitude != null ? (
+              <a
+                href={`https://www.google.com/maps?q=${message.latitude},${message.longitude}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-start gap-2 text-left"
+              >
+                <MapPin size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  <span className="block font-medium underline underline-offset-2">
+                    Shared location
+                  </span>
+                  <span
+                    className={cn(
+                      "mt-0.5 block text-xs",
+                      isMine ? "text-slate-300" : "text-slate-500"
+                    )}
+                  >
+                    {message.latitude.toFixed(5)}, {message.longitude.toFixed(5)} — open in
+                    Maps
+                  </span>
+                </span>
+              </a>
+            ) : ["image", "video", "voice", "file"].includes(message.kind) &&
+              !message.dataUrl ? (
+              // Zero-retention consequence: no server copy exists, so a
+              // payload lost from this device is gone — placeholder, no
+              // re-download offered because none is possible.
+              <span
+                className={cn(
+                  "flex items-center gap-2 text-xs italic",
+                  isMine ? "text-slate-300" : "text-slate-400"
+                )}
+              >
+                <Paperclip size={13} />
+                Attachment unavailable on this device
+              </span>
             ) : (
               message.text
             )}
@@ -242,12 +514,26 @@ function MessageBubble({
         >
           {message.editedAt && <span className="italic">edited ·</span>}
           {formatClockTime(message.sentAt)}
-          {message.status === "failed" && (
-            <span className="font-semibold text-red-500">· not sent</span>
+          {message.status === "failed" && !message.readAt && (
+            <>
+              <span className="font-semibold text-red-500">· not sent</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="flex items-center gap-0.5 font-semibold text-blue-600 underline underline-offset-2"
+              >
+                <RotateCw size={11} />
+                Retry
+              </button>
+            </>
           )}
-          {isMine && message.status !== "failed" && (
+          {isMine && (message.status !== "failed" || message.readAt) && (
             message.readAt ? (
               <CheckCheck size={13} className="text-blue-500" />
+            ) : message.status === "delivered" ? (
+              <CheckCheck size={13} className="text-slate-400" />
+            ) : message.status === "sending" ? (
+              <Check size={13} className="text-slate-300" />
             ) : (
               <Check size={13} className="text-slate-400" />
             )
@@ -355,6 +641,13 @@ import NotificationBell from "../../../../components/layout/NotificationBell";
 import { cn } from "../../../../lib/cn";
 import { FLOATING_PILL_ENABLED } from "../../../../lib/feature-flags";
 import { sendTyping, updatePresence } from "../../../../lib/realtime";
+import {
+  fileToStagedAttachment,
+  formatFileSize,
+  openAttachmentViewer,
+  stagedToMedia,
+  type StagedAttachment,
+} from "../../../../lib/attachments";
 import { ME, useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import { contactLabel } from "../../../../types/chat";
@@ -389,6 +682,8 @@ export default function ChatView({
   const closeConversation = useChatStore((state) => state.closeConversation);
   const sendText = useChatStore((state) => state.sendText);
   const sendMedia = useChatStore((state) => state.sendMedia);
+  const retryMessage = useChatStore((state) => state.retryMessage);
+  const allContacts = useChatStore((state) => state.contacts);
   const editMessage = useChatStore((state) => state.editMessage);
   const deleteMessage = useChatStore((state) => state.deleteMessage);
   const reactToMessage = useChatStore((state) => state.reactToMessage);
@@ -401,6 +696,20 @@ export default function ChatView({
   /** Appear-offline gate: which action the user tried while hidden —
    *  drives the "switch to Online first" prompt. */
   const [offlineGate, setOfflineGate] = useState<"message" | "call" | null>(null);
+  /** Staged (previewed, not yet sent) attachment. */
+  const [pending, setPending] = useState<StagedAttachment | null>(null);
+  const [attachError, setAttachError] = useState<{
+    text: string;
+    /** Deep-link into the unified permission center. */
+    setupFocus?: string;
+  } | null>(null);
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [showContactPicker, setShowContactPicker] = useState(false);
+  /** In-chat attachment preview (lightbox). Full-screen tab viewer is
+   *  an explicit escalation from here, never the first hop. */
+  const [previewMessage, setPreviewMessage] = useState<Message | null>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
 
@@ -558,26 +867,78 @@ export default function ChatView({
     fileInputRef.current?.click();
   };
 
-  const handleImageChosen = (file: File | undefined) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    // Downscale so the relay's 1MB frame limit is never hit — 1280px
-    // max edge at 0.8 JPEG lands well under it for photos.
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      const maxEdge = 1280;
-      const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
-      sendMedia(conversationId, {
-        kind: "image",
-        dataUrl: canvas.toDataURL("image/jpeg", 0.8),
-      });
-    };
-    img.src = objectUrl;
+  /** Stage any file (from picker, drag-drop, or paste) as a preview
+   *  above the composer — nothing sends until the user confirms. */
+  const stageFile = (file: File | undefined | null) => {
+    if (!file) return;
+    setAttachError(null);
+    setAttachBusy(true);
+    void fileToStagedAttachment(file)
+      .then((staged) => setPending(staged))
+      .catch((error: Error) => setAttachError({ text: error.message }))
+      .finally(() => setAttachBusy(false));
+  };
+
+  const sendPending = () => {
+    if (!pending) return;
+    if (myPresence === "offline") {
+      setOfflineGate("message");
+      return;
+    }
+    sendMedia(conversationId, stagedToMedia(pending));
+    setPending(null);
+  };
+
+  const shareLocation = () => {
+    setShowAttachMenu(false);
+    setAttachError(null);
+    if (!navigator.geolocation) {
+      setAttachError({ text: "Location isn't available in this browser." });
+      return;
+    }
+    setAttachBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setAttachBusy(false);
+        sendMedia(conversationId, {
+          kind: "location",
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+      },
+      (error) => {
+        setAttachBusy(false);
+        // Same pattern as the voice-note flow: permission prompts often
+        // can't render inside this popup, so a denial here usually
+        // means "the prompt never appeared" — send the user to the
+        // one-time setup tab where it can, instead of a dead end.
+        if (error.code === error.PERMISSION_DENIED) {
+          setAttachError({
+            text: "Location needs a one-time permission — the prompt can't show properly inside this popup. Grant it on the setup page, then come back and tap Location again.",
+            setupFocus: "location",
+          });
+        } else {
+          setAttachError({
+            text: "Couldn't get a location fix — check that your device's location service is on, then try again.",
+          });
+        }
+      },
+      { timeout: 10_000 }
+    );
+  };
+
+  const sendContactCard = (target: {
+    username: string;
+    name: string;
+    color: string;
+  }) => {
+    setShowContactPicker(false);
+    sendMedia(conversationId, {
+      kind: "contact",
+      contactUsername: target.username,
+      contactName: target.name,
+      contactColor: target.color,
+    });
   };
   // Board-first: the board (shared tabs/pins/areas) is the community's
   // primary surface, chat is secondary — see product decision log.
@@ -699,7 +1060,46 @@ export default function ChatView({
     visibility === "private" && (isLiveContact || isCommunity);
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div
+      className={"relative flex min-h-0 flex-1 flex-col"}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) setDragOver(false);
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return;
+        event.preventDefault();
+        setDragOver(false);
+        stageFile(event.dataTransfer.files[0]);
+      }}
+    >
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-blue-400 bg-blue-50/80">
+          <p className="text-sm font-semibold text-blue-600">
+            Drop to attach — sent device-to-device
+          </p>
+        </div>
+      )}
+
+      {previewMessage && (
+        <AttachmentLightbox
+          message={
+            // Re-resolve from the live thread so edits/deletes while
+            // previewing stay honest.
+            messages.find((m) => m.id === previewMessage.id) ?? previewMessage
+          }
+          onClose={() => setPreviewMessage(null)}
+          onFullScreen={() => {
+            openAttachmentViewer(conversationId, previewMessage);
+            setPreviewMessage(null);
+          }}
+        />
+      )}
       {/* Thread header — tap for details */}
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
         <button
@@ -909,6 +1309,8 @@ export default function ChatView({
                 : undefined
             }
             isEditing={editingMessageId === message.id}
+            onRetry={() => retryMessage(conversationId, message.id)}
+            onOpenAttachment={() => setPreviewMessage(message)}
             onStartEdit={() => setEditingMessageId(message.id)}
             onSaveEdit={(text) => {
               if (text.trim() && text.trim() !== message.text) {
@@ -971,6 +1373,159 @@ export default function ChatView({
           >
             Not now
           </button>
+        </div>
+      )}
+
+      {attachError && (
+        <div className="mx-4 mb-2 flex items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2">
+          <p className="min-w-0 flex-1 text-[11px] leading-4 text-red-700">
+            {attachError.text}
+            {attachError.setupFocus && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() =>
+                    void browser.tabs.create({
+                      url:
+                        browser.runtime.getURL("/permissions.html" as never) +
+                        `?focus=${attachError.setupFocus}`,
+                    })
+                  }
+                  className="font-semibold underline underline-offset-2"
+                >
+                  Open the setup page
+                </button>
+              </>
+            )}
+          </p>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setAttachError(null)}
+            className="shrink-0 rounded-lg p-1 text-red-400 transition hover:bg-red-100"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+
+      {attachBusy && (
+        <div className="mx-4 mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+          Preparing attachment…
+        </div>
+      )}
+
+      {pending && (
+        <div className="mx-4 mb-2 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+          {pending.kind === "image" ? (
+            <img
+              src={pending.dataUrl}
+              alt={pending.fileName}
+              className="h-16 w-16 shrink-0 rounded-xl object-cover"
+            />
+          ) : pending.kind === "video" ? (
+            <video
+              src={pending.dataUrl}
+              muted
+              className="h-16 w-16 shrink-0 rounded-xl bg-slate-900 object-cover"
+            />
+          ) : (
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-slate-100">
+              <Paperclip size={20} className="text-slate-400" />
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-semibold text-slate-900">
+              {pending.fileName}
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              {formatFileSize(pending.fileSize)}
+              {" · sent directly to their device — never stored on a server"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={sendPending}
+            className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-slate-800"
+          >
+            Send
+          </button>
+          <button
+            type="button"
+            aria-label="Cancel attachment"
+            onClick={() => setPending(null)}
+            className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {showContactPicker && (
+        <div className="mx-4 mb-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+          <div className="flex items-center justify-between px-2 py-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+              Share a contact
+            </p>
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={() => setShowContactPicker(false)}
+              className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100"
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <div className="max-h-40 overflow-y-auto">
+            {allContacts.filter(
+              (item) =>
+                item.id.startsWith("u-") &&
+                connections[item.username] === "accepted" &&
+                item.id !== contact?.id
+            ).length === 0 ? (
+              <p className="px-2 py-3 text-center text-[12px] text-slate-400">
+                No other connected contacts to share yet.
+              </p>
+            ) : (
+              allContacts
+                .filter(
+                  (item) =>
+                    item.id.startsWith("u-") &&
+                    connections[item.username] === "accepted" &&
+                    item.id !== contact?.id
+                )
+                .map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() =>
+                      sendContactCard({
+                        username: item.username,
+                        name: item.name,
+                        color: item.color,
+                      })
+                    }
+                    className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-slate-50"
+                  >
+                    <span
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-white"
+                      style={{ backgroundColor: item.color }}
+                    >
+                      {item.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13px] font-semibold text-slate-900">
+                        {item.name}
+                      </span>
+                      <span className="block truncate text-[11px] text-slate-400">
+                        @{item.username}
+                      </span>
+                    </span>
+                  </button>
+                ))
+            )}
+          </div>
         </div>
       )}
 
@@ -1069,10 +1624,19 @@ export default function ChatView({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             className="hidden"
             onChange={(event) => {
-              handleImageChosen(event.target.files?.[0]);
+              stageFile(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+          <input
+            ref={docInputRef}
+            type="file"
+            className="hidden"
+            onChange={(event) => {
+              stageFile(event.target.files?.[0]);
               event.target.value = "";
             }}
           />
@@ -1122,17 +1686,45 @@ export default function ChatView({
                       className="fixed inset-0 z-20 cursor-default"
                       onClick={() => setShowAttachMenu(false)}
                     />
-                    <div className="absolute bottom-12 left-0 z-30 w-44 rounded-xl border border-slate-200 bg-white py-1.5 shadow-lg">
-                      {!community && (
-                        <button
-                          type="button"
-                          onClick={pickImage}
-                          className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm font-medium transition hover:bg-slate-50"
-                        >
-                          <ExternalLink size={15} className="text-slate-400" />
-                          Photo
-                        </button>
-                      )}
+                    <div className="absolute bottom-12 left-0 z-30 w-52 rounded-xl border border-slate-200 bg-white py-1.5 shadow-lg">
+                      <button
+                        type="button"
+                        onClick={pickImage}
+                        className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm font-medium transition hover:bg-slate-50"
+                      >
+                        <ImageIcon size={15} className="text-slate-400" />
+                        Photos &amp; Videos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAttachMenu(false);
+                          docInputRef.current?.click();
+                        }}
+                        className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm font-medium transition hover:bg-slate-50"
+                      >
+                        <FileText size={15} className="text-slate-400" />
+                        Documents &amp; Files
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAttachMenu(false);
+                          setShowContactPicker(true);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm font-medium transition hover:bg-slate-50"
+                      >
+                        <UserRound size={15} className="text-slate-400" />
+                        Contacts
+                      </button>
+                      <button
+                        type="button"
+                        onClick={shareLocation}
+                        className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm font-medium transition hover:bg-slate-50"
+                      >
+                        <MapPin size={15} className="text-slate-400" />
+                        Location
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -1165,6 +1757,13 @@ export default function ChatView({
 
                 <input
                   ref={inputRef}
+                  onPaste={(event) => {
+                    const file = event.clipboardData?.files?.[0];
+                    if (file) {
+                      event.preventDefault();
+                      stageFile(file);
+                    }
+                  }}
                   value={draft}
                   onChange={(event) => {
                     setDraft(event.target.value);

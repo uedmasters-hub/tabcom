@@ -161,17 +161,18 @@ function FloatApp() {
         const result = await browser.storage.local.get(KEY);
         const pending = (result[KEY] as
           | Array<{
-              kind: "dm" | "community";
+              kind: "dm" | "community" | "connect_request";
               from: Parameters<ReturnType<typeof useChatStore.getState>["receiveDm"]>[0];
               communityId?: string;
-              message: Parameters<ReturnType<typeof useChatStore.getState>["receiveDm"]>[1];
+              message?: Parameters<ReturnType<typeof useChatStore.getState>["receiveDm"]>[1];
             }>
           | undefined) ?? [];
         if (pending.length === 0) return;
         const store = useChatStore.getState();
         for (const item of pending) {
-          if (item.kind === "dm") store.receiveDm(item.from, item.message);
-          else if (item.communityId)
+          if (item.kind === "connect_request") store.receiveConnectRequest(item.from);
+          else if (item.kind === "dm" && item.message) store.receiveDm(item.from, item.message);
+          else if (item.kind === "community" && item.communityId && item.message)
             store.receiveCommunityMessage(item.communityId, item.from, item.message);
         }
         await browser.storage.local.remove(KEY);
