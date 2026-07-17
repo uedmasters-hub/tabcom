@@ -461,21 +461,38 @@ function MessageBubble({
                 href={`https://www.google.com/maps?q=${message.latitude},${message.longitude}`}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-start gap-2 text-left"
+                title="Open in Maps"
+                className="-mx-2 -my-1 block overflow-hidden rounded-xl text-left"
               >
-                <MapPin size={16} className="mt-0.5 shrink-0" />
-                <span>
-                  <span className="block font-medium underline underline-offset-2">
-                    Shared location
-                  </span>
-                  <span
-                    className={cn(
-                      "mt-0.5 block text-xs",
-                      isMine ? "text-slate-300" : "text-slate-500"
-                    )}
-                  >
-                    {message.latitude.toFixed(5)}, {message.longitude.toFixed(5)} — open in
-                    Maps
+                {/* Map preview: OpenStreetMap embed, keyless. Tiles load
+                    in the VIEWER'S browser only when the bubble renders —
+                    the coordinates still never touch Tabcom's servers. */}
+                <span className="pointer-events-none relative block h-28 w-56 bg-slate-200">
+                  <iframe
+                    title="Location preview"
+                    tabIndex={-1}
+                    loading="lazy"
+                    className="absolute -inset-y-10 inset-x-0 h-48 w-full border-0"
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${message.longitude - 0.004}%2C${message.latitude - 0.002}%2C${message.longitude + 0.004}%2C${message.latitude + 0.002}&layer=mapnik&marker=${message.latitude}%2C${message.longitude}`}
+                  />
+                </span>
+                <span
+                  className={cn(
+                    "flex items-start gap-2 px-3 py-2",
+                    isMine ? "bg-white/5" : "bg-slate-50"
+                  )}
+                >
+                  <MapPin size={15} className="mt-0.5 shrink-0" />
+                  <span className="min-w-0">
+                    <span className="block font-medium">Shared location</span>
+                    <span
+                      className={cn(
+                        "mt-0.5 block truncate text-xs underline underline-offset-2",
+                        isMine ? "text-slate-300" : "text-slate-500"
+                      )}
+                    >
+                      {message.latitude.toFixed(5)}, {message.longitude.toFixed(5)} — open in Maps
+                    </span>
                   </span>
                 </span>
               </a>

@@ -429,6 +429,37 @@ export const useChatStore = create<ChatState>()(
         return conversation;
       };
 
+      /** THE single wire → Message projection. Every receive path (DM,
+       *  community, background drain) goes through this so a field
+       *  added to the wire can never again be silently dropped on the
+       *  receiving side — which is exactly how recipients ended up
+       *  with location messages missing their coordinates and file
+       *  messages missing their names. */
+      const wireToMessage = (
+        wire: WireMessage,
+        authorId: string,
+        extras?: Partial<Message>
+      ): Message => ({
+        id: wire.id,
+        authorId,
+        kind: wire.kind,
+        text: wire.text,
+        url: wire.url,
+        dataUrl: wire.dataUrl,
+        durationMs: wire.durationMs,
+        fileName: wire.fileName,
+        fileSize: wire.fileSize,
+        mimeType: wire.mimeType,
+        latitude: wire.latitude,
+        longitude: wire.longitude,
+        contactUsername: wire.contactUsername,
+        contactName: wire.contactName,
+        contactColor: wire.contactColor,
+        sentAt: wire.sentAt,
+        replyToId: wire.replyToId,
+        ...extras,
+      });
+
       const systemNotice = (
         target: { contactId?: string; communityId?: string },
         text: string,
@@ -1292,17 +1323,7 @@ export const useChatStore = create<ChatState>()(
             message.sentAt
           );
 
-          const incoming: Message = {
-            id: message.id,
-            authorId: contactId,
-            kind: message.kind,
-            text: message.text,
-            url: message.url,
-            dataUrl: message.dataUrl,
-            durationMs: message.durationMs,
-            sentAt: message.sentAt,
-            replyToId: message.replyToId,
-          };
+          const incoming: Message = wireToMessage(message, contactId);
 
           set((state) => {
             const isViewing = state.activeConversationId === conversation.id;
@@ -1594,17 +1615,10 @@ export const useChatStore = create<ChatState>()(
             message.sentAt
           );
 
-          const incoming: Message = {
-            id: message.id,
-            authorId: `u-${from.username}`,
+          const incoming: Message = wireToMessage(message, `u-${from.username}`, {
             authorName: from.name,
             authorColor: from.color,
-            kind: message.kind,
-            text: message.text,
-            url: message.url,
-            sentAt: message.sentAt,
-            replyToId: message.replyToId,
-          };
+          });
 
           set((state) => {
             const isViewing = state.activeConversationId === conversation.id;
