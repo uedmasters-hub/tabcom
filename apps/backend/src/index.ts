@@ -69,10 +69,33 @@ function sanitizePresence(value: unknown): Presence {
 
 export interface WireMessage {
   id: string;
-  kind: "text" | "link";
+  kind:
+    | "text"
+    | "link"
+    | "voice"
+    | "image"
+    | "video"
+    | "file"
+    | "contact"
+    | "location";
   text: string;
   url?: string;
+  /** Media/file payload — relayed to the recipient and immediately
+   *  forgotten, exactly like message text (zero retention). Files exist
+   *  only on the sender's and receiver's devices; there is no server
+   *  copy and therefore no re-download once a device loses its copy. */
+  dataUrl?: string;
+  durationMs?: number;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  latitude?: number;
+  longitude?: number;
+  contactUsername?: string;
+  contactName?: string;
+  contactColor?: string;
   sentAt: number;
+  replyToId?: string;
 }
 
 type PairStatus = "pending" | "accepted";
@@ -2038,29 +2061,47 @@ async function ensureUniqueGuestUsername(
 
   socket.on(
     "community_message",
-    ({
-      communityId,
-      message,
-    }: {
-      communityId: string;
-      message: WireMessage;
-    }) => {
+    (
+      {
+        communityId,
+        message,
+      }: {
+        communityId: string;
+        message: WireMessage;
+      },
+      ack?: (result: { delivered: boolean }) => void
+    ) => {
       const from = users.get(socket.id);
       const community = communities.get(communityId);
-      if (!from || !community || !message) return;
-      if (from.visibility === "private") {
-        socket.emit("dm_error", { to: communityId, reason: "sender_private" });
+      if (!from || !community || !message) {
+        ack?.({ delivered: false });
         return;
       }
-      if (!community.members.has(from.username)) return;
+      if (from.visibility === "private") {
+        socket.emit("dm_error", { to: communityId, reason: "sender_private" });
+        ack?.({ delivered: false });
+        return;
+      }
+      if (!community.members.has(from.username)) {
+        ack?.({ delivered: false });
+        return;
+      }
 
       // Relay to every ONLINE member except the sender. Zero retention.
+      let reached = 0;
       for (const member of community.members) {
         if (member === from.username) continue;
         for (const id of publicSocketIdsFor(member)) {
           io.to(id).emit("community_message", { communityId, from, message });
+          reached += 1;
         }
       }
+      // "Delivered" for a community = relayed to at least one live
+      // member socket. An empty room still counts the SEND as accepted
+      // by the relay, so we report delivered:true when membership is
+      // valid — the message reached everyone currently reachable.
+      void reached;
+      ack?.({ delivered: true });
     }
   );
 
@@ -2754,12 +2795,16 @@ async function ensureUniqueGuestUsername(
 
   socket.on(
     "dm",
-    ({ to, message }: { to: string; message: WireMessage }) => {
+    (
+      { to, message }: { to: string; message: WireMessage },
+      ack?: (result: { delivered: boolean }) => void
+    ) => {
       const from = users.get(socket.id);
       if (!from || !to || !message) return;
 
       if (from.visibility === "private") {
         socket.emit("dm_error", { to, reason: "sender_private" });
+        ack?.({ delivered: false });
         return;
       }
 
@@ -2770,18 +2815,24 @@ async function ensureUniqueGuestUsername(
         isBlockedEitherWay(from.username, to)
       ) {
         socket.emit("dm_error", { to, reason: "not_connected" });
+        ack?.({ delivered: false });
         return;
       }
 
       const targets = publicSocketIdsFor(to);
       if (targets.length === 0) {
         socket.emit("dm_error", { to, reason: "recipient_unavailable" });
+        ack?.({ delivered: false });
         return;
       }
 
       for (const id of targets) {
         io.to(id).emit("dm", { from, message });
       }
+      // Delivered = handed to at least one of the recipient's live
+      // sockets. Nothing is stored — this is a relay receipt, not a
+      // persistence receipt.
+      ack?.({ delivered: true });
 
       // Appear-offline contract: the message still flows, but the
       // sender is told the recipient is offline so they know to wait —

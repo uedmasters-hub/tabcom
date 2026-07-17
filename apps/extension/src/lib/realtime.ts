@@ -673,20 +673,22 @@ export function deleteCommunity(communityId: string): void {
 export function sendCommunityMessage(
   communityId: string,
   message: WireMessage,
-  onAck?: (delivered: boolean) => void
+  onAck?: (evidence: DeliveryEvidence) => void
 ): void {
   if (!socket) {
-    onAck?.(false);
+    onAck?.("rejected");
     return;
   }
   if (onAck) {
+    const timeoutMs = message.dataUrl ? 45_000 : 10_000;
     socket
-      .timeout(10_000)
+      .timeout(timeoutMs)
       .emit(
         "community_message",
         { communityId, message },
         (err: unknown, ack?: { delivered?: boolean }) => {
-          onAck(!err && ack?.delivered === true);
+          if (err) return onAck("unknown");
+          onAck(ack?.delivered === true ? "delivered" : "rejected");
         }
       );
     return;
@@ -1031,22 +1033,33 @@ export function updateVisibility(visibility: Visibility): void {
   socket?.emit("visibility", visibility);
 }
 
+/** Delivery evidence, three-valued ON PURPOSE:
+ *  - "delivered": the relay POSITIVELY confirmed hand-off.
+ *  - "rejected":  the relay POSITIVELY refused (or no socket exists).
+ *  - "unknown":   no answer (ack timeout, older server without ack
+ *                 support, ack lost across a reconnect). Uncertainty is
+ *                 NOT failure — the message very likely went through.
+ *  Collapsing "unknown" into failure is exactly the bug that stamped
+ *  "not sent" onto messages the recipient had already read. */
+export type DeliveryEvidence = "delivered" | "rejected" | "unknown";
+
 export function sendDm(
   toUsername: string,
   message: WireMessage,
-  onAck?: (delivered: boolean) => void
+  onAck?: (evidence: DeliveryEvidence) => void
 ): void {
   if (!socket) {
-    onAck?.(false);
+    onAck?.("rejected");
     return;
   }
   if (onAck) {
-    // 10s covers a waking server; past that the message is "failed"
-    // and the bubble offers Retry.
+    // Media frames can be ~4 MB and need a wider window on slow links.
+    const timeoutMs = message.dataUrl ? 45_000 : 10_000;
     socket
-      .timeout(10_000)
+      .timeout(timeoutMs)
       .emit("dm", { to: toUsername, message }, (err: unknown, ack?: { delivered?: boolean }) => {
-        onAck(!err && ack?.delivered === true);
+        if (err) return onAck("unknown"); // timeout / no-ack server
+        onAck(ack?.delivered === true ? "delivered" : "rejected");
       });
   } else {
     socket.emit("dm", { to: toUsername, message });

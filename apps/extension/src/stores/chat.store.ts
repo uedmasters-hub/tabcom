@@ -515,15 +515,38 @@ export const useChatStore = create<ChatState>()(
           replyToId: message.replyToId,
         };
 
-        // Full lifecycle: sending → sent (socket accepted) →
-        // delivered (relay handed it to a live recipient socket) →
-        // read (receipt) — or failed, with Retry in the bubble.
-        const onAck = (delivered: boolean) => {
-          mutateMessage(conversationId, message.id, (m) =>
-            m.authorId === ME && m.status !== "failed"
-              ? { ...m, status: delivered ? "delivered" : "failed" }
-              : m
-          );
+        // THE delivery state machine — every transition for outgoing
+        // messages flows through this one function, driven by three-
+        // valued transport evidence. Deterministic and forward-only:
+        //
+        //   sending ──unknown──▶ sent           (relay probably has it)
+        //   sending/sent ──delivered──▶ delivered
+        //   sending/sent ──rejected──▶ failed   (POSITIVE refusal only)
+        //   any + read receipt ▶ read (readAt)  — terminal, heals all
+        //
+        // "unknown" (ack timeout, an older relay without ack support,
+        // an ack lost across a reconnect) NEVER produces "failed":
+        // absence of evidence is not evidence of failure, and treating
+        // it as such is precisely what stamped "not sent · Retry" onto
+        // messages the recipient had already read. "failed" — and
+        // therefore Retry — is reserved for genuine refusals: an
+        // explicit negative ack or no socket at all. Nothing here can
+        // regress delivered/read, and readAt is final.
+        const onAck = (evidence: "delivered" | "rejected" | "unknown") => {
+          mutateMessage(conversationId, message.id, (m) => {
+            if (m.authorId !== ME) return m;
+            const progressed =
+              m.readAt != null || m.status === "delivered" || m.status === "failed";
+            if (progressed) return m;
+            switch (evidence) {
+              case "delivered":
+                return { ...m, status: "delivered" };
+              case "rejected":
+                return { ...m, status: "failed" };
+              case "unknown":
+                return m.status === "sending" ? { ...m, status: "sent" } : m;
+            }
+          });
         };
 
         if (conversation.kind === "community" && conversation.communityId) {
@@ -707,12 +730,17 @@ export const useChatStore = create<ChatState>()(
             kind: "text",
             text: trimmed,
             sentAt: Date.now(),
-            status: get().live ? "sent" : "failed",
+            // Deterministic composition: "sending" when a live transport
+            // exists, an immediate honest "failed" when it doesn't — and
+            // in that case DON'T emit: socket.io buffers emits made
+            // while disconnected and flushes them on reconnect, which is
+            // how messages labeled "not sent" were reaching recipients.
+            status: get().live ? "sending" : "failed",
             replyToId,
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
-          deliver(conversationId, message);
+          if (get().live) deliver(conversationId, message);
         },
 
         sendMedia: (conversationId, media) => {
@@ -877,7 +905,16 @@ export const useChatStore = create<ChatState>()(
             readAt
           );
           mutateMessage(conversation.id, messageId, (message) =>
-            message.authorId === ME ? { ...message, readAt } : message
+            message.authorId === ME
+              ? {
+                  ...message,
+                  readAt,
+                  // A read receipt is definitive proof of delivery — it
+                  // heals any stale "failed"/"sending" the ack race may
+                  // have left behind. States only move forward.
+                  status: "delivered",
+                }
+              : message
           );
         },
 
