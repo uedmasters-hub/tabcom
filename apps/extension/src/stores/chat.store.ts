@@ -228,6 +228,8 @@ interface ChatState {
   applyRoster: (users: WireUser[]) => void;
   receiveDm: (from: WireUser, message: WireMessage) => void;
   receiveTyping: (fromUsername: string) => void;
+  receiveDmNotice: (toUsername: string, reason: string) => void;
+  receiveCallError: (toUsername: string, reason: string) => void;
   receiveDmError: (
     toUsername: string,
     reason: "sender_private" | "recipient_unavailable" | "not_connected"
@@ -1293,6 +1295,36 @@ export const useChatStore = create<ChatState>()(
           rtTransferCommunityAdmin(communityId, username),
         deleteCommunity: (communityId) => rtDeleteCommunity(communityId),
 
+        receiveDmNotice: (toUsername, reason) => {
+          if (reason !== "recipient_offline") return;
+          const contactId = `u-${toUsername}`;
+          const conversation = get().conversations.find(
+            (c) => c.kind === "dm" && c.contactId === contactId
+          );
+          const text = `@${toUsername} appears offline right now. Your message was delivered — they'll see it when they're back, so replies (and read receipts) may take a while.`;
+          // Say it once per quiet spell, not once per message: skip if
+          // this exact notice is already the latest system line.
+          if (conversation) {
+            const thread = get().messages[conversation.id] ?? [];
+            const lastSystem = [...thread].reverse().find((m) => m.kind === "system");
+            if (lastSystem?.text === text) return;
+          }
+          systemNotice({ contactId }, text, false);
+        },
+
+        receiveCallError: (toUsername, reason) => {
+          const contactId = `u-${toUsername}`;
+          const text =
+            reason === "recipient_offline"
+              ? `@${toUsername} appears offline — calls are unavailable until they're back. Please try again later.`
+              : reason === "caller_offline"
+                ? "You're appearing offline. Switch your status to Online to start calls."
+                : reason === "recipient_unavailable"
+                  ? `@${toUsername} isn't reachable right now — the call couldn't start.`
+                  : `The call to @${toUsername} couldn't be started.`;
+          systemNotice({ contactId }, text, false);
+        },
+
         receiveCommunityDeleted: (communityId) =>
           set((state) => {
             const { [communityId]: _removed, ...rest } = state.communities;
@@ -1527,6 +1559,12 @@ export const useChatStore = create<ChatState>()(
         conversations: state.conversations,
         messages: state.messages,
         muted: state.muted,
+        // Connection statuses are persisted so a freshly opened panel
+        // renders the LAST KNOWN state ("accepted" stays accepted)
+        // instead of flashing "none" → Send Request until the server's
+        // connections snapshot arrives. The snapshot remains the
+        // authority — it fully overwrites this on every connect.
+        connections: state.connections,
         // Communities carry board data (items/pins/highlights) which the
         // content script reads passively from storage on page load —
         // without persisting them, on-page annotations cannot render.

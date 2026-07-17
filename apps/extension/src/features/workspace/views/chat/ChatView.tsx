@@ -354,7 +354,7 @@ import { Avatar, CommunityAvatar } from "../../../../components/ui";
 import NotificationBell from "../../../../components/layout/NotificationBell";
 import { cn } from "../../../../lib/cn";
 import { FLOATING_PILL_ENABLED } from "../../../../lib/feature-flags";
-import { sendTyping } from "../../../../lib/realtime";
+import { sendTyping, updatePresence } from "../../../../lib/realtime";
 import { ME, useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import { contactLabel } from "../../../../types/chat";
@@ -396,6 +396,11 @@ export default function ChatView({
   const replyTargets = useChatStore((state) => state.replyTargets);
   const setReplyTarget = useChatStore((state) => state.setReplyTarget);
   const myUsername = useProfileStore((state) => state.username);
+  const myPresence = useProfileStore((state) => state.presence);
+  const setPresence = useProfileStore((state) => state.setPresence);
+  /** Appear-offline gate: which action the user tried while hidden —
+   *  drives the "switch to Online first" prompt. */
+  const [offlineGate, setOfflineGate] = useState<"message" | "call" | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const shareCurrentTab = useChatStore((state) => state.shareCurrentTab);
 
@@ -438,6 +443,10 @@ export default function ChatView({
   const startCall = (video: boolean) => {
     setShowCallMenu(false);
     if (!contact) return;
+    if (myPresence === "offline") {
+      setOfflineGate("call");
+      return;
+    }
     void browser.runtime.sendMessage({
       type: "tabcom:call-start",
       peer: contact.username,
@@ -658,11 +667,32 @@ export default function ChatView({
     ? messages.find((m) => m.id === activeReplyId)
     : undefined;
 
-  const submit = () => {
+  const doSend = () => {
     sendText(conversationId, draft, activeReplyId ?? undefined);
     setDraft("");
     setShowEmoji(false);
     if (activeReplyId) setReplyTarget(conversationId, null);
+  };
+
+  const submit = () => {
+    // Appear-offline lifecycle: while hidden, outgoing chat is gated
+    // behind an explicit "go online first" prompt rather than silently
+    // messaging people who see you as offline.
+    if (myPresence === "offline") {
+      setOfflineGate("message");
+      return;
+    }
+    doSend();
+  };
+
+  const goOnlineAndContinue = () => {
+    const pending = offlineGate;
+    setPresence("online");
+    updatePresence("online");
+    setOfflineGate(null);
+    if (pending === "message" && draft.trim().length > 0) doSend();
+    // "call": the user re-taps the call button now that they're online —
+    // auto-starting a call the instant a dialog closes is jarring.
   };
 
   const gatePrivate =
@@ -914,6 +944,35 @@ export default function ChatView({
 
         <div ref={bottomRef} />
       </div>
+
+      {offlineGate && (
+        <div className="mx-4 mb-2 flex items-start gap-2.5 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[12px] font-semibold leading-4 text-slate-800">
+              You're appearing offline
+            </p>
+            <p className="mt-0.5 text-[11px] leading-4 text-slate-500">
+              {offlineGate === "call"
+                ? "Calls are unavailable while you appear offline. Switch to Online to start voice or video calls."
+                : "Switch your status to Online to send messages — right now others see you as offline."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={goOnlineAndContinue}
+            className="shrink-0 rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white transition hover:bg-slate-800"
+          >
+            Go online
+          </button>
+          <button
+            type="button"
+            onClick={() => setOfflineGate(null)}
+            className="shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-slate-500 transition hover:bg-slate-100"
+          >
+            Not now
+          </button>
+        </div>
+      )}
 
       </>
       )}

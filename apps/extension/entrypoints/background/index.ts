@@ -17,6 +17,7 @@ import {
   sendCommunityMessage,
   sendCursorLeave,
   sendCursorMove,
+  updatePresence,
   type AnnotationPeer,
   type IncomingCallSignal,
   type WireCommunity,
@@ -68,6 +69,7 @@ interface StoredProfile {
    * like the panel and pip window already do.
    */
   sessionToken?: string;
+  presence?: "online" | "away" | "busy" | "offline";
 }
 
 // Previously disconnected after 5s of write-inactivity to avoid
@@ -131,6 +133,7 @@ async function openCallWindow(params: {
     height: params.video ? 520 : 300,
   });
   callSession = { peer: params.peer, windowId: win?.id ?? undefined };
+  beginCallBusy();
 }
 
 function handleIncomingCallSignal(payload: IncomingCallSignal) {
@@ -203,8 +206,80 @@ function registerCallPortListener() {
         callSession = null;
         pendingCallSignals = [];
         if (peer && writeConnected) sendCallSignal(peer, { kind: "end" });
+        endCallBusy();
       }
     });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Presence lifecycle (background side)
+//
+// The panel's socket and this background socket both carry a presence;
+// the server resolves per-account presence with deliberate statuses
+// winning over "online". Two jobs here:
+//   1. Mirror the user's chosen status onto THIS socket whenever the
+//      profile changes (the panel may be closed later — this socket is
+//      then the only one representing the account).
+//   2. Auto-busy: any call session flips this socket to "busy" for the
+//      call's duration and restores the chosen status afterwards. One
+//      busy socket is enough to flip the whole account (server rule),
+//      and this hook sits at call-session level, so 1:1 today and any
+//      future community calls inherit it identically.
+// ---------------------------------------------------------------------------
+
+type StoredPresence = "online" | "away" | "busy" | "offline";
+
+let callAutoBusy = false;
+
+async function chosenPresence(): Promise<StoredPresence> {
+  const profile = await readStoredProfile();
+  return profile?.presence ?? "online";
+}
+
+function beginCallBusy(): void {
+  if (callAutoBusy) return;
+  callAutoBusy = true;
+  void (async () => {
+    // Appear-offline users can't be in a call in the first place
+    // (server gates offers both ways) — but guard anyway.
+    if ((await chosenPresence()) === "offline") return;
+    updatePresence("busy");
+    void browser.runtime
+      .sendMessage({ type: "tabcom:presence-auto", presence: "busy" })
+      .catch(() => {}); // no panel open — fine
+  })();
+}
+
+function endCallBusy(): void {
+  if (!callAutoBusy) return;
+  callAutoBusy = false;
+  void (async () => {
+    const restore = await chosenPresence();
+    // The user's stored choice may itself have been overwritten to
+    // "busy" by the panel mirroring the auto-busy — restoring "busy"
+    // forever would wedge the account. Busy-by-call restores to online.
+    const target = restore === "busy" ? "online" : restore;
+    updatePresence(target);
+    void browser.runtime
+      .sendMessage({ type: "tabcom:presence-auto", presence: target })
+      .catch(() => {});
+  })();
+}
+
+function registerPresenceSyncListener(): void {
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes["tabcom:profile"]) return;
+    if (callAutoBusy) return; // during a call, busy wins until it ends
+    try {
+      const raw = changes["tabcom:profile"].newValue as string | undefined;
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      const presence = (parsed.state ?? parsed)?.presence as StoredPresence | undefined;
+      if (presence) updatePresence(presence);
+    } catch {
+      // malformed — ignore
+    }
   });
 }
 
@@ -228,6 +303,7 @@ async function readStoredProfile(): Promise<StoredProfile | null> {
       photo: state.photo,
       guestInstanceId: state.guestInstanceId,
       sessionToken: state.sessionToken,
+      presence: state.presence,
     };
   } catch {
     return null;
@@ -313,26 +389,45 @@ async function updateBadge(count: number): Promise<void> {
   }
 }
 
-/** True if any Tabcom UI (popup/panel/call/pip window) is currently
- *  open — used to skip notifications the user is already looking at. */
-async function isUiOpen(): Promise<boolean> {
-  try {
-    const getContexts = (browser.runtime as unknown as {
-      getContexts?: (filter: Record<string, unknown>) => Promise<unknown[]>;
-    }).getContexts;
-    if (!getContexts) return false;
-    const contexts = await getContexts.call(browser.runtime, {
-      contextTypes: ["POPUP", "SIDE_PANEL", "TAB"],
+/** Live Ports held by open Tabcom UI surfaces (panel/popup). The port
+ *  disconnects automatically the instant the surface closes, so
+ *  `uiPorts.size > 0` is a deterministic, zero-API-sniffing answer to
+ *  "is the user already looking at Tabcom?" — unlike
+ *  runtime.getContexts, which doesn't exist / misbehaves on some
+ *  Chrome and Brave versions and made notifications fire while the
+ *  chat was open. */
+const uiPorts = new Set<ReturnType<typeof browser.runtime.connect>>();
+
+function isUiOpen(): boolean {
+  return uiPorts.size > 0;
+}
+
+function registerUiPortListener() {
+  browser.runtime.onConnect.addListener((port) => {
+    if (port.name !== "tabcom-ui") return;
+    uiPorts.add(port);
+    // The user is looking at Tabcom now — anything we notified about
+    // is being read. Clear system notifications; the panel drains the
+    // pending queue itself (which resets the badge via storage change).
+    void clearAllNotifications();
+    port.onDisconnect.addListener(() => {
+      uiPorts.delete(port);
     });
-    return contexts.length > 0;
+  });
+}
+
+async function clearAllNotifications(): Promise<void> {
+  try {
+    const all = await browser.notifications.getAll();
+    for (const id of Object.keys(all)) void browser.notifications.clear(id);
   } catch {
-    return false;
+    // best-effort
   }
 }
 
 function notify(id: string, title: string, message: string): void {
+  if (isUiOpen()) return;
   void (async () => {
-    if (await isUiOpen()) return;
     try {
       await browser.notifications.create(id, {
         type: "basic",
@@ -399,7 +494,7 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
         name: profile.displayName,
         color: profile.avatarColor,
         visibility: "public",
-        presence: "online",
+        presence: profile.presence ?? "online",
         photo: profile.photo,
       },
       {
@@ -411,6 +506,7 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
         },
         onRoster: () => {},
           onDm: (from, message) => {
+            if (isUiOpen()) return; // panel's live socket already delivered it
             queuePendingInbox({ kind: "dm", from, message, receivedAt: Date.now() });
             notify(`dm:${from.username}:${message.id}`, from.name || from.username, previewText(message));
           },
@@ -488,6 +584,7 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
           onCommunityDeclined: () => {},
           onCommunityLeft: () => {},
           onCommunityMessage: (communityId, from, message) => {
+            if (isUiOpen()) return; // panel's live socket already delivered it
             queuePendingInbox({ kind: "community", from, communityId, message, receivedAt: Date.now() });
             notify(
               `community:${communityId}:${message.id}`,
@@ -522,6 +619,33 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
 }
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "tabcom:notification-permission") {
+    // Chrome exposes whether ITS OWN setting allows this extension to
+    // show notifications ("granted" | "denied"). This does not cover
+    // the OS layer (macOS System Settings can still mute Chrome
+    // itself) — the banner copy mentions both.
+    void (async () => {
+      try {
+        const level = await (browser.notifications as unknown as {
+          getPermissionLevel: () => Promise<string>;
+        }).getPermissionLevel();
+        sendResponse({ level });
+      } catch {
+        sendResponse({ level: "granted" }); // unsupported (Firefox etc.) — don't nag
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "tabcom:open-notification-settings") {
+    void browser.tabs.create({ url: "chrome://settings/content/notifications" }).catch(() => {
+      // Some browsers refuse chrome:// from extensions — fall back to
+      // the extension's own settings page for this extension.
+      void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}` }).catch(() => {});
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // Background maintains its OWN persistent connection (for board
   // writes / cursors while the panel is closed), entirely separate
   // from — and with zero built-in awareness of — whatever ended the
@@ -734,6 +858,8 @@ export default defineBackground(() => {
   browser.runtime.onStartup.addListener(() => void ensureWriteConnection());
 
   registerNotificationClickListener();
+  registerUiPortListener();
+  registerPresenceSyncListener();
 
   // Belt-and-braces "always online": the server's 10s socket ping keeps
   // this worker alive (Chrome ≥116 extends SW life on WebSocket

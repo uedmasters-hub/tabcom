@@ -184,6 +184,13 @@ export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;
   onRoster: (users: WireUser[]) => void;
   onDm: (from: WireUser, message: WireMessage) => void;
+  /** Server heads-up that a just-sent DM went to an appear-offline
+   *  recipient — delivered, but expect no receipts and possibly no
+   *  reply until they're back. */
+  onDmNotice?: (toUsername: string, reason: string) => void;
+  /** Call setup failed server-side (not connected, unavailable, or an
+   *  appear-offline gate in either direction). */
+  onCallError?: (toUsername: string, reason: string) => void;
   onDmEdited?: (from: string, messageId: string, text: string, editedAt: number) => void;
   onDmDeleted?: (from: string, messageId: string) => void;
   onDmReaction?: (from: string, messageId: string, emoji: string) => void;
@@ -350,6 +357,14 @@ export function initRealtime(
 
   socket.on("connect_request_error", ({ to, reason }: { to: string; reason: string }) =>
     handlers.onConnectRequestError?.(to, reason)
+  );
+
+  socket.on("dm_notice", ({ to, reason }: { to: string; reason: string }) =>
+    handlers.onDmNotice?.(to, reason)
+  );
+
+  socket.on("call_error", ({ to, reason }: { to: string; reason: string }) =>
+    handlers.onCallError?.(to, reason)
   );
 
   socket.on("roster", (users: WireUser[]) => handlers.onRoster(users));

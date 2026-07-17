@@ -1104,7 +1104,28 @@ function isBlockedEitherWay(a: string, b: string): boolean {
   return blocks.has(`${a}|${b}`) || blocks.has(`${b}|${a}`);
 }
 
-const PRESENCE_PRIORITY: Presence[] = ["online", "busy", "away", "offline"];
+// Deliberate statuses WIN over the default "online". A user with two
+// live sockets (panel + background relay, or two devices) who sets
+// Busy/Away/Appear-offline on one must not be overridden by another
+// socket still reporting the default — and a call context marking
+// itself "busy" flips the whole account busy, which is exactly the
+// auto-busy-during-calls behavior.
+const PRESENCE_PRIORITY: Presence[] = ["busy", "away", "offline", "online"];
+
+/** The presence peers should treat as this account's, across all its
+ *  public sockets. "offline" from a connected socket means the user
+ *  CHOSE Appear offline; no public sockets at all also reads offline. */
+function effectivePresenceOf(username: string): Presence {
+  let best: Presence | null = null;
+  for (const user of users.values()) {
+    if (user.username !== username || user.visibility !== "public") continue;
+    const p = user.presence ?? "online";
+    if (best === null || PRESENCE_PRIORITY.indexOf(p) < PRESENCE_PRIORITY.indexOf(best)) {
+      best = p;
+    }
+  }
+  return best ?? "offline";
+}
 
 /** One entry per username (a user may hold several sockets, e.g. panel + float). */
 function publicRoster(): WireUser[] {
@@ -2761,6 +2782,14 @@ async function ensureUniqueGuestUsername(
       for (const id of targets) {
         io.to(id).emit("dm", { from, message });
       }
+
+      // Appear-offline contract: the message still flows, but the
+      // sender is told the recipient is offline so they know to wait —
+      // and (see "dm_read") they will only ever see Sent, never
+      // Delivered/Read, while the recipient stays hidden.
+      if (effectivePresenceOf(to) === "offline") {
+        socket.emit("dm_notice", { to, reason: "recipient_offline" });
+      }
     }
   );
 
@@ -2789,6 +2818,20 @@ async function ensureUniqueGuestUsername(
       if (targets.length === 0) {
         socket.emit("call_error", { to, reason: "recipient_unavailable" });
         return;
+      }
+
+      // Appear-offline contract, both directions — gate new calls
+      // (offers) only; answer/ICE/end/busy for an ALREADY-RUNNING call
+      // must always flow or teardown breaks.
+      if (signal.kind === "offer") {
+        if ((from.presence ?? "online") === "offline") {
+          socket.emit("call_error", { to, reason: "caller_offline" });
+          return;
+        }
+        if (effectivePresenceOf(to) === "offline") {
+          socket.emit("call_error", { to, reason: "recipient_offline" });
+          return;
+        }
       }
 
       for (const id of targets) {
@@ -2878,6 +2921,11 @@ async function ensureUniqueGuestUsername(
       const from = users.get(socket.id);
       if (!from || !to || !messageId) return;
       if (from.visibility === "private") return;
+      // Appear-offline contract: reading while hidden must not leak a
+      // Read receipt — the sender only ever sees Sent. Receipts are
+      // dropped (not deferred): surfacing them later would retroactively
+      // reveal when the "offline" user was actually reading.
+      if ((from.presence ?? "online") === "offline") return;
 
       const pair = pairs.get(pairKey(from.username, to));
       if (pair?.status !== "accepted" || isBlockedEitherWay(from.username, to)) return;
