@@ -618,7 +618,38 @@ export default function ChatView({
     }
   }, [conversationId, isCommunity, isLiveContact, messages, markMessageRead]);
 
-  if (!conversation || (!contact && !community)) return null;
+  if (!conversation) return null;
+
+  // Restored conversations can reference a contact/community the store
+  // hasn't (re)resolved yet — e.g. panel opened while offline, before
+  // the roster/communities snapshot arrives. Returning null here used
+  // to strand the user on a blank pane with no back button. Always
+  // render a header with a way back instead.
+  if (!contact && !community) {
+    return (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
+          <button
+            type="button"
+            onClick={closeConversation}
+            aria-label="Back to inbox"
+            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
+            Conversation
+          </h2>
+        </div>
+        <div className="flex flex-1 items-center justify-center px-6 text-center">
+          <p className="text-sm leading-5 text-slate-500">
+            This chat can't be opened right now — it may need a live
+            connection to load. It will come back once you're online.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const title = community ? community.name : contactLabel(contact!);
 
@@ -827,6 +858,14 @@ export default function ChatView({
           contact && isLiveContact && connection !== "accepted" ? "shrink-0" : "flex-1"
         )}
       >
+        {/* Zero-retention disclosure: chat history lives only on this
+            device; the server intentionally never stores messages. Said
+            once, up front, so a server restart "losing" history is an
+            explained property instead of a surprise bug report. */}
+        <p className="mx-auto max-w-[260px] rounded-full bg-slate-50 px-3 py-1 text-center text-[10px] leading-4 text-slate-400">
+          Messages are stored only on your devices — Tabcom servers keep
+          no chat history.
+        </p>
         {messages.map((message) => (
           <MessageBubble
             key={message.id}

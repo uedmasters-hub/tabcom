@@ -127,6 +127,15 @@ const httpServer = createServer((req, res) => {
 
   const url = new URL(req.url ?? "/", PUBLIC_BASE_URL);
 
+  // Cheap liveness probe. The extension pings this on panel open to
+  // kick a spun-down Render instance awake as early as possible; also
+  // usable by uptime monitors / keep-alive cron.
+  if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/auth/request-link") {
     void readJsonBody(req)
       .then(async (body) => {

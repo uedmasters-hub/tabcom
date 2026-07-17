@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import AppShell from "../../components/layout/AppShell";
 import { fetchMe, endGuestSessionOnServer } from "../../lib/auth-client";
 import { loadSettingsFromServer } from "../../lib/settings-sync";
-import { disconnectAllContexts, initRealtime } from "../../lib/realtime";
+import { disconnectAllContexts, initRealtime, REALTIME_URL } from "../../lib/realtime";
 import { useAppStore } from "../../stores/app.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useProfileStore } from "../../stores/profile.store";
@@ -110,6 +110,27 @@ export default function WorkspaceScreen() {
     // reinstall). No-op for any connection already known locally.
     void restoreConnections();
   }, [sessionToken, setVerified, restoreConnections]);
+
+  // Render's free tier spins the backend down after inactivity; the
+  // first request wakes it, but the cold start can take 30–60s. A
+  // cheap fetch on panel open starts that clock immediately (the
+  // websocket retry loop alone also wakes it, just later), and the
+  // grace timer below keeps the UI in "connecting" for the whole
+  // cold-start window instead of flashing offline/demo instantly.
+  useEffect(() => {
+    void fetch(`${REALTIME_URL}/health`).catch(() => {});
+  }, []);
+
+  const live = useChatStore((state) => state.live);
+  useEffect(() => {
+    if (live) return;
+    const timer = setTimeout(() => {
+      if (!useChatStore.getState().live) {
+        useChatStore.getState().setConnectionPhase("offline");
+      }
+    }, 60_000);
+    return () => clearTimeout(timer);
+  }, [live]);
 
   useEffect(() => {
     ensureSeeded();

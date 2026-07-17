@@ -25,6 +25,7 @@ import { useWorkspaceStore } from "../../../stores/workspace.store";
  */
 export default function CommunitiesView() {
   const live = useChatStore((state) => state.live);
+  const connectionPhase = useChatStore((state) => state.connectionPhase);
   const contacts = useChatStore((state) => state.contacts);
   const connections = useChatStore((state) => state.connections);
   const communities = useChatStore((state) => state.communities);
@@ -88,11 +89,24 @@ export default function CommunitiesView() {
   };
 
   if (!live) {
-    return (
+    // Dev builds get the actionable command; production users get
+    // human copy — the pnpm instruction leaking into the store build
+    // was a bug.
+    return connectionPhase === "connecting" ? (
       <EmptyState
         icon={<Wifi size={24} />}
-        title="Offline — demo mode"
-        description="Start the Tabcom realtime server and reopen the panel for communities and discovery. Run: pnpm --filter @tabcom/backend dev"
+        title="Connecting…"
+        description="Waking up the Tabcom server — this can take up to a minute the first time. Communities and discovery will appear automatically."
+      />
+    ) : (
+      <EmptyState
+        icon={<Wifi size={24} />}
+        title="You're offline"
+        description={
+          import.meta.env.DEV
+            ? "Start the Tabcom realtime server and reopen the panel. Run: pnpm --filter @tabcom/backend dev"
+            : "Tabcom can't reach the server right now. We'll keep retrying in the background — check your connection and hang tight."
+        }
       />
     );
   }

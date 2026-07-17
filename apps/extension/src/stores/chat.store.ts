@@ -106,9 +106,17 @@ interface CommunityInvite {
   attempt: number;
 }
 
+export type ConnectionPhase = "connecting" | "live" | "offline";
+
 interface ChatState {
   hasHydrated: boolean;
   live: boolean;
+  /** UX-facing connection state. "connecting" covers both the initial
+   *  attempt and reconnection (incl. Render cold starts, which can take
+   *  up to a minute) — only WorkspaceScreen's grace timer demotes it to
+   *  "offline", so the UI never flashes an offline/demo state during a
+   *  routine slow wake-up. */
+  connectionPhase: ConnectionPhase;
 
   contacts: Contact[];
   conversations: Conversation[];
@@ -147,6 +155,7 @@ interface ChatState {
   setHasHydrated: (value: boolean) => void;
   ensureSeeded: () => void;
   setLiveStatus: (live: boolean) => void;
+  setConnectionPhase: (phase: ConnectionPhase) => void;
 
   openConversation: (conversationId: string) => void;
   closeConversation: () => void;
@@ -569,6 +578,7 @@ export const useChatStore = create<ChatState>()(
       return {
         hasHydrated: false,
         live: false,
+        connectionPhase: "connecting",
         contacts: [],
         conversations: [],
         messages: {},
@@ -583,7 +593,18 @@ export const useChatStore = create<ChatState>()(
         typing: [],
 
         setHasHydrated: (value) => set({ hasHydrated: value }),
-        setLiveStatus: (live) => set({ live }),
+        setLiveStatus: (live) =>
+          set((state) => ({
+            live,
+            // Losing the socket goes back to "connecting" (retries are
+            // infinite); only the grace timer may declare "offline".
+            connectionPhase: live
+              ? "live"
+              : state.connectionPhase === "live"
+                ? "connecting"
+                : state.connectionPhase,
+          })),
+        setConnectionPhase: (phase) => set({ connectionPhase: phase }),
 
         ensureSeeded: () => {
           if (get().contacts.length > 0) return;

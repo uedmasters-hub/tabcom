@@ -29,6 +29,7 @@ export default function WorkspaceHeader({ title }: { title: string }) {
   const presence = useProfileStore((state) => state.presence);
   const setPresence = useProfileStore((state) => state.setPresence);
   const live = useChatStore((state) => state.live);
+  const phase = useChatStore((state) => state.connectionPhase);
 
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -107,15 +108,21 @@ export default function WorkspaceHeader({ title }: { title: string }) {
 
           <span
             title={
-              live ? "Connected to realtime server" : "Offline — local demo mode"
+              phase === "live"
+                ? "Connected to realtime server"
+                : phase === "connecting"
+                  ? "Connecting to Tabcom — the server may be waking up"
+                  : "Offline — reconnecting in the background"
             }
             className={
-              live
+              phase === "live"
                 ? "rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-600"
-                : "rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+                : phase === "connecting"
+                  ? "rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-600"
+                  : "rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400"
             }
           >
-            {live ? "Live" : "Demo"}
+            {phase === "live" ? "Live" : phase === "connecting" ? "Connecting" : "Offline"}
           </span>
         </div>
       </div>
