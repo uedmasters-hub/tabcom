@@ -464,17 +464,56 @@ function MessageBubble({
                 title="Open in Maps"
                 className="-mx-2 -my-1 block overflow-hidden rounded-xl text-left"
               >
-                {/* Map preview: OpenStreetMap embed, keyless. Tiles load
-                    in the VIEWER'S browser only when the bubble renders —
-                    the coordinates still never touch Tabcom's servers. */}
-                <span className="pointer-events-none relative block h-28 w-56 bg-slate-200">
-                  <iframe
-                    title="Location preview"
-                    tabIndex={-1}
-                    loading="lazy"
-                    className="absolute -inset-y-10 inset-x-0 h-48 w-full border-0"
-                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${message.longitude - 0.004}%2C${message.latitude - 0.002}%2C${message.longitude + 0.004}%2C${message.latitude + 0.002}&layer=mapnik&marker=${message.latitude}%2C${message.longitude}`}
-                  />
+                {/* Map preview: a single static OSM tile + our own pin.
+                    No iframe = no embed chrome overlapping the card. The
+                    tile loads in the VIEWER'S browser only when the
+                    bubble renders — coordinates never touch Tabcom's
+                    servers. Attribution kept per OSM policy. */}
+                <span className="relative block h-28 w-56 overflow-hidden bg-slate-200">
+                  {(() => {
+                    const z = 15;
+                    const lat = message.latitude!;
+                    const lon = message.longitude!;
+                    const n = 2 ** z;
+                    const xF = ((lon + 180) / 360) * n;
+                    const latR = (lat * Math.PI) / 180;
+                    const yF =
+                      ((1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2) * n;
+                    const x = Math.floor(xF);
+                    const y = Math.floor(yF);
+                    // 2×2 grid toward the nearest edges so the card is
+                    // always fully covered, whatever the pin's position
+                    // within its tile. Four small requests, still well
+                    // within OSM tile-usage etiquette.
+                    const xs = [x, xF - x < 0.5 ? x - 1 : x + 1];
+                    const ys = [y, yF - y < 0.5 ? y - 1 : y + 1];
+                    return (
+                      <>
+                        {xs.flatMap((tx) =>
+                          ys.map((ty) => (
+                            <img
+                              key={`${tx}-${ty}`}
+                              src={`https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`}
+                              alt=""
+                              loading="lazy"
+                              style={{
+                                left: 112 - (xF - tx) * 256,
+                                top: 56 - (yF - ty) * 256,
+                              }}
+                              className="absolute h-64 w-64 max-w-none"
+                            />
+                          ))
+                        )}
+                        <MapPin
+                          size={22}
+                          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-full fill-red-500 text-red-600 drop-shadow"
+                        />
+                        <span className="absolute bottom-0 right-0 rounded-tl bg-white/80 px-1 text-[8px] leading-3 text-slate-500">
+                          © OpenStreetMap
+                        </span>
+                      </>
+                    );
+                  })()}
                 </span>
                 <span
                   className={cn(
