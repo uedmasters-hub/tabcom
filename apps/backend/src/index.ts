@@ -176,29 +176,55 @@ const httpServer = createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/auth/verify") {
     const token = url.searchParams.get("token") ?? "";
-    const errorPage = `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
-              <h2>Something went wrong</h2>
-              <p style="color:#64748B;">Go back to Tabcom and request a new link.</p>
-            </body></html>`;
+
+    // Shared card shell for every verify outcome. charset=utf-8 in BOTH
+    // the header and a <meta> tag — the old page omitted it, and Chrome
+    // fell back to latin-1, rendering the ✓ as "âœ“" mojibake.
+    const authPage = (title: string, body: string, action?: string) =>
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — Tabcom</title></head>
+      <body style="margin:0;background:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+        <div style="max-width:460px;margin:48px auto;padding:0 16px;">
+          <div style="background:#fff;border-radius:24px;padding:56px 32px;text-align:center;">
+            <h1 style="margin:0;color:#0F172A;font-size:30px;letter-spacing:-0.02em;line-height:1.25;">${title}</h1>
+            <p style="margin:20px 0 0;color:#475569;font-size:15px;line-height:1.65;">${body}</p>
+            ${
+              action
+                ? `<button onclick="window.close()" style="display:block;width:100%;margin:28px 0 0;padding:16px 24px;background:#0F172A;color:#fff;border:0;border-radius:14px;font-weight:700;font-size:17px;cursor:pointer;">Back to Tabcom</button>
+                   <p style="margin:24px 0 0;color:#64748B;font-size:14px;">${action}</p>`
+                : ""
+            }
+          </div>
+        </div>
+      </body></html>`;
+
+    const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
+
     void verifyMagicLink(token)
       .then((result) => {
-        res.writeHead(200, { "Content-Type": "text/html" });
+        res.writeHead(200, htmlHeaders);
         res.end(
           result.ok
-            ? `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
-                <h2>You're signed in ✓</h2>
-                <p style="color:#64748B;">You can close this tab and return to Tabcom.</p>
-              </body></html>`
-            : `<!doctype html><html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:64px 24px;">
-                <h2>This link has expired or was already used</h2>
-                <p style="color:#64748B;">Go back to Tabcom and request a new one.</p>
-              </body></html>`
+            ? authPage(
+                "Email verified",
+                "Your email address was successfully verified. You can close this tab and continue using Tabcom."
+              )
+            : authPage(
+                "Oops! This link has expired",
+                "Verification links expire after 15 minutes or become invalid after they're used once.",
+                "Request a new link from Tabcom to continue."
+              )
         );
       })
       .catch((error) => {
         console.error("[tabcom:auth] verify failed:", error);
-        res.writeHead(503, { "Content-Type": "text/html" });
-        res.end(errorPage);
+        res.writeHead(503, htmlHeaders);
+        res.end(
+          authPage(
+            "Something went wrong",
+            "We couldn't verify this link right now.",
+            "Go back to Tabcom and request a new link."
+          )
+        );
       });
     return;
   }
