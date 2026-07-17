@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { browser } from "wxt/browser";
 
 import AppShell from "../../components/layout/AppShell";
 import { fetchMe, endGuestSessionOnServer } from "../../lib/auth-client";
@@ -131,6 +132,38 @@ export default function WorkspaceScreen() {
     }, 60_000);
     return () => clearTimeout(timer);
   }, [live]);
+
+  // Drain messages the background socket received while no UI was open.
+  // The server keeps no history (zero retention), so this queue is the
+  // only copy — apply into the store (receiveDm/receiveCommunityMessage
+  // are id-idempotent, so overlap with the live socket is harmless),
+  // then clear it, which also resets the action badge.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const KEY = "tabcom:pending-inbox";
+        const result = await browser.storage.local.get(KEY);
+        const pending = (result[KEY] as
+          | Array<{
+              kind: "dm" | "community";
+              from: Parameters<ReturnType<typeof useChatStore.getState>["receiveDm"]>[0];
+              communityId?: string;
+              message: Parameters<ReturnType<typeof useChatStore.getState>["receiveDm"]>[1];
+            }>
+          | undefined) ?? [];
+        if (pending.length === 0) return;
+        const store = useChatStore.getState();
+        for (const item of pending) {
+          if (item.kind === "dm") store.receiveDm(item.from, item.message);
+          else if (item.communityId)
+            store.receiveCommunityMessage(item.communityId, item.from, item.message);
+        }
+        await browser.storage.local.remove(KEY);
+      } catch (error) {
+        console.error("[tabcom] pending inbox drain failed:", error);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     ensureSeeded();

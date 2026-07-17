@@ -20,6 +20,8 @@ import {
   type AnnotationPeer,
   type IncomingCallSignal,
   type WireCommunity,
+  type WireMessage,
+  type WireUser,
 } from "../../src/lib/realtime";
 
 /**
@@ -144,6 +146,11 @@ function handleIncomingCallSignal(payload: IncomingCallSignal) {
     }
     callSession = { peer: from.username };
     pendingCallSignals = [payload];
+    notify(
+      `call:${from.username}:${Date.now()}`,
+      signal.video ? "Incoming video call" : "Incoming call",
+      `${from.name || from.username} is calling you`
+    );
     void openCallWindow({
       peer: from.username,
       peerName: from.name,
@@ -254,6 +261,124 @@ async function broadcastToAllTabs(message: Record<string, unknown>): Promise<voi
   }
 }
 
+// ---------------------------------------------------------------------------
+// Always-online: pending inbox + notifications + badge
+//
+// The background socket is the one that's ALWAYS connected (server ping
+// every 10s keeps this MV3 worker alive; the keepalive alarm resurrects
+// it if Chrome kills it anyway). Anything user-facing that arrives while
+// no Tabcom UI is open gets (a) queued durably so the panel shows it on
+// next open — the server keeps no history, so this queue is the only
+// place a "message received while closed" survives — and (b) surfaced
+// as a system notification immediately.
+// ---------------------------------------------------------------------------
+
+const PENDING_INBOX_KEY = "tabcom:pending-inbox";
+const PENDING_INBOX_CAP = 500;
+
+export interface PendingInboxItem {
+  kind: "dm" | "community";
+  from: WireUser;
+  communityId?: string;
+  message: WireMessage;
+  receivedAt: number;
+}
+
+let inboxWriteChain: Promise<void> = Promise.resolve();
+
+/** Serialized read-modify-write — DMs and community messages can land
+ *  concurrently and storage.local has no transactions. */
+function queuePendingInbox(item: PendingInboxItem): void {
+  inboxWriteChain = inboxWriteChain.then(async () => {
+    try {
+      const result = await browser.storage.local.get(PENDING_INBOX_KEY);
+      const list = (result[PENDING_INBOX_KEY] as PendingInboxItem[] | undefined) ?? [];
+      list.push(item);
+      await browser.storage.local.set({
+        [PENDING_INBOX_KEY]: list.slice(-PENDING_INBOX_CAP),
+      });
+      void updateBadge(list.length);
+    } catch (error) {
+      console.error("[tabcom:background] pending inbox write failed:", error);
+    }
+  });
+}
+
+async function updateBadge(count: number): Promise<void> {
+  try {
+    await browser.action.setBadgeBackgroundColor({ color: "#dc2626" });
+    await browser.action.setBadgeText({ text: count > 0 ? String(Math.min(count, 99)) : "" });
+  } catch {
+    // badge is best-effort
+  }
+}
+
+/** True if any Tabcom UI (popup/panel/call/pip window) is currently
+ *  open — used to skip notifications the user is already looking at. */
+async function isUiOpen(): Promise<boolean> {
+  try {
+    const getContexts = (browser.runtime as unknown as {
+      getContexts?: (filter: Record<string, unknown>) => Promise<unknown[]>;
+    }).getContexts;
+    if (!getContexts) return false;
+    const contexts = await getContexts.call(browser.runtime, {
+      contextTypes: ["POPUP", "SIDE_PANEL", "TAB"],
+    });
+    return contexts.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function notify(id: string, title: string, message: string): void {
+  void (async () => {
+    if (await isUiOpen()) return;
+    try {
+      await browser.notifications.create(id, {
+        type: "basic",
+        iconUrl: browser.runtime.getURL("/icon/128.png" as never),
+        title,
+        message,
+      });
+    } catch (error) {
+      console.error("[tabcom:background] notification failed:", error);
+    }
+  })();
+}
+
+function previewText(message: WireMessage): string {
+  if (message.kind === "voice") return "🎤 Voice message";
+  if (message.kind === "image") return "📷 Photo";
+  return message.text.length > 80 ? `${message.text.slice(0, 77)}…` : message.text;
+}
+
+/** Notification click → bring the user into Tabcom. Chrome only allows
+ *  action.openPopup() sometimes; a small focused window is the fallback
+ *  that always works. */
+function registerNotificationClickListener() {
+  browser.notifications.onClicked.addListener((notificationId) => {
+    void (async () => {
+      try {
+        await browser.notifications.clear(notificationId);
+        const openPopup = (browser.action as unknown as { openPopup?: () => Promise<void> })
+          .openPopup;
+        if (openPopup) {
+          await openPopup.call(browser.action);
+          return;
+        }
+        throw new Error("openPopup unavailable");
+      } catch {
+        await browser.windows.create({
+          url: browser.runtime.getURL("/popup.html" as never),
+          type: "popup",
+          width: 400,
+          height: 640,
+        });
+      }
+    })();
+  });
+}
+
 /** Default write patience: long enough for a sleeping Render free
  *  instance to cold-start (observed 30-60s). A write made during the
  *  wake-up window WAITS for the server instead of being rejected. */
@@ -285,11 +410,20 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
           );
         },
         onRoster: () => {},
-          onDm: () => {},
+          onDm: (from, message) => {
+            queuePendingInbox({ kind: "dm", from, message, receivedAt: Date.now() });
+            notify(`dm:${from.username}:${message.id}`, from.name || from.username, previewText(message));
+          },
           onTyping: () => {},
           onDmError: () => {},
           onConnections: () => {},
-          onConnectRequest: () => {},
+          onConnectRequest: (from) => {
+            notify(
+              `connect:${from.username}`,
+              "Connection request",
+              `${from.name || from.username} wants to connect on Tabcom`
+            );
+          },
           onConnectUpdate: () => {},
           onCommunities: (list) => {
             console.log(
@@ -344,10 +478,23 @@ async function ensureWriteConnection(waitMs: number = WRITE_WAIT_MS): Promise<bo
             }
           },
           onCallSignal: handleIncomingCallSignal,
-          onCommunityInvite: () => {},
+          onCommunityInvite: (community, from) => {
+            notify(
+              `invite:${community.id}`,
+              "Community invite",
+              `${from.name || from.username} invited you to ${community.name}`
+            );
+          },
           onCommunityDeclined: () => {},
           onCommunityLeft: () => {},
-          onCommunityMessage: () => {},
+          onCommunityMessage: (communityId, from, message) => {
+            queuePendingInbox({ kind: "community", from, communityId, message, receivedAt: Date.now() });
+            notify(
+              `community:${communityId}:${message.id}`,
+              `${from.name || from.username} in community`,
+              previewText(message)
+            );
+          },
           onCommunityError: () => {},
       },
       profile.sessionToken,
@@ -585,4 +732,26 @@ export default defineBackground(() => {
   // without that person having to do anything first themselves.
   void ensureWriteConnection();
   browser.runtime.onStartup.addListener(() => void ensureWriteConnection());
+
+  registerNotificationClickListener();
+
+  // Belt-and-braces "always online": the server's 10s socket ping keeps
+  // this worker alive (Chrome ≥116 extends SW life on WebSocket
+  // activity), but if Chrome kills it anyway — crash, aggressive memory
+  // pressure, older Chrome — this alarm resurrects the worker every 30s
+  // and re-establishes the connection. Alarm handlers firing IS the
+  // wake-up; the ensureWriteConnection call reconnects if needed.
+  void browser.alarms.create("tabcom-keepalive", { periodInMinutes: 0.5 });
+  browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== "tabcom-keepalive") return;
+    void ensureWriteConnection();
+  });
+
+  // Panel drains the pending inbox on open; keep the badge honest when
+  // it does (or when anything else clears/changes the queue).
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[PENDING_INBOX_KEY]) return;
+    const next = (changes[PENDING_INBOX_KEY].newValue as PendingInboxItem[] | undefined) ?? [];
+    void updateBadge(next.length);
+  });
 });
