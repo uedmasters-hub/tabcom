@@ -1,3 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+# ─── Contacts redesign: community-grouped, light theme ───────────────
+# Run from: tabcom root
+# Overwrites: apps/mobile/app/(tabs)/contacts.tsx
+#
+# Matches the provided mockup:
+#   - Horizontal community filter strip (All + each community + Add)
+#   - "All" view: every contact, with Remove (severs connection)
+#   - Community view: members first (Remove = remove from community,
+#     admin only), then non-members with ADD (= invite to community)
+#   - Light theme per the extension design system
+# ──────────────────────────────────────────────────────────────────────
+
+if [ ! -f "package.json" ] || ! grep -q '"tabcom"' package.json; then
+  echo "❌ Run this from the tabcom monorepo root."
+  exit 1
+fi
+
+cat > "apps/mobile/app/(tabs)/contacts.tsx" << 'CTEOF'
 import { useMemo, useState } from "react";
 import {
   Text, View, Pressable, FlatList, TextInput, Alert, ScrollView,
@@ -270,3 +291,7 @@ export default function ContactsScreen() {
     </View>
   );
 }
+CTEOF
+
+echo "✅ Contacts page rebuilt. Verifying..."
+cd apps/mobile && npx tsc --noEmit && echo "✅ Typecheck passed. Restart Metro: npx expo start --clear"
