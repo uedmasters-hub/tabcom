@@ -1,27 +1,22 @@
-import { Pressable, Text } from "react-native";
+import { Pressable, Text, Alert } from "react-native";
 import { useRouter } from "expo-router";
-import { startCall } from "@/lib/call-manager";
 
-interface Props {
-  peer: { username: string; name: string; color: string };
-}
+interface Props { peer: { username: string; name: string; color: string }; }
 
 export function CallButton({ peer }: Props) {
   const router = useRouter();
-
   const handlePress = () => {
-    startCall(peer);
-    router.push(
-      `/call/${peer.username}?peerName=${encodeURIComponent(peer.name)}&peerColor=${encodeURIComponent(peer.color)}&role=caller` as any
-    );
+    try {
+      const { startCall } = require("@/lib/call-manager");
+      startCall(peer);
+      router.push(`/call/${peer.username}?peerName=${encodeURIComponent(peer.name)}&peerColor=${encodeURIComponent(peer.color)}&role=caller` as any);
+    } catch {
+      Alert.alert("Voice calls", "Calls require a development build. Run: npx expo prebuild && npx expo run:android");
+    }
   };
-
   return (
-    <Pressable
-      onPress={handlePress}
-      className="px-3 py-1.5 bg-green-600/20 border border-green-900/30 rounded-lg active:opacity-70"
-    >
-      <Text className="text-green-400 text-xs font-semibold">📞 Call</Text>
+    <Pressable onPress={handlePress} className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl active:opacity-70">
+      <Text className="text-emerald-700 text-xs font-semibold">📞 Call</Text>
     </Pressable>
   );
 }

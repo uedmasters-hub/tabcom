@@ -1,16 +1,22 @@
-/** NativeWind requires Tailwind v3 (the extension uses v4 — that's
- *  intentional; the two configs are independent). */
+/** Design tokens matched to the extension's globals.css.
+ *  Extension: white bg, #f8fafc surface, #2563eb primary,
+ *  #0f172a text, #64748b muted, #e2e8f0 border, rounded-xl. */
 module.exports = {
   content: ["./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
   presets: [require("nativewind/preset")],
   theme: {
     extend: {
       colors: {
-        ink: "#0B0B0F",
-        surface: "#15151C",
-        card: "#1D1D26",
-        accent: "#7C6CF6",
-        line: "#2A2A36",
+        background: "#ffffff",
+        surface: "#f8fafc",
+        primary: "#2563eb",
+        "primary-hover": "#1d4ed8",
+        ink: "#0f172a",
+        muted: "#64748b",
+        border: "#e2e8f0",
+        success: "#16a34a",
+        warning: "#d97706",
+        danger: "#dc2626",
       },
     },
   },

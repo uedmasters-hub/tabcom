@@ -15,7 +15,7 @@ import {
   disconnectRealtime,
   isRealtimeConnected,
 } from "@/lib/realtime";
-import { handleCallSignal } from "@/lib/call-manager";
+
 
 type RealtimeState = {
   connected: boolean;
@@ -73,7 +73,6 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       onCommunityError: () => {},
 
       // Calls — routed directly into the call manager
-      onCallSignal: (payload) => handleCallSignal(payload),
     };
 
     initRealtime(me, handlers, REALTIME_URL, auth.sessionToken);

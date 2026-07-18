@@ -32,8 +32,8 @@ export default function CommunityDetailScreen() {
 
   if (!community || !id) {
     return (
-      <SafeAreaView className="flex-1 bg-ink items-center justify-center">
-        <Text className="text-neutral-500">Community not found</Text>
+      <SafeAreaView className="flex-1 bg-background items-center justify-center">
+        <Text className="text-muted">Community not found</Text>
       </SafeAreaView>
     );
   }
@@ -51,37 +51,37 @@ export default function CommunityDetailScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-ink" edges={["top"]}>
+    <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
       {/* Header */}
-      <View className="flex-row items-center px-4 py-3 border-b border-line">
+      <View className="flex-row items-center px-4 py-3 border-b border-border">
         <Pressable onPress={() => router.back()} className="mr-3">
-          <Text className="text-neutral-400 text-lg">←</Text>
+          <Text className="text-muted text-lg">←</Text>
         </Pressable>
         <View className="flex-1">
-          <Text className="text-white font-semibold text-base" numberOfLines={1}>
+          <Text className="text-ink font-semibold text-base" numberOfLines={1}>
             {community.name}
           </Text>
-          <Text className="text-neutral-500 text-xs">
+          <Text className="text-muted text-xs">
             {community.members.length} members
           </Text>
         </View>
         <Pressable
           onPress={() => router.push(`/community/manage/${id}` as any)}
-          className="px-3 py-1.5 bg-card border border-line rounded-lg active:opacity-70"
+          className="px-3 py-1.5 bg-surface border border-border rounded-lg active:opacity-70"
         >
-          <Text className="text-neutral-300 text-xs">Manage</Text>
+          <Text className="text-slate-600 text-xs">Manage</Text>
         </Pressable>
       </View>
 
       {/* Tab switcher */}
-      <View className="flex-row border-b border-line">
+      <View className="flex-row border-b border-border">
         {(["chat", "board"] as Tab[]).map((t) => (
           <Pressable
             key={t}
             onPress={() => setTab(t)}
-            className={`flex-1 py-3 items-center ${tab === t ? "border-b-2 border-accent" : ""}`}
+            className={`flex-1 py-3 items-center ${tab === t ? "border-b-2 border-primary" : ""}`}
           >
-            <Text className={tab === t ? "text-accent font-semibold text-sm" : "text-neutral-500 text-sm"}>
+            <Text className={tab === t ? "text-primary font-semibold text-sm" : "text-muted text-sm"}>
               {t === "chat" ? "Chat" : `Board (${community.board.length})`}
             </Text>
           </Pressable>
@@ -108,23 +108,23 @@ export default function CommunityDetailScreen() {
             contentContainerStyle={{ paddingVertical: 8 }}
             onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           />
-          <View className="flex-row items-end px-3 py-2 border-t border-line bg-surface">
+          <View className="flex-row items-end px-3 py-2 border-t border-border bg-surface">
             <TextInput
               value={text}
               onChangeText={setText}
               placeholder="Message…"
               placeholderTextColor="#5A5A68"
               multiline
-              className="flex-1 bg-card border border-line rounded-2xl px-4 py-3 text-white text-sm max-h-24 mr-2"
+              className="flex-1 bg-surface border border-border rounded-2xl px-4 py-3 text-ink text-sm max-h-24 mr-2"
             />
             <Pressable
               onPress={send}
               disabled={!text.trim()}
               className={`w-10 h-10 rounded-full items-center justify-center ${
-                text.trim() ? "bg-accent" : "bg-accent/40"
+                text.trim() ? "bg-primary" : "bg-slate-300"
               }`}
             >
-              <Text className="text-white font-bold">↑</Text>
+              <Text className="text-ink font-bold">↑</Text>
             </Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -136,8 +136,8 @@ export default function CommunityDetailScreen() {
           contentContainerStyle={{ padding: 16 }}
           ListEmptyComponent={
             <View className="items-center py-12">
-              <Text className="text-neutral-500">No tabs shared yet.</Text>
-              <Text className="text-neutral-600 text-xs mt-1">
+              <Text className="text-muted">No tabs shared yet.</Text>
+              <Text className="text-slate-400 text-xs mt-1">
                 Tabs are added from the extension.
               </Text>
             </View>

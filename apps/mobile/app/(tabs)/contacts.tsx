@@ -85,9 +85,9 @@ export default function ContactsScreen() {
   };
 
   return (
-    <View className="flex-1 bg-ink">
+    <View className="flex-1 bg-background">
       {/* Add contact */}
-      <View className="px-4 py-3 border-b border-line">
+      <View className="px-4 py-3 border-b border-border">
         {adding ? (
           <View>
             <View className="flex-row gap-2">
@@ -99,37 +99,37 @@ export default function ContactsScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoFocus
-                className="flex-1 bg-card border border-line rounded-xl px-4 py-2.5 text-white text-sm"
+                className="flex-1 bg-surface border border-border rounded-xl px-4 py-2.5 text-ink text-sm"
               />
               <Pressable
                 onPress={submitAdd}
                 disabled={!newUsername.trim()}
-                className={`px-4 py-2.5 rounded-xl ${newUsername.trim() ? "bg-accent" : "bg-accent/40"}`}
+                className={`px-4 py-2.5 rounded-xl ${newUsername.trim() ? "bg-primary" : "bg-slate-300"}`}
               >
-                <Text className="text-white text-sm font-semibold">Request</Text>
+                <Text className="text-ink text-sm font-semibold">Request</Text>
               </Pressable>
               <Pressable onPress={() => { setAdding(false); setNewUsername(""); }}>
-                <Text className="text-neutral-500 text-sm py-2.5">✕</Text>
+                <Text className="text-muted text-sm py-2.5">✕</Text>
               </Pressable>
             </View>
-            <Text className="text-neutral-600 text-xs mt-2">
+            <Text className="text-slate-400 text-xs mt-2">
               Sends a connection request — they appear here after accepting.
             </Text>
           </View>
         ) : (
           <Pressable
             onPress={() => setAdding(true)}
-            className="bg-card border border-line rounded-xl py-3 items-center active:opacity-70"
+            className="bg-surface border border-border rounded-xl py-3 items-center active:opacity-70"
           >
-            <Text className="text-accent font-semibold">+ Add contact by username</Text>
+            <Text className="text-primary font-semibold">+ Add contact by username</Text>
           </Pressable>
         )}
       </View>
 
       {list.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-white text-lg font-semibold mb-2">No contacts yet</Text>
-          <Text className="text-neutral-500 text-center">
+          <Text className="text-ink text-lg font-semibold mb-2">No contacts yet</Text>
+          <Text className="text-muted text-center">
             People appear here once you've connected and exchanged messages.
           </Text>
         </View>
@@ -149,13 +149,13 @@ export default function ContactsScreen() {
                     placeholder={contact.name}
                     placeholderTextColor="#5A5A68"
                     autoFocus
-                    className="flex-1 bg-card border border-line rounded-xl px-4 py-2 text-white text-sm"
+                    className="flex-1 bg-surface border border-border rounded-xl px-4 py-2 text-ink text-sm"
                   />
-                  <Pressable onPress={() => submitRename(contact.id)} className="bg-accent rounded-xl px-3 py-2">
-                    <Text className="text-white text-sm">Save</Text>
+                  <Pressable onPress={() => submitRename(contact.id)} className="bg-primary rounded-xl px-3 py-2">
+                    <Text className="text-ink text-sm">Save</Text>
                   </Pressable>
                   <Pressable onPress={() => setRenaming(null)}>
-                    <Text className="text-neutral-500 text-sm py-2">✕</Text>
+                    <Text className="text-muted text-sm py-2">✕</Text>
                   </Pressable>
                 </View>
               );
@@ -169,7 +169,7 @@ export default function ContactsScreen() {
                       style={{ backgroundColor: contact.color }}
                       className="w-11 h-11 rounded-full items-center justify-center"
                     >
-                      <Text className="text-white font-bold">
+                      <Text className="text-ink font-bold">
                         {(contact.alias ?? contact.name).slice(0, 1).toUpperCase()}
                       </Text>
                     </View>
@@ -181,13 +181,13 @@ export default function ContactsScreen() {
                     )}
                   </View>
                   <View className="flex-1">
-                    <Text className="text-white font-medium">
+                    <Text className="text-ink font-medium">
                       {contact.alias ?? contact.name}
                       {contact.alias ? (
-                        <Text className="text-neutral-500 text-xs font-normal"> ({contact.name})</Text>
+                        <Text className="text-muted text-xs font-normal"> ({contact.name})</Text>
                       ) : null}
                     </Text>
-                    <Text className="text-neutral-500 text-xs">
+                    <Text className="text-muted text-xs">
                       @{contact.username} · {contact.presence}
                     </Text>
                   </View>
@@ -196,15 +196,15 @@ export default function ContactsScreen() {
                 <View className="flex-row gap-1">
                   <Pressable
                     onPress={() => { setAliasDraft(contact.alias ?? ""); setRenaming(contact.id); }}
-                    className="px-2 py-1.5 bg-card border border-line rounded-lg"
+                    className="px-2 py-1.5 bg-surface border border-border rounded-lg"
                   >
-                    <Text className="text-neutral-400 text-[10px]">Rename</Text>
+                    <Text className="text-muted text-[10px]">Rename</Text>
                   </Pressable>
                   <Pressable
                     onPress={() => confirmRemove(contact)}
-                    className="px-2 py-1.5 bg-card border border-red-900/30 rounded-lg"
+                    className="px-2 py-1.5 bg-surface border border-red-200 rounded-lg"
                   >
-                    <Text className="text-red-400 text-[10px]">Remove</Text>
+                    <Text className="text-red-600 text-[10px]">Remove</Text>
                   </Pressable>
                 </View>
               </View>
@@ -214,7 +214,7 @@ export default function ContactsScreen() {
       )}
 
       <View className="px-4 py-4">
-        <Text className="text-neutral-600 text-xs">
+        <Text className="text-slate-400 text-xs">
           Renames are local nicknames — only you see them. Removing silently ends the connection.
         </Text>
       </View>

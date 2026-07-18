@@ -74,41 +74,41 @@ export default function InboxScreen() {
   const totalUnread = conversations.reduce((n, c) => n + c.unread, 0);
 
   return (
-    <View className="flex-1 bg-ink">
+    <View className="flex-1 bg-background">
       {/* Connection requests */}
       {pendingIn.length > 0 && (
         <View className="px-4 pt-4 pb-2">
-          <Text className="text-neutral-500 text-xs uppercase mb-2">
+          <Text className="text-muted text-xs uppercase mb-2">
             Connection requests ({pendingIn.length})
           </Text>
           {pendingIn.map((c) => (
-            <View key={c.id} className="bg-card border border-line rounded-2xl p-4 mb-2">
+            <View key={c.id} className="bg-surface border border-border rounded-2xl p-4 mb-2">
               <View className="flex-row items-center gap-3 mb-3">
                 <View
                   style={{ backgroundColor: c.color }}
                   className="w-9 h-9 rounded-full items-center justify-center"
                 >
-                  <Text className="text-white font-bold text-sm">
+                  <Text className="text-ink font-bold text-sm">
                     {c.name.slice(0, 1).toUpperCase()}
                   </Text>
                 </View>
                 <View className="flex-1">
-                  <Text className="text-white font-medium">{c.name}</Text>
-                  <Text className="text-neutral-500 text-xs">@{c.username}</Text>
+                  <Text className="text-ink font-medium">{c.name}</Text>
+                  <Text className="text-muted text-xs">@{c.username}</Text>
                 </View>
               </View>
               <View className="flex-row gap-2">
                 <Pressable
                   onPress={() => handleAccept(c.username)}
-                  className="flex-1 bg-accent rounded-xl py-2.5 items-center active:opacity-80"
+                  className="flex-1 bg-primary rounded-xl py-2.5 items-center active:opacity-80"
                 >
-                  <Text className="text-white font-semibold text-sm">Accept</Text>
+                  <Text className="text-ink font-semibold text-sm">Accept</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => handleDeny(c.username)}
-                  className="flex-1 bg-card border border-line rounded-xl py-2.5 items-center active:opacity-70"
+                  className="flex-1 bg-surface border border-border rounded-xl py-2.5 items-center active:opacity-70"
                 >
-                  <Text className="text-neutral-400 text-sm">Deny</Text>
+                  <Text className="text-muted text-sm">Deny</Text>
                 </Pressable>
               </View>
             </View>
@@ -119,7 +119,7 @@ export default function InboxScreen() {
       {/* Unread summary */}
       {totalUnread > 0 && (
         <View className="px-4 py-2">
-          <Text className="text-accent text-sm font-semibold">
+          <Text className="text-primary text-sm font-semibold">
             {totalUnread} unread {totalUnread === 1 ? "message" : "messages"}
           </Text>
         </View>
@@ -128,8 +128,8 @@ export default function InboxScreen() {
       {/* All recent conversations */}
       {recent.length === 0 && pendingIn.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-white text-lg font-semibold mb-2">Inbox is empty</Text>
-          <Text className="text-neutral-500 text-center">
+          <Text className="text-ink text-lg font-semibold mb-2">Inbox is empty</Text>
+          <Text className="text-muted text-center">
             Messages and requests will show up here.
           </Text>
         </View>
@@ -140,30 +140,30 @@ export default function InboxScreen() {
           renderItem={({ item: c }) => (
             <Pressable
               onPress={() => openConversation(c)}
-              className="flex-row items-center px-4 py-3 active:bg-card"
+              className="flex-row items-center px-4 py-3 active:bg-surface"
             >
-              <View className="w-10 h-10 rounded-full bg-card items-center justify-center mr-3">
-                <Text className="text-white font-bold text-sm">
+              <View className="w-10 h-10 rounded-full bg-surface items-center justify-center mr-3">
+                <Text className="text-ink font-bold text-sm">
                   {getTitle(c).slice(0, 1).toUpperCase()}
                 </Text>
               </View>
               <View className="flex-1 mr-2">
                 <Text
-                  className={`font-medium ${c.unread > 0 ? "text-white" : "text-neutral-400"}`}
+                  className={`font-medium ${c.unread > 0 ? "text-ink" : "text-muted"}`}
                   numberOfLines={1}
                 >
                   {getTitle(c)}
                   {c.kind === "community" ? " 🏘️" : ""}
                 </Text>
-                <Text className="text-neutral-500 text-sm" numberOfLines={1}>
+                <Text className="text-muted text-sm" numberOfLines={1}>
                   {getLastText(c)}
                 </Text>
               </View>
               <View className="items-end">
-                <Text className="text-neutral-600 text-xs">{timeAgo(c.lastMessageAt)}</Text>
+                <Text className="text-slate-400 text-xs">{timeAgo(c.lastMessageAt)}</Text>
                 {c.unread > 0 && (
-                  <View className="bg-accent rounded-full px-1.5 py-0.5 mt-1 min-w-[20px] items-center">
-                    <Text className="text-white text-[10px] font-bold">{c.unread}</Text>
+                  <View className="bg-primary rounded-full px-1.5 py-0.5 mt-1 min-w-[20px] items-center">
+                    <Text className="text-ink text-[10px] font-bold">{c.unread}</Text>
                   </View>
                 )}
               </View>

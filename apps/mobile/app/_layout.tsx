@@ -12,47 +12,33 @@ export default function RootLayout() {
   const segments = useSegments();
   const router = useRouter();
 
-  useEffect(() => {
-    void hydrate();
-  }, []);
+  useEffect(() => { void hydrate(); }, []);
 
-  // Connect/disconnect socket based on auth state.
   useEffect(() => {
     if (!hydrated) return;
-    if (sessionToken) {
-      connect();
-    } else {
-      disconnect();
-    }
+    if (sessionToken) connect();
+    else disconnect();
   }, [hydrated, sessionToken]);
 
   useEffect(() => {
     if (!hydrated) return;
     const inAuthGroup = segments[0] === ("(auth)" as any);
-    if (!sessionToken && !inAuthGroup) {
-      router.replace("/(auth)/welcome" as any);
-    } else if (sessionToken && inAuthGroup) {
-      router.replace("/(tabs)" as any);
-    }
+    if (!sessionToken && !inAuthGroup) router.replace("/(auth)/welcome" as any);
+    else if (sessionToken && inAuthGroup) router.replace("/(tabs)" as any);
   }, [hydrated, sessionToken, segments]);
 
   if (!hydrated) {
     return (
-      <View style={{ flex: 1, backgroundColor: "#0B0B0F", alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color="#7C6CF6" />
+      <View style={{ flex: 1, backgroundColor: "#ffffff", alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator color="#2563eb" />
       </View>
     );
   }
 
   return (
     <>
-      <StatusBar style="light" />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: "#0B0B0F" },
-        }}
-      >
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#ffffff" } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)" />
       </Stack>

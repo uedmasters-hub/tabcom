@@ -2,61 +2,31 @@ import { Tabs } from "expo-router";
 import { Text } from "react-native";
 
 function TabIcon({ glyph, focused }: { glyph: string; focused: boolean }) {
-  return (
-    <Text style={{ fontSize: 20, opacity: focused ? 1 : 0.45 }}>{glyph}</Text>
-  );
+  return <Text style={{ fontSize: 20, opacity: focused ? 1 : 0.4 }}>{glyph}</Text>;
 }
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: "#0B0B0F" },
-        headerTintColor: "#FFFFFF",
+        headerStyle: { backgroundColor: "#ffffff" },
+        headerTintColor: "#0f172a",
         headerShadowVisible: false,
         tabBarStyle: {
-          backgroundColor: "#15151C",
-          borderTopColor: "#2A2A36",
+          backgroundColor: "#ffffff",
+          borderTopColor: "#e2e8f0",
+          borderTopWidth: 1,
         },
-        tabBarActiveTintColor: "#7C6CF6",
-        tabBarInactiveTintColor: "#6B6B7A",
+        tabBarActiveTintColor: "#0f172a",
+        tabBarInactiveTintColor: "#94a3b8",
+        tabBarLabelStyle: { fontSize: 10.5, fontWeight: "600" },
       }}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Chats",
-          tabBarIcon: ({ focused }) => <TabIcon glyph="💬" focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="communities"
-        options={{
-          title: "Communities",
-          tabBarIcon: ({ focused }) => <TabIcon glyph="🏘️" focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="inbox"
-        options={{
-          title: "Inbox",
-          tabBarIcon: ({ focused }) => <TabIcon glyph="📥" focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="contacts"
-        options={{
-          title: "Contacts",
-          tabBarIcon: ({ focused }) => <TabIcon glyph="👥" focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: "Settings",
-          tabBarIcon: ({ focused }) => <TabIcon glyph="⚙️" focused={focused} />,
-        }}
-      />
+      <Tabs.Screen name="index" options={{ title: "Inbox", tabBarIcon: ({ focused }) => <TabIcon glyph="📥" focused={focused} /> }} />
+      <Tabs.Screen name="contacts" options={{ title: "Contacts", tabBarIcon: ({ focused }) => <TabIcon glyph="👥" focused={focused} /> }} />
+      <Tabs.Screen name="communities" options={{ title: "Communities", tabBarIcon: ({ focused }) => <TabIcon glyph="🌐" focused={focused} /> }} />
+      <Tabs.Screen name="inbox" options={{ title: "Chats", tabBarIcon: ({ focused }) => <TabIcon glyph="💬" focused={focused} /> }} />
+      <Tabs.Screen name="settings" options={{ title: "Settings", tabBarIcon: ({ focused }) => <TabIcon glyph="⚙️" focused={focused} /> }} />
     </Tabs>
   );
 }
