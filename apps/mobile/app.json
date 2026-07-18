@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Tabcom",
+    "slug": "tabcom",
+    "version": "0.1.0",
+    "scheme": "tabcom",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "android": {
+      "package": "dev.tabcom.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0B0F"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "ios": {
+      "bundleIdentifier": "dev.tabcom.app",
+      "supportsTablet": false
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@tabcom/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "doctor": "npx expo-doctor"
+  },
+  "dependencies": {
+    "@tabcom/shared": "workspace:*",
+    "expo": "~57.0.7",
+    "expo-constants": "~57.0.6",
+    "expo-linking": "~57.0.3",
+    "expo-router": "~57.0.7",
+    "expo-secure-store": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "nativewind": "^4.2.6",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-native": "0.86.0",
+    "react-native-css-interop": "^0.2.1",
+    "react-native-safe-area-context": "~5.8.0",
+    "react-native-screens": "~4.25.2",
+    "socket.io-client": "^4.8.3",
+    "tailwindcss": "^3.4.17",
+    "zustand": "^5.0.14",
+    "react-native-webrtc": "^124.0.7"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@types/react": "~19.2.0",
+    "typescript": "^5.9.3"
+  }
+}

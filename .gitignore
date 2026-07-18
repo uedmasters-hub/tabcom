@@ -4,3 +4,4 @@ node_modules
 .wxt
 dist
 .env
+apps/mobile/android/
