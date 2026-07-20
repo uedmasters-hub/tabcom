@@ -31,7 +31,8 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     if (isRealtimeConnected()) return;
 
     const auth = useAuth.getState();
-    if (!auth.sessionToken || !auth.user) return;
+    // Guests connect without a session token.
+    if (!auth.user) return;
 
     const me: WireUser = {
       username: auth.user.username ?? "",
@@ -76,7 +77,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       // Calls — routed directly into the call manager
     };
 
-    initRealtime(me, handlers, REALTIME_URL, auth.sessionToken);
+    initRealtime(me, handlers, REALTIME_URL, auth.sessionToken ?? undefined);
 
     // Tell the server this is the mobile device so cross-device media
     // notices can be worded correctly on the other end.

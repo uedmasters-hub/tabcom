@@ -4,6 +4,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useChatStore } from "@/stores/chat";
 import { formatListTime } from "@/lib/format-time";
+import { Avatar } from "@/components/Avatar";
+import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
+import { usePendingRequests } from "@/hooks/useConnections";
 
 /** Notifications — bell target. Connection requests + unread activity,
  *  replacing the old Inbox tab per the 4-tab design. */
@@ -14,9 +17,7 @@ export default function NotificationsScreen() {
   const conversations = useChatStore((s) => s.conversations);
   const communities = useChatStore((s) => s.communities);
 
-  const pendingIn = contacts.filter(
-    (c) => c.id.startsWith("u-") && connections[c.username] === "pending_in"
-  );
+  const pendingIn = usePendingRequests();
   const unread = conversations.filter((c) => c.unread > 0);
 
   const handleRequest = (username: string, action: "accept" | "deny") => {
@@ -56,24 +57,22 @@ export default function NotificationsScreen() {
               Connection requests
             </Text>
             {pendingIn.map((c) => (
-              <View key={c.id} className="bg-surface rounded-3xl p-5 mb-3">
-                <View className="flex-row items-center gap-3.5 mb-4">
-                  <View style={{ backgroundColor: c.color }} className="w-12 h-12 rounded-full items-center justify-center">
-                    <Text className="text-white font-bold text-base">{c.name.slice(0, 1).toUpperCase()}</Text>
-                  </View>
+              <View key={c.id} className="bg-surface rounded-3xl px-4 py-4 mb-3">
+                <Pressable
+                  onPress={() => {
+                    const convId = useChatStore.getState().startConversation(c.id);
+                    router.push(`/conversation/${convId}` as any);
+                  }}
+                  className="flex-row items-center gap-3.5 mb-4 active:opacity-70"
+                >
+                  <Avatar name={c.name} color={c.color} size="md" />
                   <View className="flex-1">
                     <Text className="text-ink font-bold text-[16px]">{c.name}</Text>
                     <Text className="text-muted text-[14px]">@{c.username}</Text>
                   </View>
-                </View>
-                <View className="flex-row gap-2.5">
-                  <Pressable onPress={() => handleRequest(c.username, "accept")} className="flex-1 bg-primary rounded-2xl py-3.5 items-center active:opacity-85">
-                    <Text className="text-white font-bold text-[15px]">Accept</Text>
-                  </Pressable>
-                  <Pressable onPress={() => handleRequest(c.username, "deny")} className="flex-1 bg-white border border-slate-200 rounded-2xl py-3.5 items-center active:opacity-70">
-                    <Text className="text-muted text-[15px] font-semibold">Deny</Text>
-                  </Pressable>
-                </View>
+                  <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
+                </Pressable>
+                <ConnectionRequestCard contact={c} variant="inline" />
               </View>
             ))}
           </View>

@@ -599,13 +599,20 @@ export const useChatStore = create<ChatState>()((set, get) => {
     receiveConnectRequest: (from) => {
       if (get().connections[from.username] === "pending_in") return;
       const contactId = `u-${from.username}`;
+      const notice = `@${from.username} wants to connect.`;
+      const existing = get().conversations.find((c) => c.contactId === contactId);
+      const alreadyNoticed = existing
+        ? (get().messages[existing.id] ?? []).some(
+            (m) => m.kind === "system" && m.text === notice
+          )
+        : false;
       set((state) => ({
         connections: { ...state.connections, [from.username]: "pending_in" },
         contacts: state.contacts.some((c) => c.id === contactId)
           ? state.contacts
           : [{ id: contactId, name: from.name, username: from.username, color: from.color, photo: from.photo, presence: "online" as const }, ...state.contacts],
       }));
-      systemNotice({ contactId }, `@${from.username} wants to connect.`, true);
+      if (!alreadyNoticed) systemNotice({ contactId }, notice, true);
     },
 
     receiveConnectUpdate: (username, status) => {
@@ -616,7 +623,14 @@ export const useChatStore = create<ChatState>()((set, get) => {
         return { connections };
       });
       if (status === "accepted") {
-        systemNotice({ contactId: `u-${username}` }, `You're now connected with @${username}!`, true);
+        const contactId = `u-${username}`;
+        const conv = get().conversations.find((c) => c.contactId === contactId);
+        const already = conv
+          ? (get().messages[conv.id] ?? []).some(
+              (m) => m.kind === "system" && m.text === "Connected securely."
+            )
+          : false;
+        if (!already) systemNotice({ contactId }, "Connected securely.", true);
       }
     },
 
@@ -635,6 +649,14 @@ export const useChatStore = create<ChatState>()((set, get) => {
 
     respondToRequest: (contact, action) => {
       respondToConnectRequest(contact.username, action);
+      if (action === "accept") {
+        // Optimistic: every surface flips immediately rather than waiting
+        // for the server round trip. receiveConnectUpdate is idempotent.
+        set((state) => ({
+          connections: { ...state.connections, [contact.username]: "accepted" },
+        }));
+        systemNotice({ contactId: contact.id }, "Connected securely.", true);
+      }
       if (action === "deny") {
         set((state) => {
           const connections = { ...state.connections };

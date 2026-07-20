@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/chat";
 import { useAuth } from "@/stores/auth";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { Avatar } from "@/components/Avatar";
+import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
 import { formatListTime } from "@/lib/format-time";
 import {
   createCommunity, respondToCommunityInvite, sendConnectRequest,
@@ -376,9 +377,7 @@ export default function CommunitiesScreen() {
                         <Ionicons name="chatbubble-outline" size={18} color="#2563eb" />
                       </Pressable>
                     ) : status === "pending_in" ? (
-                      <Pressable onPress={() => router.push("/notifications" as any)} className="bg-blue-50 border border-blue-200 rounded-full px-5 py-2.5">
-                        <Text className="text-primary text-[15px] font-semibold">Respond</Text>
-                      </Pressable>
+                      <ConnectionRequestCard contact={person} variant="inline" />
                     ) : (
                       <Pressable
                         onPress={() => status === "none" && sendConnectRequest(person.username)}

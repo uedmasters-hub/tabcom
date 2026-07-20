@@ -2,7 +2,7 @@ import { Text, View, Pressable, TextInput } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useAuth } from "@/stores/auth";
+import { usePendingCount } from "@/hooks/useConnections";
 
 interface Props {
   title: string;
@@ -16,20 +16,12 @@ interface Props {
  *  Matches the design shell used across Chat / Communities / Contacts. */
 export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder }: Props) {
   const router = useRouter();
-  const user = useAuth((s) => s.user);
+  const pending = usePendingCount();
 
   return (
     <SafeAreaView edges={["top"]} className="bg-background">
-      <View className="flex-row items-center px-5 pt-2 pb-3">
-        <View
-          style={{ backgroundColor: user?.avatarColor ?? "#2563eb" }}
-          className="w-12 h-12 rounded-full items-center justify-center mr-3.5"
-        >
-          <Text className="text-white font-bold text-lg">
-            {(user?.displayName ?? "?").slice(0, 1).toUpperCase()}
-          </Text>
-        </View>
-        <Text className="flex-1 text-ink font-extrabold text-[30px]">{title}</Text>
+      <View className="flex-row items-center px-5 pt-1 pb-3">
+        <Text className="flex-1 text-ink font-extrabold text-[32px]">{title}</Text>
         {onAdd && (
           <Pressable onPress={onAdd} className="w-12 h-12 rounded-full bg-surface items-center justify-center mr-2.5 active:opacity-60">
             <Ionicons name="add" size={26} color="#0f172a" />
@@ -37,6 +29,11 @@ export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder
         )}
         <Pressable onPress={() => router.push("/notifications" as any)} className="w-12 h-12 rounded-full bg-surface items-center justify-center active:opacity-60">
           <Ionicons name="notifications-outline" size={22} color="#0f172a" />
+          {pending > 0 && (
+            <View className="absolute -top-0.5 -right-0.5 bg-primary rounded-full min-w-[20px] h-[20px] px-1 items-center justify-center border-2 border-white">
+              <Text className="text-white text-[10px] font-bold">{pending}</Text>
+            </View>
+          )}
         </Pressable>
       </View>
       {onSearch && (

@@ -169,6 +169,41 @@ export function createAuthClient(env: AuthEnv) {
       );
     },
 
+    /** Best-effort server-side tracking of a guest session. Never
+     *  blocks the guest flow — the guest experience is fully local, so
+     *  an unreachable server must not stop someone getting started. */
+    async registerGuestSession(guestUsername: string): Promise<void> {
+      const deviceId = await env.getDeviceId();
+      try {
+        await authFetch<unknown>("/session/register-guest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            guestUsername,
+            deviceId,
+            browserInfo: env.getDeviceInfo(),
+          }),
+        });
+      } catch {
+        /* offline — local session still valid */
+      }
+    },
+
+    /** Ends this device's guest session server-side. Must be called on
+     *  every guest-ending path or stale state survives on the server. */
+    async endGuestSession(guestUsername: string): Promise<void> {
+      const deviceId = await env.getDeviceId();
+      try {
+        await authFetch<unknown>("/session/end-guest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ guestUsername, deviceId }),
+        });
+      } catch {
+        /* best effort */
+      }
+    },
+
     async registerAccount(
       email: string,
       username: string,

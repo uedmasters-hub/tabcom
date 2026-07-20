@@ -6,13 +6,16 @@ import {
 import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import type { Message } from "@tabcom/shared";
 import { useChatStore } from "@/stores/chat";
 import { AttachmentSheet, type AttachmentAction } from "./AttachmentSheet";
 import { ContactPickerSheet } from "./ContactPickerSheet";
 import { LocationPreview } from "./LocationPreview";
+import { ConnectionRequestCard, PendingOutgoingCard } from "./ConnectionRequestCard";
+import { VoiceBubble } from "./VoiceBubble";
+import { useConnectionStatus } from "@/hooks/useConnections";
 import { EmojiPicker } from "./EmojiPicker";
 import { useVoiceRecorder, ensureMicPermission, packageRecording, MAX_VOICE_SECONDS } from "@/lib/voice";
 import { captureWithCamera, pickFromLibrary, pickDocument, pickLocation } from "@/lib/media";
@@ -58,6 +61,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const recorder = useVoiceRecorder();
   const recStartedAt = useRef(0);
   const listRef = useRef<FlatList<Message>>(null);
+  const insets = useSafeAreaInsets();
+  // Composer sat flush against the gesture bar; reserve real space.
+  const composerPad = Math.max(insets.bottom, 10);
 
   const messages = useChatStore((s) => s.messages[conversationId] ?? []);
   const typing = useChatStore((s) => s.typing);
@@ -66,6 +72,15 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const isDm = !!peer.username;
   const contactId = peer.username ? `u-${peer.username}` : undefined;
   const isTyping = contactId ? typing.includes(contactId) : false;
+
+  // Connection state drives what the thread renders. A DM that isn't
+  // accepted yet shows the request card in place of the composer, so a
+  // request can be resolved right here without visiting Notifications.
+  const connectionStatus = useConnectionStatus(peer.username);
+  const threadContact = contacts.find((c) => c.username === peer.username);
+  const awaitingMe = isDm && connectionStatus === "pending_in" && !!threadContact;
+  const awaitingThem = isDm && connectionStatus === "pending_out" && !!threadContact;
+  const gated = awaitingMe || awaitingThem;
 
   useEffect(() => {
     useChatStore.getState().openConversation(conversationId);
@@ -145,7 +160,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           dataUrl: packaged.dataUrl,
           durationMs: packaged.durationMs,
           fileSize: packaged.fileSize,
-          mimeType: "audio/m4a",
+          mimeType: "audio/mp4",
         });
       }
     } catch {
@@ -285,12 +300,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               </View>
             </View>
           ) : m.kind === "voice" ? (
-            <View className="flex-row items-center px-4 py-3.5">
-              <Ionicons name="mic" size={22} color={mine ? "#93c5fd" : "#16a34a"} />
-              <Text className={`ml-2 text-[15px] ${mine ? "text-white" : "text-ink"}`}>
-                {m.durationMs ? `${Math.floor(m.durationMs / 60000)}:${String(Math.floor((m.durationMs % 60000) / 1000)).padStart(2, "0")}` : "Voice"}
-              </Text>
-            </View>
+            <VoiceBubble
+              messageId={m.id}
+              dataUrl={m.dataUrl}
+              durationMs={m.durationMs}
+              mine={mine}
+            />
           ) : (
             <Text className={`text-[16.5px] leading-[23px] px-4 py-3 ${mine ? "text-white" : "text-ink"}`}>
               {m.text}
@@ -340,7 +355,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           ) : null}
         </View>
 
-        {isDm ? (
+        {isDm && !gated ? (
           <View className="flex-row items-center bg-surface rounded-full px-1.5 py-1.5">
             <Pressable onPress={() => startCall(true)} className="px-3 active:opacity-60">
               <Ionicons name="videocam-outline" size={25} color="#334155" />
@@ -361,7 +376,13 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
       <KeyboardAvoidingView behavior="padding" className="flex-1 bg-[#eef0f2]">
         <FlatList
           ref={listRef}
-          data={messages}
+          data={
+            gated
+              ? messages.filter(
+                  (m) => !(m.kind === "system" && m.text?.includes("wants to connect"))
+                )
+              : messages
+          }
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble m={item} />}
           contentContainerStyle={{ paddingVertical: 14 }}
@@ -369,9 +390,22 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           className="flex-1"
         />
 
-        {/* Pinned composer — swaps to a recording bar while recording */}
-        {recording ? (
-          <View className="flex-row items-center px-4 py-3 bg-background border-t border-slate-100">
+        {gated ? (
+          <View
+            style={{ paddingBottom: composerPad + 12 }}
+            className="bg-background border-t border-slate-100 pt-6"
+          >
+            {awaitingMe && threadContact ? (
+              <ConnectionRequestCard contact={threadContact} />
+            ) : threadContact ? (
+              <PendingOutgoingCard contact={threadContact} />
+            ) : null}
+          </View>
+        ) : recording ? (
+          <View
+            style={{ paddingBottom: composerPad }}
+            className="flex-row items-center px-4 pt-3 bg-background border-t border-slate-100"
+          >
             <Pressable
               onPress={() => stopRecording(true)}
               hitSlop={10}
@@ -394,7 +428,10 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             </Pressable>
           </View>
         ) : (
-        <View className="flex-row items-center px-3 py-2.5 bg-background border-t border-slate-100">
+        <View
+          style={{ paddingBottom: composerPad }}
+          className="flex-row items-center px-3 pt-2.5 bg-background border-t border-slate-100"
+        >
           <Pressable onPress={() => setSheetOpen(true)} hitSlop={8} className="px-2 active:opacity-50">
             {busy ? <ActivityIndicator size="small" color="#64748b" /> : <Ionicons name="add" size={30} color="#334155" />}
           </Pressable>

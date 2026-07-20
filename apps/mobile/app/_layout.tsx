@@ -8,7 +8,9 @@ import { useRealtime } from "@/stores/realtime";
 import "../global.css";
 
 export default function RootLayout() {
-  const { hydrated, sessionToken, hydrate } = useAuth();
+  const { hydrated, sessionToken, guest, hydrate } = useAuth();
+  // Guests are signed in without a server token.
+  const signedIn = !!sessionToken || !!guest;
   const { connect, disconnect } = useRealtime();
   const segments = useSegments();
   const router = useRouter();
@@ -32,16 +34,16 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (!hydrated) return;
-    if (sessionToken) connect();
+    if (signedIn) connect();
     else disconnect();
-  }, [hydrated, sessionToken]);
+  }, [hydrated, signedIn]);
 
   useEffect(() => {
     if (!hydrated) return;
     const inAuthGroup = segments[0] === ("(auth)" as any);
-    if (!sessionToken && !inAuthGroup) router.replace("/(auth)/welcome" as any);
-    else if (sessionToken && inAuthGroup) router.replace("/(tabs)" as any);
-  }, [hydrated, sessionToken, segments]);
+    if (!signedIn && !inAuthGroup) router.replace("/(auth)/welcome" as any);
+    else if (signedIn && inAuthGroup) router.replace("/(tabs)" as any);
+  }, [hydrated, signedIn, segments]);
 
   if (!hydrated) {
     return (

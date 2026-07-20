@@ -1,9 +1,12 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { usePendingCount } from "@/hooks/useConnections";
 
 /** 4-tab shell per design: Chat · Community · Contacts · Settings.
  *  Inbox is merged into Chat; notifications live behind the header bell. */
 export default function TabsLayout() {
+  const pending = usePendingCount();
+
   return (
     <Tabs
       screenOptions={{
@@ -24,6 +27,8 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Chat",
+          tabBarBadge: pending > 0 ? pending : undefined,
+          tabBarBadgeStyle: { backgroundColor: "#2563eb", fontSize: 11 },
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "chatbubbles" : "chatbubbles-outline"} size={26} color={color} />
           ),

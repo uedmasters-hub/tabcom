@@ -55,7 +55,11 @@ export async function packageRecording(
       encoding: FileSystem.EncodingType.Base64,
     });
     return {
-      dataUrl: `data:audio/m4a;base64,${base64}`,
+      // MUST be audio/mp4, not audio/m4a. "audio/m4a" is not a
+      // registered MIME type, so Chrome refuses to decode the data URL
+      // and the extension's player silently fails at 0:00. expo-audio
+      // records AAC-in-MP4, which audio/mp4 describes correctly.
+      dataUrl: `data:audio/mp4;base64,${base64}`,
       durationMs,
       fileSize: size,
     };

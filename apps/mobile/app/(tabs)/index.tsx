@@ -5,6 +5,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useChatStore } from "@/stores/chat";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { Avatar } from "@/components/Avatar";
+import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
+import { usePendingRequests } from "@/hooks/useConnections";
 import { formatListTime } from "@/lib/format-time";
 import type { Conversation, Message } from "@tabcom/shared";
 
@@ -23,6 +25,7 @@ export default function ChatScreen() {
   const contacts = useChatStore((s) => s.contacts);
   const communities = useChatStore((s) => s.communities);
   const messages = useChatStore((s) => s.messages);
+  const pending = usePendingRequests();
 
   const getTitle = (c: Conversation) =>
     c.kind === "community" && c.communityId
@@ -119,6 +122,32 @@ export default function ChatScreen() {
           data={filtered}
           keyExtractor={(i) => i.id}
           contentContainerStyle={{ paddingBottom: 24 }}
+          ListHeaderComponent={
+            pending.length > 0 ? (
+              <View className="px-5 pt-1 pb-3">
+                {pending.map((c) => (
+                  <View key={c.id} className="bg-surface rounded-3xl px-4 py-4 mb-2.5">
+                    <Pressable
+                      onPress={() => {
+                        const convId = useChatStore.getState().startConversation(c.id);
+                        router.push(`/conversation/${convId}` as any);
+                      }}
+                      className="flex-row items-center mb-3.5 active:opacity-70"
+                    >
+                      <View className="mr-3.5">
+                        <Avatar name={c.name} color={c.color} size="md" />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-ink font-bold text-[16px]">{c.name}</Text>
+                        <Text className="text-muted text-[14px]">wants to connect</Text>
+                      </View>
+                    </Pressable>
+                    <ConnectionRequestCard contact={c} variant="inline" />
+                  </View>
+                ))}
+              </View>
+            ) : null
+          }
           renderItem={({ item: c }) => {
             const contact = c.kind === "dm" ? contacts.find((x) => x.id === c.contactId) : null;
             const dot = contact ? presenceDot[contact.presence] : null;

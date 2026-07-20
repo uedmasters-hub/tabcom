@@ -1912,35 +1912,81 @@ function VoiceBubble({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [measuredMs, setMeasuredMs] = useState(0);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    const audio = new Audio(dataUrl);
+    // Older mobile builds sent "data:audio/m4a;..." — not a registered
+    // MIME type, so Chrome refuses to decode it and playback dies at
+    // 0:00. Rewrite it to audio/mp4 so messages already in flight still
+    // play. New messages arrive correctly typed.
+    const src = dataUrl.startsWith("data:audio/m4a")
+      ? dataUrl.replace("data:audio/m4a", "data:audio/mp4")
+      : dataUrl;
+
+    const audio = new Audio(src);
+    audio.preload = "metadata";
     audioRef.current = audio;
+    setFailed(false);
+    setElapsed(0);
+
     const onTime = () => setElapsed(audio.currentTime * 1000);
+    // Trust the element over the durationMs prop: the prop can be absent
+    // on relayed messages, and it was the reason the timer read 0:00.
+    const onMeta = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setMeasuredMs(audio.duration * 1000);
+      }
+    };
+    // Playing state must follow the element, not our optimistic guess —
+    // a rejected play() previously left the pause icon stuck forever.
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
     const onEnd = () => {
       setPlaying(false);
       setElapsed(0);
     };
+    const onError = () => {
+      setFailed(true);
+      setPlaying(false);
+    };
+
     audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onMeta);
+    audio.addEventListener("durationchange", onMeta);
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnd);
+    audio.addEventListener("error", onError);
+
     return () => {
       audio.pause();
       audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onMeta);
+      audio.removeEventListener("durationchange", onMeta);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("error", onError);
       audioRef.current = null;
     };
   }, [dataUrl]);
 
   const toggle = () => {
     const audio = audioRef.current;
-    if (!audio) return;
-    if (playing) {
+    if (!audio || failed) return;
+    if (!audio.paused) {
       audio.pause();
-      setPlaying(false);
-    } else {
-      void audio.play();
-      setPlaying(true);
+      return;
     }
+    // A finished track needs an explicit rewind or play() is a no-op.
+    if (audio.duration && audio.currentTime >= audio.duration - 0.15) {
+      audio.currentTime = 0;
+    }
+    audio.play().catch(() => {
+      setFailed(true);
+      setPlaying(false);
+    });
   };
 
   const fmt = (ms: number) => {
@@ -1948,7 +1994,7 @@ function VoiceBubble({
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
   };
 
-  const totalMs = durationMs ?? 0;
+  const totalMs = measuredMs > 0 ? measuredMs : durationMs ?? 0;
   const progress = totalMs > 0 ? Math.min(100, (elapsed / totalMs) * 100) : 0;
 
   return (
@@ -1982,7 +2028,7 @@ function VoiceBubble({
             isMine ? "text-slate-300" : "text-slate-500"
           )}
         >
-          {playing ? fmt(elapsed) : fmt(totalMs)}
+          {failed ? "Unavailable" : elapsed > 0 ? fmt(elapsed) : fmt(totalMs)}
         </span>
       </span>
     </span>
