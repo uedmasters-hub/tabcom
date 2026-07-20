@@ -1,5 +1,9 @@
 import "dotenv/config";
-import { registerPushToken, sendPushToUser } from "./push";
+import {
+  registerPushToken,
+  sendPushToUser,
+  describeMessageKind,
+} from "./push";
 import { existsSync, readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { createServer } from "node:http";
@@ -1531,8 +1535,11 @@ async function ensureUniqueGuestUsername(
     const targets = publicSocketIdsFor(to);
     if (targets.length === 0) {
       sendPushToUser(to, {
-        title: "Tabcom",
-        body: `${from.name || from.username} wants to connect`,
+        title: from.name || from.username,
+        body: "wants to connect on Tabcom",
+        category: "requests",
+        route: "/notifications",
+        threadId: `req:${from.username}`,
         data: { type: "connect_request", from: from.username },
       });
       // NOTE: "connect_error" is a Socket.IO RESERVED event name — the
@@ -1881,6 +1888,17 @@ async function ensureUniqueGuestUsername(
         from: me,
         attempt: invite.attempts,
       });
+
+      if (publicSocketIdsFor(username).length === 0) {
+        sendPushToUser(username, {
+          title: "Community invite",
+          body: `${me.name || me.username} invited you to ${community.name}`,
+          category: "requests",
+          route: "/notifications",
+          threadId: `invite:${community.id}`,
+          data: { type: "community_invite", communityId: community.id },
+        });
+      }
       socket.emit("community_update", {
         community: serializeCommunity(community, me.username),
       });
@@ -2180,8 +2198,11 @@ async function ensureUniqueGuestUsername(
           // Offline member — push instead of relay.
           sendPushToUser(member, {
             title: community.name,
-            body: `${from.name || from.username}: ${message.kind === "text" ? (message.text ?? "New message") : "New message"}`,
-            data: { type: "community", communityId },
+            body: `${from.name || from.username}: ${describeMessageKind(message.kind, message.text)}`,
+            category: "communities",
+            route: `/community/${communityId}`,
+            threadId: `community:${communityId}`,
+            data: { type: "community", communityId, from: from.username },
           });
           continue;
         }
@@ -2225,6 +2246,19 @@ async function ensureUniqueGuestUsername(
 
       ensureBoardItem(community, me, { url, canonicalKey, title, image, siteName });
       logActivity(community.id, community.name, me.username, "tab_added", title);
+
+      for (const member of community.members) {
+        if (member === me.username) continue;
+        if (publicSocketIdsFor(member).length > 0) continue;
+        sendPushToUser(member, {
+          title: community.name,
+          body: `${me.name || me.username} shared: ${title || url}`,
+          category: "tabs",
+          route: `/community/${communityId}`,
+          threadId: `community:${communityId}`,
+          data: { type: "board_add", communityId },
+        });
+      }
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -2288,6 +2322,19 @@ async function ensureUniqueGuestUsername(
         text: String(text).trim().slice(0, 500),
         sentAt: Date.now(),
       });
+
+      for (const member of community.members) {
+        if (member === me.username) continue;
+        if (publicSocketIdsFor(member).length > 0) continue;
+        sendPushToUser(member, {
+          title: community.name,
+          body: `${me.name || me.username} commented on ${item.title || "a tab"}`,
+          category: "communities",
+          route: `/community/${communityId}`,
+          threadId: `community:${communityId}`,
+          data: { type: "board_comment", communityId, itemId },
+        });
+      }
 
       for (const member of community.members) {
         notify(member, "community_update", {
@@ -2924,7 +2971,10 @@ async function ensureUniqueGuestUsername(
         // Recipient has no live socket — wake their phone instead.
         sendPushToUser(to, {
           title: from.name || from.username,
-          body: message.kind === "text" ? (message.text ?? "New message") : "Sent you a message",
+          body: describeMessageKind(message.kind, message.text),
+          category: "messages",
+          route: `/conversation/u-${from.username}`,
+          threadId: `dm:${from.username}`,
           data: { type: "dm", from: from.username },
         });
         socket.emit("dm_error", { to, reason: "recipient_unavailable" });
@@ -2976,8 +3026,17 @@ async function ensureUniqueGuestUsername(
         if (signal.kind === "offer") {
           sendPushToUser(to, {
             title: from.name || from.username,
-            body: "Incoming call",
-            data: { type: "call", from: from.username },
+            body: signal.video ? "📹 Incoming video call" : "📞 Incoming voice call",
+            category: "calls",
+            route: `/call/${from.username}`,
+            threadId: `call:${from.username}`,
+            data: {
+              type: "call",
+              from: from.username,
+              video: !!signal.video,
+              name: from.name || from.username,
+              color: from.color,
+            },
           });
         }
         socket.emit("call_error", { to, reason: "recipient_unavailable" });
@@ -3199,7 +3258,22 @@ async function ensureUniqueGuestUsername(
       return;
     }
 
-    for (const id of publicSocketIdsFor(to)) {
+    const typingTargets = publicSocketIdsFor(to);
+    if (typingTargets.length === 0) {
+      // Offline — a throttled, silent, short-TTL nudge. push.ts caps
+      // these at one per thread per 25s and expires them after 8s.
+      sendPushToUser(to, {
+        title: from.name || from.username,
+        body: "is typing…",
+        category: "typing",
+        route: `/conversation/u-${from.username}`,
+        threadId: `dm:${from.username}`,
+        data: { type: "typing", from: from.username },
+      });
+      return;
+    }
+
+    for (const id of typingTargets) {
       io.to(id).emit("typing", { from: from.username });
     }
   });

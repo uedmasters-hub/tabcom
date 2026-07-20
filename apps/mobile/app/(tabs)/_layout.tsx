@@ -1,11 +1,23 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { useEffect } from "react";
 import { usePendingCount } from "@/hooks/useConnections";
+import { useChatStore } from "@/stores/chat";
 
 /** 4-tab shell per design: Chat · Community · Contacts · Settings.
  *  Inbox is merged into Chat; notifications live behind the header bell. */
 export default function TabsLayout() {
   const pending = usePendingCount();
+  const unread = useChatStore((s) =>
+    s.conversations.reduce((sum, c) => sum + (c.unread ?? 0), 0)
+  );
+
+  // Launcher badge = unread messages + pending requests.
+  useEffect(() => {
+    void import("@/lib/notifications").then(({ setBadgeCount }) =>
+      setBadgeCount(unread + pending)
+    );
+  }, [unread, pending]);
 
   return (
     <Tabs

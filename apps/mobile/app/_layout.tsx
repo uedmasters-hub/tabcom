@@ -17,16 +17,30 @@ export default function RootLayout() {
 
   useEffect(() => { void hydrate(); }, []);
 
-  // Notification taps deep-link into the right screen.
+  // Channels must exist before the first notification arrives, or
+  // Android silently drops it into a default bucket.
+  useEffect(() => {
+    void import("@/lib/notifications").then(({ configureNotifications }) =>
+      configureNotifications()
+    );
+  }, []);
+
+  // Notification taps deep-link straight to the relevant screen. The
+  // server puts the destination in `route`, so routing stays server-
+  // driven rather than duplicated per notification type here.
   useEffect(() => {
     let unsub = () => {};
-    import("@/lib/notifications").then(({ onNotificationTap }) => {
-      unsub = onNotificationTap((data) => {
-        if (data.type === "community" && data.communityId) {
-          router.push(`/community/${data.communityId}` as any);
-        } else if (data.type === "dm" || data.type === "connect_request" || data.type === "call") {
-          router.push("/(tabs)" as any);
+    void import("@/lib/notifications").then(({ attachNotificationRouting }) => {
+      unsub = attachNotificationRouting((route, data) => {
+        if (data?.type === "call" && data?.from) {
+          const name = encodeURIComponent(String(data.name ?? data.from));
+          const color = encodeURIComponent(String(data.color ?? "#2563eb"));
+          router.push(
+            `/call/${data.from}?peerName=${name}&peerColor=${color}&role=callee&video=${!!data.video}` as any
+          );
+          return;
         }
+        router.push(route as any);
       });
     });
     return () => unsub();

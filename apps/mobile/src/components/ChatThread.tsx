@@ -84,8 +84,18 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   useEffect(() => {
     useChatStore.getState().openConversation(conversationId);
+
+    // Dismiss any shade notifications for this thread — reading in-app
+    // should clear them, as in any mainstream messenger.
+    const threadId = peer.username
+      ? `dm:${peer.username}`
+      : `community:${conversationId}`;
+    void import("@/lib/notifications").then(({ clearThreadNotifications }) =>
+      clearThreadNotifications(threadId)
+    );
+
     return () => useChatStore.getState().closeConversation();
-  }, [conversationId]);
+  }, [conversationId, peer.username]);
 
   const send = () => {
     const t = text.trim();
