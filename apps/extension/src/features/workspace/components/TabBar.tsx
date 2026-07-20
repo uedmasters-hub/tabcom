@@ -33,7 +33,7 @@ export default function TabBar() {
   return (
     <nav
       aria-label="Workspace"
-      className="grid grid-cols-4 border-t border-slate-200 bg-white"
+      className="grid shrink-0 grid-cols-4 border-t border-slate-200 bg-white"
     >
       {tabs.map(({ id, label, icon: Icon }) => {
         const isActive = tab === id;

@@ -150,7 +150,7 @@ export default function CommunitiesView() {
   };
 
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {/* Segmented control — same underline-tab + plain-action pattern as the board's Tabs/Pins/Areas row */}
       <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-6">
         <div className="flex gap-4" role="tablist" aria-label="Communities filter">

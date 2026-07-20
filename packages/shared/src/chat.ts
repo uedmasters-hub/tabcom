@@ -48,6 +48,9 @@ export interface Message {
    *  stored only in each participant's local client (never on the
    *  server, which relays the message and forgets it like all others). */
   dataUrl?: string;
+  /** Video poster frame (data URL) so receivers render a preview
+   *  without downloading/decoding the whole clip. */
+  thumbnailUrl?: string;
   /** Recorded length for kind "voice", in milliseconds. */
   durationMs?: number;
   /** kind "file" (and video/image where known): original file metadata.

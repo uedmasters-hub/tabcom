@@ -28,7 +28,7 @@ export default function ConsentPanel({
 
   if (status === "pending_in") {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 py-6 text-center">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-6 py-6 text-center">
         <Illustration
           name="connection-request.png"
           alt="Illustration of an incoming connection request"
@@ -91,7 +91,7 @@ export default function ConsentPanel({
 
   if (status === "pending_out") {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-6 py-6 text-center">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-6 py-6 text-center">
         <Illustration
           name="connection-request.png"
           alt="Illustration of an outgoing connection request"
@@ -117,7 +117,7 @@ export default function ConsentPanel({
 
   if (status === "blocked") {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-6 text-center">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-6 text-center">
         <Illustration
           name="connection-request.png"
           alt="Illustration of a blocked connection"
@@ -136,7 +136,7 @@ export default function ConsentPanel({
 
   // "none" or "declined"
   return (
-    <div className="flex flex-1 flex-col items-center justify-center px-6 py-6 text-center">
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-6 py-6 text-center">
       <Illustration
         name="connection-request.png"
         alt="Illustration of sending a connection request"

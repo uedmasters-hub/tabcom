@@ -137,7 +137,7 @@ export default function BoardView({ community }: { community: Community }) {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto">
+      <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div
           className={cn(
             "sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-100 bg-white px-4 transition-transform duration-200 ease-out",

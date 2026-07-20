@@ -3,6 +3,7 @@ import type {
   Contact,
   Conversation,
   Message,
+  MessageKind,
   MessageReaction,
   WireMessage,
   WireUser,
@@ -137,6 +138,32 @@ interface ChatState {
   openCommunityConversation: (communityId: string) => string;
 
   sendText: (conversationId: string, text: string, replyToId?: string) => void;
+  /** Media never syncs between a user's own devices — nothing is stored
+   *  server-side. When another device sends media, drop a system notice
+   *  into the thread so the file's whereabouts are obvious. */
+  addDeviceMediaNotice: (
+    peer: string,
+    kind: string,
+    from: "mobile" | "extension"
+  ) => void;
+  sendMedia: (
+    conversationId: string,
+    payload: {
+      kind: MessageKind;
+      text?: string;
+      dataUrl?: string;
+      thumbnailUrl?: string;
+      fileName?: string;
+      fileSize?: number;
+      mimeType?: string;
+      durationMs?: number;
+      latitude?: number;
+      longitude?: number;
+      contactUsername?: string;
+      contactName?: string;
+      contactColor?: string;
+    }
+  ) => void;
   editMessage: (conversationId: string, messageId: string, text: string) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   reactToMessage: (conversationId: string, messageId: string, emoji: string) => void;
@@ -374,6 +401,59 @@ export const useChatStore = create<ChatState>()((set, get) => {
         id: uid(), authorId: ME, kind: "text", text: trimmed,
         sentAt: Date.now(), status: get().connected ? "sending" : "failed",
         replyToId,
+      };
+      set((state) => appendMessage(state, conversationId, message, false));
+      if (get().connected) deliver(conversationId, message);
+    },
+
+    addDeviceMediaNotice: (peer, kind, from) => {
+      const state = get();
+      const contact = state.contacts.find((c) => c.username === peer);
+      let conversation = contact
+        ? state.conversations.find((c) => c.contactId === contact.id)
+        : state.conversations.find(
+            (c) => c.communityId && state.communities[c.communityId]?.name === peer
+          );
+      if (!conversation) return;
+
+      const label = kind === "image" ? "Photo"
+        : kind === "video" ? "Video"
+        : kind === "voice" ? "Voice message"
+        : kind === "location" ? "Location"
+        : "File";
+      const where = from === "mobile" ? "your mobile device" : "your browser extension";
+      const view = from === "mobile" ? "your mobile" : "your extension";
+
+      const notice: Message = {
+        id: uid(),
+        authorId: "system",
+        kind: "system",
+        text: `${label} sent from ${where}. View it on ${view}.`,
+        sentAt: Date.now(),
+        status: "delivered",
+      };
+      set((s2) => appendMessage(s2, conversation!.id, notice, false));
+    },
+
+    sendMedia: (conversationId, payload) => {
+      const message: Message = {
+        id: uid(),
+        authorId: ME,
+        kind: payload.kind,
+        text: payload.text ?? "",
+        dataUrl: payload.dataUrl,
+        thumbnailUrl: payload.thumbnailUrl,
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        mimeType: payload.mimeType,
+        durationMs: payload.durationMs,
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        contactUsername: payload.contactUsername,
+        contactName: payload.contactName,
+        contactColor: payload.contactColor,
+        sentAt: Date.now(),
+        status: get().connected ? "sending" : "failed",
       };
       set((state) => appendMessage(state, conversationId, message, false));
       if (get().connected) deliver(conversationId, message);

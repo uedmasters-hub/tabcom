@@ -1,64 +1,165 @@
+import { useMemo, useState } from "react";
 import { Text, View, Pressable, FlatList } from "react-native";
 import { useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { useChatStore } from "@/stores/chat";
-import { useRealtime } from "@/stores/realtime";
-import type { Conversation } from "@tabcom/shared";
+import { ScreenHeader } from "@/components/ScreenHeader";
+import { Avatar } from "@/components/Avatar";
+import { formatListTime } from "@/lib/format-time";
+import type { Conversation, Message } from "@tabcom/shared";
 
-function timeAgo(ts: number): string {
-  const d = Date.now() - ts;
-  if (d < 60_000) return "now";
-  if (d < 3600_000) return `${Math.floor(d / 60_000)}m`;
-  if (d < 86400_000) return `${Math.floor(d / 3600_000)}h`;
-  return `${Math.floor(d / 86400_000)}d`;
-}
+const presenceDot: Record<string, string> = {
+  online: "#16a34a",
+  away: "#eab308",
+  busy: "#ef4444",
+};
 
-export default function ChatsScreen() {
+/** Chat — conversation list with rich last-message previews:
+ *  media-type icons, read receipts, presence, per the design. */
+export default function ChatScreen() {
   const router = useRouter();
-  const { connected } = useRealtime();
+  const [query, setQuery] = useState("");
   const conversations = useChatStore((s) => s.conversations);
   const contacts = useChatStore((s) => s.contacts);
   const communities = useChatStore((s) => s.communities);
   const messages = useChatStore((s) => s.messages);
 
-  const getTitle = (c: Conversation) => c.kind === "community" && c.communityId ? communities[c.communityId]?.name ?? "Community" : contacts.find((x) => x.id === c.contactId)?.alias ?? contacts.find((x) => x.id === c.contactId)?.name ?? "Unknown";
-  const getPresenceColor = (c: Conversation) => { if (c.kind !== "dm") return null; const ct = contacts.find((x) => x.id === c.contactId); return ct?.presence === "online" ? "#16a34a" : ct?.presence === "away" ? "#d97706" : null; };
-  const getLastMsg = (c: Conversation) => { const t = messages[c.id] ?? []; return t[t.length - 1]?.text || "No messages yet"; };
+  const getTitle = (c: Conversation) =>
+    c.kind === "community" && c.communityId
+      ? communities[c.communityId]?.name ?? "Community"
+      : contacts.find((x) => x.id === c.contactId)?.alias ??
+        contacts.find((x) => x.id === c.contactId)?.name ?? "Unknown";
+
+  const filtered = useMemo(() => {
+    // Drop community threads whose community is gone (left/deleted).
+    // These were rendering as a generic "Community" row that opened a
+    // dead "Community not found" screen.
+    const live = conversations.filter(
+      (c) => c.kind !== "community" || (c.communityId && communities[c.communityId])
+    );
+    const q = query.trim().toLowerCase();
+    if (!q) return live;
+    return live.filter((c) => getTitle(c).toLowerCase().includes(q));
+  }, [conversations, query, contacts, communities]);
+
+  const lastMessage = (c: Conversation): Message | undefined => {
+    const t = messages[c.id] ?? [];
+    for (let i = t.length - 1; i >= 0; i--) {
+      const m = t[i];
+      if (m && m.kind !== "system") return m;
+    }
+    return undefined;
+  };
+
+  const Preview = ({ conv }: { conv: Conversation }) => {
+    const m = lastMessage(conv);
+    if (!m) return <Text className="text-muted text-[15px]">No messages yet</Text>;
+
+    const mine = m.authorId === "me";
+    const receipt = mine ? (
+      m.readAt ? (
+        <Ionicons name="checkmark-done" size={17} color="#2563eb" style={{ marginRight: 4 }} />
+      ) : m.status === "delivered" ? (
+        <Ionicons name="checkmark-done" size={17} color="#94a3b8" style={{ marginRight: 4 }} />
+      ) : (
+        <Ionicons name="checkmark" size={17} color="#94a3b8" style={{ marginRight: 4 }} />
+      )
+    ) : null;
+
+    let icon: React.ReactNode = null;
+    let label = m.text ?? "";
+    if (m.kind === "voice") {
+      icon = <Ionicons name="mic" size={16} color="#16a34a" style={{ marginRight: 4 }} />;
+      label = m.durationMs ? `${Math.floor(m.durationMs / 60000)}:${String(Math.floor((m.durationMs % 60000) / 1000)).padStart(2, "0")}` : "Voice message";
+    } else if (m.kind === "image") {
+      icon = <Ionicons name="camera" size={16} color="#64748b" style={{ marginRight: 4 }} />;
+      label = "Photo";
+    } else if (m.kind === "location") {
+      icon = <Ionicons name="location" size={16} color="#64748b" style={{ marginRight: 4 }} />;
+      label = "Location";
+    } else if (m.kind === "file") {
+      icon = <Ionicons name="document" size={16} color="#64748b" style={{ marginRight: 4 }} />;
+      label = m.fileName ?? "File";
+    } else if (m.kind === "link") {
+      icon = <Ionicons name="link" size={16} color="#64748b" style={{ marginRight: 4 }} />;
+      label = m.url ?? "Link";
+    }
+
+    return (
+      <View className="flex-row items-center mt-0.5">
+        {receipt}
+        {icon}
+        <Text className={`text-[15px] flex-1 ${conv.unread > 0 ? "text-slate-700 font-medium" : "text-[#5b7a9d]"}`} numberOfLines={1}>
+          {label}
+        </Text>
+      </View>
+    );
+  };
 
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-2 px-6 py-2">
-        <View className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-500" : "bg-amber-400"}`} />
-        <Text className={`text-xs font-semibold uppercase tracking-wide ${connected ? "text-emerald-600" : "text-amber-600"}`}>
-          {connected ? "Live" : "Connecting"}
-        </Text>
-      </View>
-      {conversations.length === 0 ? (
-        <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-ink text-lg font-semibold mb-2">No conversations yet</Text>
-          <Text className="text-muted text-center">Discover people in Communities, send a connection request, and chat once they accept.</Text>
+      <ScreenHeader
+        title="Chat"
+        onAdd={() => router.push("/(tabs)/contacts" as any)}
+        search={query}
+        onSearch={setQuery}
+      />
+      {filtered.length === 0 ? (
+        <View className="flex-1 items-center justify-center px-10">
+          <Ionicons name="chatbubbles-outline" size={56} color="#cbd5e1" />
+          <Text className="text-ink text-xl font-bold mt-4 mb-2">
+            {query ? "No matches" : "No conversations yet"}
+          </Text>
+          <Text className="text-muted text-base text-center leading-6">
+            {query ? "Try a different search." : "Add someone in Contacts and start chatting once they accept."}
+          </Text>
         </View>
       ) : (
-        <FlatList data={conversations} keyExtractor={(i) => i.id} renderItem={({ item: c }) => {
-          const pc = getPresenceColor(c);
-          return (
-            <Pressable onPress={() => { useChatStore.getState().openConversation(c.id); router.push(c.kind === "community" && c.communityId ? `/community/${c.communityId}` as any : `/conversation/${c.id}` as any); }} className="flex-row items-center px-6 py-4 border-b border-border active:bg-surface">
-              <View className="relative mr-3">
-                <View style={{ backgroundColor: contacts.find((x) => x.id === c.contactId)?.color ?? "#2563eb" }} className="w-10 h-10 rounded-full items-center justify-center">
-                  <Text className="text-white font-semibold text-sm">{getTitle(c).slice(0, 1).toUpperCase()}</Text>
+        <FlatList
+          data={filtered}
+          keyExtractor={(i) => i.id}
+          contentContainerStyle={{ paddingBottom: 24 }}
+          renderItem={({ item: c }) => {
+            const contact = c.kind === "dm" ? contacts.find((x) => x.id === c.contactId) : null;
+            const dot = contact ? presenceDot[contact.presence] : null;
+            return (
+              <Pressable
+                onPress={() => {
+                  useChatStore.getState().openConversation(c.id);
+                  router.push(
+                    c.kind === "community" && c.communityId
+                      ? (`/community/${c.communityId}` as any)
+                      : (`/conversation/${c.id}` as any)
+                  );
+                }}
+                className="flex-row items-center px-5 py-3 active:bg-surface"
+              >
+                <View className="mr-4">
+                  <Avatar
+                    name={getTitle(c)}
+                    color={contact?.color ?? "#2563eb"}
+                    size="lg"
+                    presence={contact?.presence}
+                  />
                 </View>
-                {pc && <View style={{ backgroundColor: pc }} className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white" />}
-              </View>
-              <View className="flex-1 mr-2">
-                <Text className={`text-sm ${c.unread > 0 ? "font-semibold text-ink" : "font-medium text-ink"}`} numberOfLines={1}>{getTitle(c)}</Text>
-                <Text className="text-muted text-sm" numberOfLines={1}>{getLastMsg(c)}</Text>
-              </View>
-              <View className="items-end">
-                <Text className="text-slate-400 text-xs">{timeAgo(c.lastMessageAt)}</Text>
-                {c.unread > 0 && <View className="bg-primary rounded-full px-1.5 py-0.5 mt-1 min-w-[18px] items-center"><Text className="text-white text-[10px] font-semibold">{c.unread}</Text></View>}
-              </View>
-            </Pressable>
-          );
-        }} />
+                <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
+                  <View className="flex-1 mr-3">
+                    <Text className="text-ink font-bold text-[19px]" numberOfLines={1}>{getTitle(c)}</Text>
+                    <Preview conv={c} />
+                  </View>
+                  <View className="items-end gap-1.5">
+                    <Text className="text-slate-400 text-[14px]">{formatListTime(c.lastMessageAt)}</Text>
+                    {c.unread > 0 && (
+                      <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center">
+                        <Text className="text-white text-xs font-bold">{c.unread}</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              </Pressable>
+            );
+          }}
+        />
       )}
     </View>
   );

@@ -133,6 +133,7 @@ export interface WireMessage {
    *  client-side (voice capped at 60s opus, images downscaled) to stay
    *  under the transport's 1MB frame limit. */
   dataUrl?: string;
+  thumbnailUrl?: string;
   durationMs?: number;
   fileName?: string;
   fileSize?: number;
@@ -250,6 +251,16 @@ export interface RealtimeHandlers {
   }) => void;
   onAnnotationPeer?: (peer: AnnotationPeer) => void;
   onCallSignal?: (payload: IncomingCallSignal) => void;
+  /** Presence changed on another device of the SAME account. */
+  onPresenceSync?: (presence: WirePresence) => void;
+  /** Media was sent from another device of the same account. Media is
+   *  never synced (no cloud storage), so the other device shows a
+   *  notice instead of the file. */
+  onSelfMediaNotice?: (payload: {
+    peer: string;
+    kind: string;
+    from: "mobile" | "extension";
+  }) => void;
   /** Fired after every "hello" ack — the username the server actually
    *  registered this socket under, which can differ from what was sent
    *  if it collided with someone else (guests only; see index.ts's

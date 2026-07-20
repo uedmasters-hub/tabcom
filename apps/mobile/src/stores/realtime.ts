@@ -9,6 +9,7 @@ import type {
 } from "@tabcom/shared";
 import { useAuth } from "./auth";
 import { useChatStore } from "./chat";
+import { usePresence } from "./presence";
 import { REALTIME_URL } from "@/lib/config";
 import {
   initRealtime,
@@ -76,6 +77,20 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     };
 
     initRealtime(me, handlers, REALTIME_URL, auth.sessionToken);
+
+    // Tell the server this is the mobile device so cross-device media
+    // notices can be worded correctly on the other end.
+    import("@/lib/realtime").then(({ announceDeviceKind }) => announceDeviceKind());
+
+    // Register push token once the socket is live (and on every
+    // reconnect, so a restarted server re-learns it immediately).
+    import("@/lib/notifications").then(({ registerForPush }) => {
+      registerForPush().then((token) => {
+        if (token) {
+          import("@/lib/realtime").then(({ sendPushToken }) => sendPushToken(token));
+        }
+      });
+    });
     setTimeout(() => useChatStore.getState().restoreConnections(), 2000);
   },
 

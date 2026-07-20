@@ -3,6 +3,8 @@ import {
   Text, View, Pressable, FlatList, TextInput, Alert, ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { ScreenHeader } from "@/components/ScreenHeader";
+import { Avatar } from "@/components/Avatar";
 import { useChatStore } from "@/stores/chat";
 import { useAuth } from "@/stores/auth";
 import {
@@ -39,6 +41,7 @@ export default function ContactsScreen() {
 
   const [selected, setSelected] = useState<string>("all"); // "all" | communityId
   const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState("");
   const [newUsername, setNewUsername] = useState("");
 
   const communityList = Object.values(communities);
@@ -51,15 +54,17 @@ export default function ContactsScreen() {
   };
 
   // Base contact list: accepted connections + anyone with chat history
-  const allContacts = useMemo(
-    () =>
-      contacts.filter((c) =>
-        c.id.startsWith("u-")
-          ? connections[c.username] === "accepted" || hasChatted(c.id)
-          : false
-      ),
-    [contacts, connections, conversations, messages]
-  );
+  const allContacts = useMemo(() => {
+    const base = contacts.filter((c) =>
+      c.id.startsWith("u-")
+        ? connections[c.username] === "accepted" || hasChatted(c.id)
+        : false
+    );
+    const q = query.trim().toLowerCase();
+    return q
+      ? base.filter((c) => c.name.toLowerCase().includes(q) || c.username.includes(q))
+      : base;
+  }, [contacts, connections, conversations, messages, query]);
 
   // Partition for community view
   const { members, nonMembers } = useMemo(() => {
@@ -125,23 +130,21 @@ export default function ContactsScreen() {
     const dot = presenceColors[contact.presence];
     const isPendingInvite = pendingInviteUsernames.has(contact.username);
     return (
-      <View key={contact.id} className="flex-row items-center px-6 py-3.5 border-b border-border">
+      <View key={contact.id} className="flex-row items-center px-5 py-3.5 border-b border-slate-100">
         <Pressable onPress={() => openChat(contact)} className="flex-row items-center flex-1">
-          <View className="relative mr-3.5">
-            <View style={{ backgroundColor: contact.color }} className="w-12 h-12 rounded-full items-center justify-center">
-              <Text className="text-white font-bold text-base">
-                {(contact.alias ?? contact.name).slice(0, 1).toUpperCase()}
-              </Text>
-            </View>
-            {dot && (
-              <View style={{ backgroundColor: dot }} className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white" />
-            )}
+          <View className="mr-4">
+            <Avatar
+              name={contact.alias ?? contact.name}
+              color={contact.color}
+              size="lg"
+              presence={contact.presence}
+            />
           </View>
           <View className="flex-1">
-            <Text className="text-ink font-semibold text-base">
+            <Text className="text-ink font-bold text-[17px]">
               {contact.alias ?? contact.name}
             </Text>
-            <Text className="text-muted text-sm">
+            <Text className="text-muted text-[14px]">
               @{contact.username} · {contact.presence}
             </Text>
           </View>
@@ -172,6 +175,12 @@ export default function ContactsScreen() {
 
   return (
     <View className="flex-1 bg-background">
+      <ScreenHeader
+        title="Contacts"
+        onAdd={() => setAdding(!adding)}
+        search={query}
+        onSearch={setQuery}
+      />
       {/* Community filter strip */}
       <View className="border-b border-border pb-1">
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, gap: 20 }}>

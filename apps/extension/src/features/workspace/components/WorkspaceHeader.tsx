@@ -44,7 +44,7 @@ export default function WorkspaceHeader({ title }: { title: string }) {
   };
 
   return (
-    <header className="relative flex items-center justify-between border-b border-slate-200 px-6 py-4">
+    <header className="relative flex shrink-0 items-center justify-between border-b border-slate-200 px-6 py-4">
       <div className="flex items-center gap-3">
         <div className="relative">
           <button

@@ -1157,7 +1157,7 @@ export default function ChatView({
         />
       )}
       {/* Thread header — tap for details */}
-      <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
+      <div className="flex shrink-0 items-center gap-3 border-b border-slate-200 px-4 py-3">
         <button
           type="button"
           onClick={closeConversation}
@@ -1334,14 +1334,15 @@ export default function ChatView({
       {/* Messages */}
       <div
         className={cn(
-          "space-y-3 overflow-y-auto px-4 py-4",
-          // While consent is pending there's usually just the one
-          // system notice ("X wants to connect") — let it size to its
-          // content instead of flex-growing, so the illustrated
-          // ConsentPanel below gets the remaining space and the
-          // visual weight the mockups show, rather than splitting the
-          // screen into a mostly-blank message area + a thin bottom bar.
-          contact && isLiveContact && connection !== "accepted" ? "shrink-0" : "flex-1"
+          "min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4",
+          // While consent is pending the illustrated ConsentPanel should
+          // keep the visual weight the mockups show — so CAP the message
+          // area rather than letting it size to content. shrink-0 here
+          // was the bug: it made this div unshrinkable, so the column
+          // overflowed and pushed the thread header (and the whole app
+          // shell) off-screen. max-h keeps the intended proportions
+          // while the area stays independently scrollable.
+          contact && isLiveContact && connection !== "accepted" && "max-h-[40%]"
         )}
       >
         {/* Zero-retention disclosure: chat history lives only on this

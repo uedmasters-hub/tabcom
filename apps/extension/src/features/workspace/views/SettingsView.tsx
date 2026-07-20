@@ -346,7 +346,7 @@ export default function SettingsView() {
   };
 
   return (
-    <div className="flex flex-1 flex-col overflow-y-auto px-6 py-6">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-6">
       {!sessionToken && (
         <button
           type="button"

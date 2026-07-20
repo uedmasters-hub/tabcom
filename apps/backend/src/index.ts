@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { registerPushToken, sendPushToUser } from "./push";
 import { existsSync, readFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { createServer } from "node:http";
@@ -1211,6 +1212,27 @@ function broadcastRoster(): void {
   }
 }
 
+
+/**
+ * Media never syncs across a user's own devices — payloads are
+ * device-to-device and nothing is stored server-side. So when someone
+ * sends media from one device, their OTHER devices get a lightweight
+ * notice (no payload) explaining where the file actually lives.
+ */
+function notifyOwnDevicesOfMedia(
+  socketId: string,
+  username: string,
+  peerLabel: string,
+  kind: string
+): void {
+  const sender = users.get(socketId);
+  const deviceKind = (sender as any)?.deviceKind === "mobile" ? "mobile" : "extension";
+  for (const id of allSocketIdsFor(username)) {
+    if (id === socketId) continue;
+    io.to(id).emit("self_media_notice", { peer: peerLabel, kind, from: deviceKind });
+  }
+}
+
 function publicSocketIdsFor(username: string): string[] {
   const ids: string[] = [];
   for (const [id, user] of users) {
@@ -1268,6 +1290,12 @@ function notify(username: string, event: string, payload: unknown): void {
 }
 
 io.on("connection", (socket) => {
+  // ---- Push token registration (mobile re-registers on every connect) ----
+  socket.on("register_push_token", ({ token }: { token: string }) => {
+    const me = users.get(socket.id);
+    if (me?.username) registerPushToken(me.username, token);
+  });
+
   // Authentication is additive, not required — this keeps every
   // existing (pre-auth) client working exactly as before while
   // giving authenticated clients a REAL, server-verified identity
@@ -1422,8 +1450,29 @@ async function ensureUniqueGuestUsername(
   socket.on("presence", (raw: unknown) => {
     const user = users.get(socket.id);
     if (!user) return;
-    user.presence = sanitizePresence(raw);
+    const presence = sanitizePresence(raw);
+
+    // Presence belongs to the ACCOUNT, not to one socket. Updating only
+    // the emitting socket left a user "online" on the extension while
+    // "busy" on mobile, and the roster showed whichever socket happened
+    // to be enumerated last. Apply to every socket for this username and
+    // tell the other devices so their UI matches.
+    if (user.username) {
+      for (const id of allSocketIdsFor(user.username)) {
+        const u = users.get(id);
+        if (u) u.presence = presence;
+        if (id !== socket.id) io.to(id).emit("presence_sync", { presence });
+      }
+    } else {
+      user.presence = presence;
+    }
     broadcastRoster();
+  });
+
+  // Device label, used to word the cross-device media notice.
+  socket.on("device_kind", ({ kind }: { kind: string }) => {
+    const u = users.get(socket.id);
+    if (u) (u as any).deviceKind = kind === "mobile" ? "mobile" : "extension";
   });
 
   /** Mask presence (as offline) toward one viewer. Messages still flow. */
@@ -1481,6 +1530,11 @@ async function ensureUniqueGuestUsername(
 
     const targets = publicSocketIdsFor(to);
     if (targets.length === 0) {
+      sendPushToUser(to, {
+        title: "Tabcom",
+        body: `${from.name || from.username} wants to connect`,
+        data: { type: "connect_request", from: from.username },
+      });
       // NOTE: "connect_error" is a Socket.IO RESERVED event name — the
       // server throws if it's emitted with a custom payload, which
       // crashed the entire process for every connected user any time
@@ -2114,10 +2168,24 @@ async function ensureUniqueGuestUsername(
       }
 
       // Relay to every ONLINE member except the sender. Zero retention.
+      if (message?.dataUrl && from.username) {
+        notifyOwnDevicesOfMedia(socket.id, from.username, community.name, message.kind ?? "file");
+      }
+
       let reached = 0;
       for (const member of community.members) {
         if (member === from.username) continue;
-        for (const id of publicSocketIdsFor(member)) {
+        const memberSockets = publicSocketIdsFor(member);
+        if (memberSockets.length === 0) {
+          // Offline member — push instead of relay.
+          sendPushToUser(member, {
+            title: community.name,
+            body: `${from.name || from.username}: ${message.kind === "text" ? (message.text ?? "New message") : "New message"}`,
+            data: { type: "community", communityId },
+          });
+          continue;
+        }
+        for (const id of memberSockets) {
           io.to(id).emit("community_message", { communityId, from, message });
           reached += 1;
         }
@@ -2834,6 +2902,12 @@ async function ensureUniqueGuestUsername(
         return;
       }
 
+      // Media lives only on the sending device — tell this user's other
+      // devices where the file actually is.
+      if ((message as any)?.dataUrl && from.username) {
+        notifyOwnDevicesOfMedia(socket.id, from.username, to, (message as any).kind ?? "file");
+      }
+
       // Consent gate: connection must be accepted and unblocked.
       const pair = pairs.get(pairKey(from.username, to));
       if (
@@ -2847,6 +2921,12 @@ async function ensureUniqueGuestUsername(
 
       const targets = publicSocketIdsFor(to);
       if (targets.length === 0) {
+        // Recipient has no live socket — wake their phone instead.
+        sendPushToUser(to, {
+          title: from.name || from.username,
+          body: message.kind === "text" ? (message.text ?? "New message") : "Sent you a message",
+          data: { type: "dm", from: from.username },
+        });
         socket.emit("dm_error", { to, reason: "recipient_unavailable" });
         ack?.({ delivered: false });
         return;
@@ -2893,6 +2973,13 @@ async function ensureUniqueGuestUsername(
 
       const targets = publicSocketIdsFor(to);
       if (targets.length === 0) {
+        if (signal.kind === "offer") {
+          sendPushToUser(to, {
+            title: from.name || from.username,
+            body: "Incoming call",
+            data: { type: "call", from: from.username },
+          });
+        }
         socket.emit("call_error", { to, reason: "recipient_unavailable" });
         return;
       }

@@ -220,6 +220,17 @@ export function initRealtime(
   );
 
   // ── Calls ──
+  socket.on("presence_sync", ({ presence }: { presence: WirePresence }) => {
+    handlers.onPresenceSync?.(presence);
+  });
+
+  socket.on(
+    "self_media_notice",
+    (payload: { peer: string; kind: string; from: "mobile" | "extension" }) => {
+      handlers.onSelfMediaNotice?.(payload);
+    }
+  );
+
   socket.on("call_signal", (payload: IncomingCallSignal) =>
     handlers.onCallSignal?.(payload)
   );
@@ -262,6 +273,16 @@ function startAppStateWatcher(): void {
 }
 
 // ── Re-announce ─────────────────────────────────────────────────────
+
+/** Register this device's Expo push token with the server. Called
+ *  after every connect so tokens self-heal across server restarts. */
+export function announceDeviceKind(): void {
+  socket?.emit("device_kind", { kind: "mobile" });
+}
+
+export function sendPushToken(token: string): void {
+  socket?.emit("register_push_token", { token });
+}
 
 export function reannounce(me: WireUser): void {
   currentMe = me;

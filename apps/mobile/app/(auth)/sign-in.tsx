@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Text, View, TextInput, Pressable, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { SecondaryHeader } from "@/components/SecondaryHeader";
 import { auth } from "@/lib/auth-client";
 import { useAuth } from "@/stores/auth";
 
@@ -35,9 +36,10 @@ export default function SignInScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-background">
+      <SecondaryHeader title="Sign in" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} className="flex-1">
-        <View className="flex-1 px-8 pt-8">
-          <Pressable onPress={() => router.back()} className="mb-8"><Text className="text-muted text-base">← Back</Text></Pressable>
+        <View className="flex-1 px-8">
+
           {phase === "email" && (
             <>
               <Text className="text-ink text-3xl font-bold mb-2">Sign in</Text>
