@@ -1,0 +1,16 @@
+# Keep the build context small and prevent local artefacts leaking in.
+**/node_modules
+**/.output
+**/.wxt
+**/dist
+**/android
+**/ios
+**/.expo
+**/.turbo
+**/*.apk
+**/*.aab
+**/.git
+**/.DS_Store
+**/.env
+**/.env.*
+**/keystore
