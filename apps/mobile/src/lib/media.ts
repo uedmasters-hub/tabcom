@@ -3,7 +3,7 @@
  *
  * VIDEO POLICY (messaging-optimised, not archival):
  *   - 720p HD only — never 4K. Lower bitrate = fast send, low data.
- *   - Hard cap MAX_VIDEO_BYTES (5 MB). Recording auto-stops at the
+ *   - Hard cap MAX_VIDEO_BYTES (3 MB). Recording auto-stops at the
  *     duration ceiling, and anything still over the cap after capture
  *     is rejected with a clear message rather than silently failing
  *     at the socket layer.
@@ -20,12 +20,15 @@ import * as VideoThumbnails from "expo-video-thumbnails";
 import * as FileSystem from "expo-file-system/legacy";
 import { Alert } from "react-native";
 
-export const MAX_VIDEO_BYTES = 5 * 1024 * 1024; // 5 MB
-export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+// Every send costs roughly 2.7x the file size in billed bandwidth
+// (base64 adds ~33%, then it travels up to the relay and back down).
+// A 3 MB video is therefore ~8 MB of transfer.
+export const MAX_VIDEO_BYTES = 3 * 1024 * 1024; // 3 MB
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB
+export const MAX_FILE_BYTES = 3 * 1024 * 1024;  // 3 MB
 
-/** ~1.2 Mbps at 720p ≈ 150 KB/s → 5 MB ≈ 34s. Round down for safety. */
-export const MAX_VIDEO_SECONDS = 30;
+/** ~1.2 Mbps at 720p ≈ 150 KB/s → 3 MB ≈ 20s. Round down for safety. */
+export const MAX_VIDEO_SECONDS = 20;
 
 export interface MediaResult {
   kind: "image" | "video" | "file";
@@ -86,7 +89,7 @@ export async function pickFromLibrary(): Promise<MediaResult | null> {
 
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ["images", "videos"],
-    quality: 0.7,
+    quality: 0.55,
     videoMaxDuration: MAX_VIDEO_SECONDS,
     videoQuality: ImagePicker.UIImagePickerControllerQualityType.IFrame1280x720,
     allowsEditing: false,
@@ -124,7 +127,7 @@ export async function captureWithCamera(
 
   const result = await ImagePicker.launchCameraAsync({
     mediaTypes: mode === "video" ? ["videos"] : ["images"],
-    quality: 0.7,
+    quality: 0.55,
     // HD, never 4K — recording stops itself at the duration ceiling so
     // the file can't grow past the 5 MB cap.
     videoQuality: ImagePicker.UIImagePickerControllerQualityType.IFrame1280x720,

@@ -2,8 +2,10 @@ import { useEffect } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { View, ActivityIndicator } from "react-native";
 import { useAuth } from "@/stores/auth";
+import { useChatStore } from "@/stores/chat";
 import { useRealtime } from "@/stores/realtime";
 import "../global.css";
 
@@ -16,6 +18,12 @@ export default function RootLayout() {
   const router = useRouter();
 
   useEffect(() => { void hydrate(); }, []);
+
+  // Preload the same demo roster the extension ships with, so a new
+  // user has something to look at. Removable per-contact.
+  useEffect(() => {
+    if (hydrated && signedIn) useChatStore.getState().ensureSeeded();
+  }, [hydrated, signedIn]);
 
   // Channels must exist before the first notification arrives, or
   // Android silently drops it into a default bucket.
@@ -68,12 +76,14 @@ export default function RootLayout() {
   }
 
   return (
-    <KeyboardProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <KeyboardProvider>
       <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#ffffff" } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)" />
       </Stack>
-    </KeyboardProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }

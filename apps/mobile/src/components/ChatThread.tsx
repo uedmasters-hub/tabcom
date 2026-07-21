@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSharedValue, withSpring } from "react-native-reanimated";
 import {
   Text, View, TextInput, Pressable, FlatList, Image, Linking,
   Platform, ActivityIndicator, Alert,
@@ -10,12 +11,19 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import type { Message } from "@tabcom/shared";
 import { useChatStore } from "@/stores/chat";
-import { AttachmentSheet, type AttachmentAction } from "./AttachmentSheet";
+import {
+  AttachmentBar, ATTACH_SPRING, ATTACH_BTN, ATTACH_LEFT,
+  type AttachmentAction,
+} from "./AttachmentBar";
+import { MorphAttachButton } from "./MorphAttachButton";
 import { ContactPickerSheet } from "./ContactPickerSheet";
 import { LocationPreview } from "./LocationPreview";
 import { ConnectionRequestCard, PendingOutgoingCard } from "./ConnectionRequestCard";
 import { VoiceBubble } from "./VoiceBubble";
+import { ChatSwitcherSheet, type ChatSwitcherHandle } from "./ChatSwitcherSheet";
+import { ChatSkeleton } from "./ChatSkeleton";
 import { useConnectionStatus } from "@/hooks/useConnections";
+import { isCallingAvailable } from "@/lib/call-manager";
 import { EmojiPicker } from "./EmojiPicker";
 import { useVoiceRecorder, ensureMicPermission, packageRecording, MAX_VOICE_SECONDS } from "@/lib/voice";
 import { captureWithCamera, pickFromLibrary, pickDocument, pickLocation } from "@/lib/media";
@@ -38,6 +46,8 @@ export interface ThreadPeer {
 interface Props {
   conversationId: string;
   peer: ThreadPeer;
+  /** Switch threads without navigating. Omit to hide the switcher. */
+  onSwitchConversation?: (conversationId: string) => void;
   /** Community/group threads show a header action instead of calls. */
   onHeaderAction?: () => void;
   headerActionIcon?: keyof typeof Ionicons.glyphMap;
@@ -49,18 +59,44 @@ interface Props {
  * attachments, and behaviour. Header and composer are pinned; only the
  * message list scrolls.
  */
-export function ChatThread({ conversationId, peer, onHeaderAction, headerActionIcon }: Props) {
+export function ChatThread({ conversationId, peer, onHeaderAction, headerActionIcon, onSwitchConversation }: Props) {
   const router = useRouter();
   const [text, setText] = useState("");
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const attachProgress = useSharedValue(0);
+  const [attachOpen, setAttachOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  // Brief shimmer on switch. Swapping content instantly reads as a
+  // glitch; a short skeleton makes the change legible.
+  const [switching, setSwitching] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
   const recorder = useVoiceRecorder();
   const recStartedAt = useRef(0);
   const listRef = useRef<FlatList<Message>>(null);
+  const switcherRef = useRef<ChatSwitcherHandle>(null);
+  /** Any engagement with the CURRENT conversation dismisses the
+   *  switcher — the panel exists to change chats, so continuing to use
+   *  this one means the user is done with it. */
+  const dismissSwitcher = () => { switcherRef.current?.close(); closeAttachmentsIfOpen(); };
+
+  const closeAttachmentsIfOpen = () => {
+    if (attachProgress.value !== 0) {
+      // Collapsing runs the identical spring in reverse, so chips fold
+      // back toward the button in reverse order and it settles home.
+      attachProgress.value = withSpring(0, ATTACH_SPRING);
+      setAttachOpen(false);
+    }
+  };
+
+  const toggleAttachments = () => {
+    switcherRef.current?.close();
+    const next = attachOpen ? 0 : 1;
+    setAttachOpen(!attachOpen);
+    attachProgress.value = withSpring(next, ATTACH_SPRING);
+  };
+
   const insets = useSafeAreaInsets();
   // Composer sat flush against the gesture bar; reserve real space.
   const composerPad = Math.max(insets.bottom, 10);
@@ -83,6 +119,8 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const gated = awaitingMe || awaitingThem;
 
   useEffect(() => {
+    setSwitching(true);
+    const settle = setTimeout(() => setSwitching(false), 320);
     useChatStore.getState().openConversation(conversationId);
 
     // Dismiss any shade notifications for this thread — reading in-app
@@ -94,10 +132,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
       clearThreadNotifications(threadId)
     );
 
-    return () => useChatStore.getState().closeConversation();
+    return () => {
+      clearTimeout(settle);
+      useChatStore.getState().closeConversation();
+    };
   }, [conversationId, peer.username]);
 
   const send = () => {
+    dismissSwitcher();
     const t = text.trim();
     if (!t) return;
     useChatStore.getState().sendText(conversationId, t);
@@ -365,7 +407,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           ) : null}
         </View>
 
-        {isDm && !gated ? (
+        {isDm && !gated && isCallingAvailable() ? (
           <View className="flex-row items-center bg-surface rounded-full px-1.5 py-1.5">
             <Pressable onPress={() => startCall(true)} className="px-3 active:opacity-60">
               <Ionicons name="videocam-outline" size={25} color="#334155" />
@@ -384,6 +426,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
       {/* Scrollable body */}
       <KeyboardAvoidingView behavior="padding" className="flex-1 bg-[#eef0f2]">
+        {switching ? (
+          <ChatSkeleton />
+        ) : (
         <FlatList
           ref={listRef}
           data={
@@ -397,13 +442,34 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           renderItem={({ item }) => <Bubble m={item} />}
           contentContainerStyle={{ paddingVertical: 14 }}
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+          onScrollBeginDrag={dismissSwitcher}
+          onTouchStart={dismissSwitcher}
           className="flex-1"
         />
+        )}
+
+        {/* Composer region doubles as the drag handle for the switcher */}
+        <ChatSwitcherSheet
+          ref={switcherRef}
+          activeConversationId={conversationId}
+          onSelect={onSwitchConversation}
+          enabled={!!onSwitchConversation && !emojiOpen && !recording && !gated}
+          bottomInset={composerPad}
+        >
+        {/* Toolbar + composer share one positioning context, anchored to
+            the composer, so the travelling button stays in sync. */}
+        <View style={{ position: "relative" }}>
+        {!gated && !recording && (
+          <AttachmentBar
+            progress={attachProgress}
+            onPick={(action) => { closeAttachmentsIfOpen(); void handleAttachment(action); }}
+          />
+        )}
 
         {gated ? (
           <View
             style={{ paddingBottom: composerPad + 12 }}
-            className="bg-background border-t border-slate-100 pt-6"
+            className="bg-background pt-6"
           >
             {awaitingMe && threadContact ? (
               <ConnectionRequestCard contact={threadContact} />
@@ -412,10 +478,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             ) : null}
           </View>
         ) : recording ? (
-          <View
-            style={{ paddingBottom: composerPad }}
-            className="flex-row items-center px-4 pt-3 bg-background border-t border-slate-100"
-          >
+          <View className="flex-row items-center px-4 py-3 bg-background border-t border-slate-100">
             <Pressable
               onPress={() => stopRecording(true)}
               hitSlop={10}
@@ -438,21 +501,22 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             </Pressable>
           </View>
         ) : (
-        <View
-          style={{ paddingBottom: composerPad }}
-          className="flex-row items-center px-3 pt-2.5 bg-background border-t border-slate-100"
-        >
-          <Pressable onPress={() => setSheetOpen(true)} hitSlop={8} className="px-2 active:opacity-50">
-            {busy ? <ActivityIndicator size="small" color="#64748b" /> : <Ionicons name="add" size={30} color="#334155" />}
-          </Pressable>
+        <View className="flex-row items-center px-3 py-2.5 bg-background border-t border-slate-100">
+          {/* Reserved slot for the travelling button (rendered above,
+              absolutely positioned, so it can move between layers). */}
+          <View style={{ width: ATTACH_BTN, alignItems: "center", justifyContent: "center" }}>
+            {busy ? <ActivityIndicator size="small" color="#64748b" /> : null}
+          </View>
 
           <View className="flex-1 flex-row items-center bg-surface rounded-full px-3.5 mx-1">
-            <Pressable onPress={() => setEmojiOpen((v) => !v)} hitSlop={8} className="active:opacity-50">
+            <Pressable onPress={() => { dismissSwitcher(); setEmojiOpen((v) => !v); }} hitSlop={8} className="active:opacity-50">
               <Ionicons name={emojiOpen ? "happy" : "happy-outline"} size={23} color={emojiOpen ? "#2563eb" : "#94a3b8"} />
             </Pressable>
             <TextInput
               value={text}
+              onFocus={dismissSwitcher}
               onChangeText={(v) => {
+                dismissSwitcher();
                 setText(v);
                 if (peer.username) useChatStore.getState().emitTyping(peer.username);
               }}
@@ -465,7 +529,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               submitBehavior="submit"
               className="flex-1 py-3 px-2.5 text-ink text-[16.5px] max-h-24"
             />
-            <Pressable onPress={startRecording} hitSlop={10} className="active:opacity-50">
+            <Pressable onPress={() => { dismissSwitcher(); void startRecording(); }} hitSlop={10} className="active:opacity-50">
               <Ionicons name="mic-outline" size={23} color="#94a3b8" />
             </Pressable>
           </View>
@@ -480,12 +544,25 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         </View>
         )}
 
+        {/* ONE button, absolutely positioned across both layers. Never
+            unmounted, so it stays continuously trackable from the
+            composer slot to the toolbar and back. */}
+        {!gated && !recording && (
+          <MorphAttachButton
+            progress={attachProgress}
+            restBottom={11}
+            onToggle={toggleAttachments}
+            disabled={busy}
+          />
+        )}
+        </View>
+        </ChatSwitcherSheet>
+
         {emojiOpen && (
           <EmojiPicker onSelect={(e) => setText((t) => t + e)} />
         )}
       </KeyboardAvoidingView>
 
-      <AttachmentSheet visible={sheetOpen} onClose={() => setSheetOpen(false)} onPick={handleAttachment} />
       <ContactPickerSheet
         visible={contactPickerOpen}
         onClose={() => setContactPickerOpen(false)}

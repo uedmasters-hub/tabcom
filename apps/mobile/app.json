@@ -2,7 +2,7 @@
   "expo": {
     "name": "Tabcom",
     "slug": "tabcom",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "scheme": "tabcom",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -20,7 +20,8 @@
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
         "WAKE_LOCK"
-      ]
+      ],
+      "versionCode": 2
     },
     "ios": {
       "bundleIdentifier": "dev.tabcom.app",

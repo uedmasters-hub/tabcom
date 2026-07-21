@@ -58,6 +58,37 @@ import { useAuth } from "./auth";
 
 const ME = "me";
 
+
+/**
+ * Preloaded demo contacts — identical to the extension's SEED_CONTACTS
+ * so a new user sees the same starting state on either platform.
+ * Marked `seeded` so they can be removed individually, and so a real
+ * roster from the server can replace them wholesale.
+ */
+const SEED_CONTACTS: Contact[] = [
+  // First three match the extension exactly.
+  { id: "c-priya", name: "Priya Sharma", username: "priya", color: "#7C3AED", presence: "online", seeded: true },
+  { id: "c-arjun", name: "Arjun Mehta", username: "arjun_m", color: "#EA580C", presence: "away", seeded: true },
+  { id: "c-sara", name: "Sara Khan", username: "sarak", color: "#059669", presence: "busy", seeded: true },
+  // Extra demo contacts so the switcher rail has enough to scroll and
+  // exercise the stagger, presence dots, and unread badges.
+  { id: "c-dev", name: "Dev Kapoor", username: "devk", color: "#DB2777", presence: "online", seeded: true },
+  { id: "c-meera", name: "Meera Iyer", username: "meera_i", color: "#0891B2", presence: "online", seeded: true },
+  { id: "c-rohan", name: "Rohan Das", username: "rohan_d", color: "#CA8A04", presence: "away", seeded: true },
+  { id: "c-anita", name: "Anita Roy", username: "anitar", color: "#4F46E5", presence: "busy", seeded: true },
+];
+
+/** One opening message per seeded thread, so each has real content. */
+const SEED_THREADS: Array<{ contactId: string; text: string; minutesAgo: number; unread: number }> = [
+  { contactId: "c-priya", text: "Hey! Shared a couple of tabs with you — take a look when you get a sec.", minutesAgo: 5, unread: 1 },
+  { contactId: "c-arjun", text: "Pushed the API changes. Want to review before standup?", minutesAgo: 42, unread: 2 },
+  { contactId: "c-sara", text: "In a call right now — ping you after.", minutesAgo: 95, unread: 0 },
+  { contactId: "c-dev", text: "That performance article you sent was excellent.", minutesAgo: 180, unread: 0 },
+  { contactId: "c-meera", text: "Are we still on for the design sync tomorrow?", minutesAgo: 320, unread: 3 },
+  { contactId: "c-rohan", text: "Bookmarked the whole thread, thanks!", minutesAgo: 1400, unread: 0 },
+  { contactId: "c-anita", text: "Sending over the revised figures shortly.", minutesAgo: 2880, unread: 0 },
+];
+
 function uid(): string {
   return (
     globalThis.crypto?.randomUUID?.() ??
@@ -146,6 +177,10 @@ interface ChatState {
     kind: string,
     from: "mobile" | "extension"
   ) => void;
+  /** Seed the roster on first run, matching the extension. */
+  ensureSeeded: () => void;
+  /** Remove a preloaded contact and its conversation. */
+  removeSeededContact: (contactId: string) => void;
   sendMedia: (
     conversationId: string,
     payload: {
@@ -433,6 +468,51 @@ export const useChatStore = create<ChatState>()((set, get) => {
         status: "delivered",
       };
       set((s2) => appendMessage(s2, conversation!.id, notice, false));
+    },
+
+    ensureSeeded: () => {
+      if (get().contacts.length > 0) return;
+
+      const now = Date.now();
+      const conversations: Conversation[] = [];
+      const messages: Record<string, Message[]> = {};
+
+      for (const thread of SEED_THREADS) {
+        const conversationId = uid();
+        const sentAt = now - thread.minutesAgo * 60_000;
+        conversations.push({
+          id: conversationId,
+          kind: "dm",
+          contactId: thread.contactId,
+          unread: thread.unread,
+          lastMessageAt: sentAt,
+        });
+        messages[conversationId] = [
+          {
+            id: uid(),
+            authorId: thread.contactId,
+            kind: "text",
+            text: thread.text,
+            sentAt,
+            status: "delivered",
+          },
+        ];
+      }
+
+      set({ contacts: SEED_CONTACTS, conversations, messages });
+    },
+
+    removeSeededContact: (contactId) => {
+      set((state) => {
+        const conversation = state.conversations.find((c) => c.contactId === contactId);
+        const messages = { ...state.messages };
+        if (conversation) delete messages[conversation.id];
+        return {
+          contacts: state.contacts.filter((c) => c.id !== contactId),
+          conversations: state.conversations.filter((c) => c.contactId !== contactId),
+          messages,
+        };
+      });
     },
 
     sendMedia: (conversationId, payload) => {

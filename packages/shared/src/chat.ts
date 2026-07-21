@@ -1,6 +1,9 @@
 export type Presence = "online" | "away" | "busy" | "offline";
 
 export interface Contact {
+  /** Preloaded demo contact — removable by the user, and replaced
+   *  wholesale once a real roster arrives. */
+  seeded?: boolean;
   id: string;
   name: string;
   username: string;

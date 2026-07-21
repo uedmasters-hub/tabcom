@@ -1,9 +1,21 @@
-export const REALTIME_URL =
-  process.env.EXPO_PUBLIC_REALTIME_URL ?? "https://tabcom.onrender.com";
+/**
+ * Backend endpoint.
+ *
+ * Baked in at BUILD time by Metro — changing it requires restarting
+ * Metro (dev) or rebuilding the APK (release). It cannot be changed at
+ * runtime.
+ *
+ * Production/default: the hosted Render service.
+ * Override only when pointing at a local backend:
+ *   EXPO_PUBLIC_REALTIME_URL=http://10.0.2.2:3001 npx expo start --clear --dev-client
+ */
+export const RENDER_URL = "https://tabcom.onrender.com";
 
-if (!process.env.EXPO_PUBLIC_REALTIME_URL && __DEV__) {
-  console.warn(
-    "[tabcom-mobile] EXPO_PUBLIC_REALTIME_URL not set — using production backend",
-    REALTIME_URL
+export const REALTIME_URL = process.env.EXPO_PUBLIC_REALTIME_URL ?? RENDER_URL;
+
+if (__DEV__) {
+  const overridden = REALTIME_URL !== RENDER_URL;
+  console.log(
+    `[tabcom] backend: ${REALTIME_URL}${overridden ? " (local override)" : " (hosted)"}`
   );
 }

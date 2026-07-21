@@ -3,10 +3,21 @@ import { Text, View, Pressable } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { RTCView } from "react-native-webrtc";
+/**
+ * RTCView is resolved lazily. A top-level import crashed expo-router's
+ * route validation when the native module was absent, which took down
+ * the whole app instead of just this screen.
+ */
+function getRTCView(): any | null {
+  try {
+    return require("react-native-webrtc").RTCView;
+  } catch {
+    return null;
+  }
+}
 import {
   subscribe, acceptCall, declineCall, endCall,
-  toggleMute, switchCamera, type CallState,
+  toggleMute, switchCamera, isCallingAvailable, type CallState,
 } from "@/lib/call-manager";
 
 export default function CallScreen() {
@@ -16,6 +27,7 @@ export default function CallScreen() {
   const router = useRouter();
   const [state, setState] = useState<CallState | null>(null);
   const [, setTick] = useState(0);
+  const RTCView = getRTCView();
 
   useEffect(() => subscribe(setState), []);
 
@@ -34,6 +46,27 @@ export default function CallScreen() {
       return () => clearTimeout(t);
     }
   }, [state?.phase]);
+
+  if (!isCallingAvailable()) {
+    return (
+      <SafeAreaView className="flex-1 bg-slate-900 items-center justify-center px-10">
+        <Ionicons name="call-outline" size={48} color="#64748b" />
+        <Text className="text-white font-bold text-lg mt-4 text-center">
+          Calling isn't available in this build
+        </Text>
+        <Text className="text-slate-400 text-center mt-2 leading-[21px]">
+          Calls need the native WebRTC module. Rebuild the app with
+          `npx expo run:android` — Expo Go can't support them.
+        </Text>
+        <Pressable
+          onPress={() => router.back()}
+          className="mt-7 bg-white/15 rounded-2xl px-6 py-3.5 active:opacity-70"
+        >
+          <Text className="text-white font-semibold">Go back</Text>
+        </Pressable>
+      </SafeAreaView>
+    );
+  }
 
   if (!state || !peer) {
     return (
@@ -67,7 +100,7 @@ export default function CallScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-slate-900">
-      {showVideo && state.remoteStream ? (
+      {showVideo && state.remoteStream && RTCView ? (
         <RTCView
           streamURL={(state.remoteStream as any).toURL()}
           objectFit="cover"
@@ -75,7 +108,7 @@ export default function CallScreen() {
         />
       ) : null}
 
-      {showVideo && state.localStream ? (
+      {showVideo && state.localStream && RTCView ? (
         <View className="absolute top-16 right-4 w-28 h-40 rounded-2xl overflow-hidden bg-black z-10">
           <RTCView
             streamURL={(state.localStream as any).toURL()}

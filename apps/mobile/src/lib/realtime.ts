@@ -82,18 +82,35 @@ export function initRealtime(
   currentHandlers = handlers;
   currentSessionToken = sessionToken;
 
+  if (__DEV__) {
+    console.log(`[tabcom] connecting to ${baseUrl} as @${me.username}`);
+  }
+
   socket = io(baseUrl, {
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     timeout: 10000,
-    transports: ["websocket"],
+    // Allow polling as a fallback. Some tunnels and proxies fail the
+    // websocket upgrade; forcing websocket-only means the client never
+    // connects at all rather than degrading to long-polling.
+    transports: ["websocket", "polling"],
     auth: sessionToken ? { sessionToken } : undefined,
   });
 
+  if (__DEV__) {
+    socket.on("connect_error", (err: Error) => {
+      console.warn(`[tabcom] connect_error: ${err.message} (url=${baseUrl})`);
+    });
+    socket.io.on("reconnect_attempt", (n: number) => {
+      console.log(`[tabcom] reconnect attempt ${n}`);
+    });
+  }
+
   // ── Lifecycle events ──
   socket.on("connect", () => {
+    if (__DEV__) console.log(`[tabcom] connected ✓ (${socket?.id})`);
     socket?.emit("hello", me, (ack?: { username: string }) => {
       if (ack?.username && ack.username !== me.username) {
         handlers.onUsernameAssigned?.(ack.username);

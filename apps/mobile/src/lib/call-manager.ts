@@ -10,13 +10,38 @@
  * in a development/release build, never in Expo Go. The type defs are
  * incomplete, hence the `as any` casts on the event-handler props.
  */
-import {
-  RTCPeerConnection,
-  RTCSessionDescription,
-  RTCIceCandidate,
-  mediaDevices,
-  MediaStream,
-} from "react-native-webrtc";
+/**
+ * react-native-webrtc is loaded LAZILY and GUARDED.
+ *
+ * A top-level import here meant that if the native module was missing
+ * (Expo Go, or a build made before the dependency was added), the throw
+ * propagated through expo-router's route validation and took down every
+ * screen in the app — not just calls. A missing native module should
+ * degrade one feature, not brick the product.
+ */
+type WebRTC = typeof import("react-native-webrtc");
+
+let webrtc: WebRTC | null = null;
+let webrtcChecked = false;
+
+function getWebRTC(): WebRTC | null {
+  if (!webrtcChecked) {
+    webrtcChecked = true;
+    try {
+      webrtc = require("react-native-webrtc");
+    } catch {
+      webrtc = null;
+    }
+  }
+  return webrtc;
+}
+
+/** True when calling is actually available on this build. */
+export function isCallingAvailable(): boolean {
+  return getWebRTC() !== null;
+}
+
+type MediaStream = any;
 import type { CallSignal, IncomingCallSignal } from "@tabcom/shared";
 import { sendCallSignal, updatePresence } from "./realtime";
 
@@ -42,7 +67,7 @@ export interface CallState {
 
 type Listener = (state: CallState) => void;
 
-let pc: RTCPeerConnection | null = null;
+let pc: any = null;
 let listeners = new Set<Listener>();
 let pendingOffer: IncomingCallSignal | null = null;
 let pendingCandidates: unknown[] = [];
@@ -103,7 +128,12 @@ function teardown() {
 
 async function acquireMedia(video: boolean): Promise<MediaStream | null> {
   try {
-    const stream = (await mediaDevices.getUserMedia({
+    const rtc = getWebRTC();
+    if (!rtc) {
+      update({ phase: "failed" });
+      return null;
+    }
+    const stream = (await rtc.mediaDevices.getUserMedia({
       audio: true,
       video: video ? { width: 1280, height: 720, frameRate: 30 } : false,
     })) as MediaStream;
@@ -115,8 +145,10 @@ async function acquireMedia(video: boolean): Promise<MediaStream | null> {
   }
 }
 
-function buildPeerConnection(stream: MediaStream): RTCPeerConnection {
-  const conn = new RTCPeerConnection(RTC_CONFIG);
+function buildPeerConnection(stream: MediaStream): any {
+  const rtc = getWebRTC();
+  if (!rtc) throw new Error("WebRTC unavailable");
+  const conn = new rtc.RTCPeerConnection(RTC_CONFIG) as any;
   pc = conn;
 
   stream.getTracks().forEach((track: any) => conn.addTrack(track, stream));
@@ -155,7 +187,10 @@ function buildPeerConnection(stream: MediaStream): RTCPeerConnection {
 async function drainCandidates() {
   if (!pc) return;
   for (const c of pendingCandidates) {
-    try { await pc.addIceCandidate(new RTCIceCandidate(c as any)); } catch { /* ignore */ }
+    try {
+      const rtc = getWebRTC();
+      if (rtc) await pc.addIceCandidate(new rtc.RTCIceCandidate(c as any));
+    } catch { /* ignore */ }
   }
   pendingCandidates = [];
 }
@@ -177,6 +212,10 @@ export async function startCall(
   video = false
 ) {
   if (["ringing", "connecting", "connected"].includes(state.phase)) return;
+  if (!isCallingAvailable()) {
+    update({ phase: "failed", peer, role: "caller" });
+    return;
+  }
 
   markBusy();
   update({
@@ -202,8 +241,9 @@ export async function acceptCall() {
   if (!stream) return;
 
   const conn = buildPeerConnection(stream);
+  const rtcA = getWebRTC()!;
   await conn.setRemoteDescription(
-    new RTCSessionDescription({ type: "offer", sdp: pendingOffer.signal.sdp })
+    new rtcA.RTCSessionDescription({ type: "offer", sdp: pendingOffer.signal.sdp })
   );
   await drainCandidates();
 
@@ -260,9 +300,12 @@ export function handleCallSignal(payload: IncomingCallSignal) {
     case "answer":
       if (pc && incoming.sdp) {
         update({ phase: "connecting" });
-        pc.setRemoteDescription(
-          new RTCSessionDescription({ type: "answer", sdp: incoming.sdp })
-        ).then(drainCandidates).catch(() => {});
+        const rtcB = getWebRTC();
+        if (rtcB) {
+          pc.setRemoteDescription(
+            new rtcB.RTCSessionDescription({ type: "answer", sdp: incoming.sdp })
+          ).then(drainCandidates).catch(() => {});
+        }
       }
       break;
 
@@ -270,7 +313,10 @@ export function handleCallSignal(payload: IncomingCallSignal) {
       if (!incoming.candidate) return;
       // Candidates can arrive before setRemoteDescription — queue them.
       if (pc && (pc as any).remoteDescription) {
-        pc.addIceCandidate(new RTCIceCandidate(incoming.candidate as any)).catch(() => {});
+        const rtcC = getWebRTC();
+        if (rtcC) {
+          pc.addIceCandidate(new rtcC.RTCIceCandidate(incoming.candidate as any)).catch(() => {});
+        }
       } else {
         pendingCandidates.push(incoming.candidate);
       }

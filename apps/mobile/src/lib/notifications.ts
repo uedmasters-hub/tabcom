@@ -116,7 +116,11 @@ export async function configureNotifications(): Promise<void> {
         name: c.name,
         description: c.description,
         importance: map[c.importance] ?? I.DEFAULT,
-        sound: c.sound ? "default" : null,
+        // NOTE: a `sound` STRING is interpreted as a bundled custom
+        // sound FILE. Passing "default" makes expo-notifications look
+        // for default.wav and log an error per channel. Omit the key
+        // for the system default; pass null for a silent channel.
+        ...(c.sound ? {} : { sound: null }),
         vibrationPattern: c.vibrate ? [0, 250, 250, 250] : undefined,
         enableVibrate: c.vibrate,
         lockscreenVisibility: N.AndroidNotificationVisibility.PUBLIC,
