@@ -9,7 +9,7 @@ import { Avatar } from "@/components/Avatar";
 import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
 import { formatListTime } from "@/lib/format-time";
 import {
-  createCommunity, respondToCommunityInvite, sendConnectRequest,
+  respondToCommunityInvite, sendConnectRequest,
   voteOnBoardItem, commentOnBoardItem, leaveCommunity, deleteCommunity,
 } from "@/lib/realtime";
 import type { BoardItem } from "@tabcom/shared";
@@ -36,9 +36,6 @@ export default function CommunitiesScreen() {
 
   const [segment, setSegment] = useState<Segment>("groups");
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
   const [expandedComments, setExpandedComments] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
 
@@ -66,16 +63,6 @@ export default function CommunitiesScreen() {
     );
     return q ? online.filter((p) => p.name.toLowerCase().includes(q) || p.username.includes(q)) : online;
   }, [contacts, q, user?.username]);
-
-  const handleCreate = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setBusy(true);
-    await createCommunity(trimmed);
-    setBusy(false);
-    setName("");
-    setCreating(false);
-  };
 
   const confirmLeaveOrDelete = (communityId: string, name: string, isAdmin: boolean) => {
     if (isAdmin) {
@@ -138,28 +125,11 @@ export default function CommunitiesScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      <ScreenHeader title="Communities" onAdd={() => setCreating(true)} search={query} onSearch={setQuery} />
+      <ScreenHeader title="Communities" onAdd={() => router.push("/community/create" as any)} search={query} onSearch={setQuery} />
       <SegmentTabs />
 
       {segment === "groups" && (
         <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
-          {creating && (
-            <View className="flex-row items-center gap-2.5 px-5 pb-4">
-              <TextInput
-                value={name} onChangeText={setName}
-                placeholder="Community name" placeholderTextColor="#94a3b8"
-                autoFocus onSubmitEditing={handleCreate}
-                className="flex-1 bg-surface rounded-2xl px-5 py-3.5 text-ink text-[16px]"
-              />
-              <Pressable onPress={handleCreate} disabled={!name.trim() || busy} className={`px-5 py-3.5 rounded-2xl ${name.trim() && !busy ? "bg-primary" : "bg-slate-300"}`}>
-                <Text className="text-white text-[15px] font-bold">Create</Text>
-              </Pressable>
-              <Pressable onPress={() => { setCreating(false); setName(""); }} className="py-3.5">
-                <Ionicons name="close" size={20} color="#64748b" />
-              </Pressable>
-            </View>
-          )}
-
           {invites.map((inv) => (
             <View key={inv.community.id} className="bg-surface rounded-3xl p-5 mx-5 mb-3">
               <Text className="text-ink font-bold text-[17px] mb-1">{inv.community.name}</Text>
@@ -216,16 +186,19 @@ export default function CommunitiesScreen() {
             );
           })}
 
-          {filteredGroups.length === 0 && invites.length === 0 && !creating && (
-            <View className="items-center pt-16 px-10">
+          {filteredGroups.length === 0 && invites.length === 0 && (
+            <Pressable
+              onPress={q ? undefined : () => router.push("/community/create" as any)}
+              className="items-center pt-16 px-10 active:opacity-70"
+            >
               <Ionicons name="people-outline" size={56} color="#cbd5e1" />
               <Text className="text-ink text-xl font-bold mt-4 mb-2">
                 {q ? "No matches" : "No communities yet"}
               </Text>
               <Text className="text-muted text-base text-center leading-6">
-                {q ? "Try a different search." : "Tap + to create your first community."}
+                {q ? "Try a different search." : "Tap here to create your first community."}
               </Text>
-            </View>
+            </Pressable>
           )}
         </ScrollView>
       )}

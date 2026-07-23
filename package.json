@@ -8,7 +8,9 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "mobile:android": "cd apps/mobile && expo run:android",
+    "mobile:start": "cd apps/mobile && expo start --clear"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

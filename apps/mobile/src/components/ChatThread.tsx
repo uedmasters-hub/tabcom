@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { useSharedValue, withSpring } from "react-native-reanimated";
+import Animated, {
+  useSharedValue, useAnimatedStyle, withSpring, interpolate,
+  Extrapolation, runOnJS,
+} from "react-native-reanimated";
 import {
   Text, View, TextInput, Pressable, FlatList, Image, Linking,
-  Platform, ActivityIndicator, Alert,
+  Platform, ActivityIndicator, Alert, Keyboard,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -64,6 +67,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [text, setText] = useState("");
   const attachProgress = useSharedValue(0);
   const [attachOpen, setAttachOpen] = useState(false);
+  /** Spring fully at rest in the Expanded state — the row's real close
+   *  chip has taken over from the travelling button. */
+  const [attachSettled, setAttachSettled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
   // Brief shimmer on switch. Swapping content instantly reads as a
@@ -83,6 +89,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   const closeAttachmentsIfOpen = () => {
     if (attachProgress.value !== 0) {
+      // Hand the leading slot back to the travelling button BEFORE the
+      // spring starts, so the descent is the button, not the chip.
+      setAttachSettled(false);
       // Collapsing runs the identical spring in reverse, so chips fold
       // back toward the button in reverse order and it settles home.
       attachProgress.value = withSpring(0, ATTACH_SPRING);
@@ -92,10 +101,38 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   const toggleAttachments = () => {
     switcherRef.current?.close();
-    const next = attachOpen ? 0 : 1;
-    setAttachOpen(!attachOpen);
-    attachProgress.value = withSpring(next, ATTACH_SPRING);
+    if (attachOpen) {
+      closeAttachmentsIfOpen();
+      return;
+    }
+    setAttachOpen(true);
+    attachProgress.value = withSpring(1, ATTACH_SPRING, (finished) => {
+      // Only a fully settled spring hands over to the in-row close chip;
+      // an interrupted one never does, so no half-states exist.
+      if (finished) runOnJS(setAttachSettled)(true);
+    });
   };
+
+  // Dismissing the keyboard is abandonment of the attachment
+  // interaction — fold the toolbar home with the same reverse spring.
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidHide", () => {
+      if (attachProgress.value !== 0) {
+        setAttachSettled(false);
+        attachProgress.value = withSpring(0, ATTACH_SPRING);
+        setAttachOpen(false);
+      }
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Composer healing: the slot the "+" occupied seals shut as the
+  // button lifts away, letting the input expand into the released
+  // space — and reopens in reverse as the button descends to merge.
+  const attachSlotStyle = useAnimatedStyle(() => ({
+    width: interpolate(attachProgress.value, [0, 1], [ATTACH_BTN, 0], Extrapolation.CLAMP),
+  }));
 
   const insets = useSafeAreaInsets();
   // Composer sat flush against the gesture bar; reserve real space.
@@ -454,7 +491,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           activeConversationId={conversationId}
           onSelect={onSwitchConversation}
           enabled={!!onSwitchConversation && !emojiOpen && !recording && !gated}
-          bottomInset={composerPad}
+          bottomInset={0}
         >
         {/* Toolbar + composer share one positioning context, anchored to
             the composer, so the travelling button stays in sync. */}
@@ -462,6 +499,8 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         {!gated && !recording && (
           <AttachmentBar
             progress={attachProgress}
+            settled={attachSettled}
+            onClose={closeAttachmentsIfOpen}
             onPick={(action) => { closeAttachmentsIfOpen(); void handleAttachment(action); }}
           />
         )}
@@ -502,11 +541,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           </View>
         ) : (
         <View className="flex-row items-center px-3 py-2.5 bg-background border-t border-slate-100">
-          {/* Reserved slot for the travelling button (rendered above,
-              absolutely positioned, so it can move between layers). */}
-          <View style={{ width: ATTACH_BTN, alignItems: "center", justifyContent: "center" }}>
-            {busy ? <ActivityIndicator size="small" color="#64748b" /> : null}
-          </View>
+          {/* Healing slot: full-width while the "+" rests here, zero
+              once it has detached. The input flows into the space. */}
+          <Animated.View style={[attachSlotStyle, { overflow: "hidden" }]} />
 
           <View className="flex-1 flex-row items-center bg-surface rounded-full px-3.5 mx-1">
             <Pressable onPress={() => { dismissSwitcher(); setEmojiOpen((v) => !v); }} hitSlop={8} className="active:opacity-50">
@@ -553,10 +590,19 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             restBottom={11}
             onToggle={toggleAttachments}
             disabled={busy}
+            busy={busy}
+            settled={attachSettled}
           />
         )}
         </View>
         </ChatSwitcherSheet>
+
+        {/* Bottom floor: a plain opaque block sized to the safe-area
+            inset. Its only job is to cover the gesture-bar strip so the
+            darker conversation surface never shows beneath the composer.
+            Kept separate from the composer on purpose — it takes nothing
+            from it and changes no composer geometry. */}
+        <View className="bg-background" style={{ height: composerPad }} />
 
         {emojiOpen && (
           <EmojiPicker onSelect={(e) => setText((t) => t + e)} />

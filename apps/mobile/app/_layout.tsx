@@ -5,6 +5,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { View, ActivityIndicator } from "react-native";
 import { useAuth } from "@/stores/auth";
+import { useOnboarding } from "@/lib/onboarding";
 import { useChatStore } from "@/stores/chat";
 import { useRealtime } from "@/stores/realtime";
 import "../global.css";
@@ -60,14 +61,30 @@ export default function RootLayout() {
     else disconnect();
   }, [hydrated, signedIn]);
 
+  // Onboarding is shown once, before the welcome screen, and only to
+  // signed-out users. Subscribed from the store rather than read into
+  // local state, so completing onboarding updates this gate straight
+  // away instead of leaving it holding a stale `false`.
+  const seenOnboarding = useOnboarding((s) => s.seen);
+  const hydrateOnboarding = useOnboarding((s) => s.hydrate);
   useEffect(() => {
-    if (!hydrated) return;
-    const inAuthGroup = segments[0] === ("(auth)" as any);
-    if (!signedIn && !inAuthGroup) router.replace("/(auth)/welcome" as any);
-    else if (signedIn && inAuthGroup) router.replace("/(tabs)" as any);
-  }, [hydrated, signedIn, segments]);
+    void hydrateOnboarding();
+  }, [hydrateOnboarding]);
 
-  if (!hydrated) {
+  useEffect(() => {
+    if (!hydrated || seenOnboarding === null) return;
+    const inAuthGroup = segments[0] === ("(auth)" as any);
+    const onOnboarding = (segments as string[])[1] === "onboarding";
+    if (signedIn && inAuthGroup) {
+      router.replace("/(tabs)" as any);
+    } else if (!signedIn && !seenOnboarding && !onOnboarding) {
+      router.replace("/(auth)/onboarding" as any);
+    } else if (!signedIn && seenOnboarding && !inAuthGroup) {
+      router.replace("/(auth)/welcome" as any);
+    }
+  }, [hydrated, signedIn, segments, seenOnboarding]);
+
+  if (!hydrated || seenOnboarding === null) {
     return (
       <View style={{ flex: 1, backgroundColor: "#ffffff", alignItems: "center", justifyContent: "center" }}>
         <ActivityIndicator color="#2563eb" />
