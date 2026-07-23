@@ -4,15 +4,17 @@ node_modules
 .wxt
 dist
 .env
-apps/mobile/android/
 
 .DS_Store
 **/.DS_Store
+
 apps/mobile/android/
 apps/mobile/ios/
 
 build-apk.sh
-
 dev-local.sh
-
 dev-online.sh
+
+# Deploy secrets — never commit
+deploy/.env.production
+apps/extension/.env.production

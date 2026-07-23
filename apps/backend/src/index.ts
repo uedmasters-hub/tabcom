@@ -156,7 +156,7 @@ const httpServer = createServer((req, res) => {
   const url = new URL(req.url ?? "/", PUBLIC_BASE_URL);
 
   // Cheap liveness probe. The extension pings this on panel open to
-  // kick a spun-down Render instance awake as early as possible; also
+  // health probe for uptime monitors and load balancers; also
   // usable by uptime monitors / keep-alive cron.
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -895,8 +895,8 @@ const presenceHidden = new Set<string>(); // "hider|viewer" — presence masked,
 //
 // THIS WAS PREVIOUSLY A LOCAL JSON FILE (data/tabcom-state.json), which
 // is durable under `tsx watch` (same disk survives that kind of
-// restart) but NOT durable on Render: a spin-down/spin-up cycle (free
-// tier idles after ~15 min) or any redeploy starts a brand-new
+// restart) but NOT durable on ephemeral-disk hosts: a container
+// restart or redeploy starts a brand-new
 // container with a wiped filesystem, silently resetting the file to
 // nonexistent — every community, tab, pin, and area was gone on the
 // next request, looking exactly like "a community got automatically

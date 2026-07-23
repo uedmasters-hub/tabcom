@@ -149,8 +149,8 @@ export const sessions = pgTable("sessions", {
  * to write to a local JSON file (data/tabcom-state.json).
  *
  * That file lived on local disk, which is fine under `tsx watch`
- * restarts (same disk, same directory) but NOT fine on Render: a free
- * (or any ephemeral-disk) instance spins up a brand-new container with
+ * restarts (same disk, same directory) but NOT fine on ephemeral-disk hosts: a
+ * (any container host) spins up a brand-new container with
  * a wiped filesystem on every redeploy and every spin-down/spin-up
  * cycle after idling. The file was being silently recreated empty on
  * every cold start — which is exactly what "a community got

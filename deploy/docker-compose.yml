@@ -1,0 +1,30 @@
+# ─── Tabcom Self-Hosted Backend ──────────────────────────────────────
+# Usage:
+#   cp .env.production.example .env.production   # fill in your values
+#   docker compose up -d --build
+#   docker compose logs -f tabcom
+
+services:
+  tabcom:
+    build:
+      context: ..
+      dockerfile: apps/backend/Dockerfile
+    container_name: tabcom-backend
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r=>{if(!r.ok)throw 1})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
