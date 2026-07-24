@@ -202,7 +202,7 @@ export default function OnboardingScreen() {
       <View className="px-8 pb-8 pt-2">
         <Pressable
           onPress={getStarted}
-          className="flex-row items-center justify-center gap-3 bg-[#101a33] rounded-full py-[19px] active:opacity-85 self-center px-14"
+          className="flex-row items-center justify-center gap-3 bg-ink rounded-full py-[19px] active:opacity-85 self-center px-14"
         >
           <Text className="text-white font-bold text-[17px]">Get started</Text>
           <Ionicons name="arrow-forward" size={19} color="#fff" />

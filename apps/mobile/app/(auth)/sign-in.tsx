@@ -1,10 +1,14 @@
 import { useRef, useState } from "react";
-import { Text, View, TextInput, Pressable, ActivityIndicator, KeyboardAvoidingView, Platform } from "react-native";
+import {
+  Text, View, Pressable, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
+} from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { SecondaryHeader } from "@/components/SecondaryHeader";
+import { Ionicons } from "@expo/vector-icons";
 import { auth } from "@/lib/auth-client";
 import { useAuth } from "@/stores/auth";
+import { FormField, Button } from "@/components/ui";
 
 type Phase = "email" | "waiting" | "expired";
 
@@ -24,7 +28,11 @@ export default function SignInScreen() {
     const result = await auth.requestMagicLink(trimmed);
     setBusy(false);
     if (!result.ok || !result.pollId) {
-      setError(result.reason === "rate_limited" ? "Too many attempts — wait a minute." : result.reason === "invalid_email" ? "That doesn't look like a valid email." : "Couldn't reach the server.");
+      setError(
+        result.reason === "rate_limited" ? "Too many attempts \u2014 wait a minute."
+        : result.reason === "invalid_email" ? "That doesn\u2019t look like a valid email."
+        : "Couldn\u2019t reach the server."
+      );
       return;
     }
     setPhase("waiting");
@@ -36,37 +44,83 @@ export default function SignInScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-background">
-      <SecondaryHeader title="Sign in" />
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} className="flex-1">
-        <View className="flex-1 px-8">
+      {/* Back */}
+      <Pressable
+        onPress={() => router.back()}
+        hitSlop={10}
+        className="flex-row items-center gap-1 self-start px-5 pt-3 pb-1 active:opacity-60"
+      >
+        <Ionicons name="chevron-back" size={20} color="#0f172a" />
+        <Text className="text-ink text-[16px] font-medium">Back</Text>
+      </Pressable>
 
-          {phase === "email" && (
-            <>
-              <Text className="text-ink text-3xl font-bold mb-2">Sign in</Text>
-              <Text className="text-muted mb-8">We'll email you a sign-in link — no password needed.</Text>
-              <TextInput value={email} onChangeText={setEmail} placeholder="you@example.com" placeholderTextColor="#94a3b8" autoCapitalize="none" autoCorrect={false} keyboardType="email-address" autoFocus className="border border-border rounded-xl px-4 py-3.5 text-ink text-base mb-4" />
-              {error && <Text className="text-danger mb-4">{error}</Text>}
-              <Pressable onPress={submit} disabled={busy || !email.trim()} className={`rounded-xl py-4 items-center ${busy || !email.trim() ? "bg-slate-300" : "bg-slate-900 active:opacity-80"}`}>
-                {busy ? <ActivityIndicator color="#fff" /> : <Text className="text-white font-semibold text-base">Email me a link</Text>}
-              </Pressable>
-            </>
-          )}
-          {phase === "waiting" && (
-            <View className="flex-1 items-center justify-center -mt-20">
-              <ActivityIndicator color="#2563eb" size="large" />
-              <Text className="text-ink text-xl font-semibold mt-6 mb-2">Check your email</Text>
-              <Text className="text-muted text-center px-4 mb-8">We sent a link to {email.trim()}. Open it on any device.</Text>
-              <Pressable onPress={() => { abortRef.current?.abort(); setPhase("email"); }}><Text className="text-muted">Use a different email</Text></Pressable>
-            </View>
-          )}
-          {phase === "expired" && (
-            <View className="flex-1 items-center justify-center -mt-20">
-              <Text className="text-ink text-xl font-semibold mb-2">Link expired</Text>
-              <Text className="text-muted text-center px-4 mb-8">The sign-in request timed out.</Text>
-              <Pressable onPress={() => setPhase("email")} className="bg-slate-900 rounded-xl py-4 px-10 active:opacity-80"><Text className="text-white font-semibold">Try again</Text></Pressable>
-            </View>
-          )}
-        </View>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        className="flex-1"
+      >
+        {phase === "email" && (
+          <View className="flex-1 px-6 pt-4">
+            <Text className="text-ink text-[30px] font-extrabold tracking-tight mb-2">
+              Sign in
+            </Text>
+            <Text className="text-muted text-[15px] leading-[22px] mb-8">
+              We'll email you a sign-in link — no password needed.
+            </Text>
+
+            <FormField
+              label="Email"
+              placeholder="name@example.com"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              autoFocusOnMount
+              status={
+                error && error.includes("email") ? "invalid"
+                : error ? "invalid" : "idle"
+              }
+              hint={error ?? undefined}
+            />
+
+            <Button onPress={submit} disabled={busy || !email.trim()} loading={busy}>
+              Email me a link
+            </Button>
+          </View>
+        )}
+
+        {phase === "waiting" && (
+          <View className="flex-1 items-center justify-center px-6 -mt-16">
+            <ActivityIndicator color="#2563eb" size="large" />
+            <Text className="text-ink text-[22px] font-extrabold mt-6 mb-2">
+              Check your email
+            </Text>
+            <Text className="text-muted text-[15px] leading-[22px] text-center px-4 mb-8">
+              We sent a link to {email.trim()}. Open it on any device.
+            </Text>
+            <Pressable
+              onPress={() => { abortRef.current?.abort(); setPhase("email"); }}
+              className="active:opacity-60"
+            >
+              <Text className="text-muted text-[15px]">Use a different email</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {phase === "expired" && (
+          <View className="flex-1 items-center justify-center px-6 -mt-16">
+            <Text className="text-ink text-[22px] font-extrabold mb-2">
+              Link expired
+            </Text>
+            <Text className="text-muted text-[15px] leading-[22px] text-center px-4 mb-8">
+              The sign-in request timed out.
+            </Text>
+            <Button onPress={() => setPhase("email")} fullWidth={false}>
+              Try again
+            </Button>
+          </View>
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

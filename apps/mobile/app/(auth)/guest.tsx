@@ -1,23 +1,20 @@
 import { useState } from "react";
 import {
-  Text, View, TextInput, Pressable, ActivityIndicator,
+  Text, View, Pressable, ActivityIndicator,
   KeyboardAvoidingView, Platform,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Avatar } from "@/components/Avatar";
-import { SecondaryHeader } from "@/components/SecondaryHeader";
+import { FormField, Button } from "@/components/ui";
 import { generateGuestUsername } from "@/lib/guest-username";
 import { useAuth } from "@/stores/auth";
 
 const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#0d9488", "#e11d48", "#d97706", "#16a34a"];
 
-/**
- * Guest entry — display name only. No username field, no email, no
- * invite code. A unique handle is generated in the background using the
- * same generator as the extension, then the session starts immediately.
- */
 export default function GuestSetupScreen() {
+  const router = useRouter();
   const startGuestSession = useAuth((s) => s.startGuestSession);
   const [displayName, setDisplayName] = useState("");
   const [color] = useState(() => AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]);
@@ -33,72 +30,73 @@ export default function GuestSetupScreen() {
     try {
       const username = await generateGuestUsername();
       await startGuestSession(displayName.trim(), username, color);
-      // The auth gate in app/_layout.tsx routes to the workspace.
     } catch {
-      setError("Couldn't start a guest session — try again.");
+      setError("Couldn\u2019t start a guest session \u2014 try again.");
       setStarting(false);
     }
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <SecondaryHeader title="" />
+    <SafeAreaView className="flex-1 bg-background">
+      {/* Back */}
+      <Pressable
+        onPress={() => router.back()}
+        hitSlop={10}
+        className="flex-row items-center gap-1 self-start px-5 pt-3 pb-1 active:opacity-60"
+      >
+        <Ionicons name="chevron-back" size={20} color="#0f172a" />
+        <Text className="text-ink text-[16px] font-medium">Back</Text>
+      </Pressable>
+
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         className="flex-1"
       >
-        <View className="flex-1 px-7">
-          <Text className="text-ink text-[26px] font-extrabold tracking-tight">
+        <View className="flex-1 px-6 pt-4">
+          <Text className="text-ink text-[30px] font-extrabold tracking-tight">
             What should people call you?
           </Text>
-          <Text className="text-muted text-[15px] leading-[23px] mt-2.5">
+          <Text className="text-muted text-[15px] leading-[22px] mt-2">
             A 30-minute guest session — no email, no account. Your username is
             assigned automatically.
           </Text>
 
-          <View className="items-center mt-9">
+          <View className="items-center mt-8 mb-2">
             <Avatar name={displayName || "Guest"} color={color} size="xl" />
           </View>
 
-          <Text className="text-muted text-[13px] uppercase font-bold tracking-wide mt-8 mb-2.5">
-            Display name
-          </Text>
-          <TextInput
+          <FormField
+            label="Display name"
+            placeholder="Your name"
             value={displayName}
             onChangeText={setDisplayName}
-            placeholder="Your name"
-            placeholderTextColor="#94a3b8"
-            autoFocus
             autoComplete="name"
             returnKeyType="go"
             onSubmitEditing={submit}
-            className="bg-surface rounded-2xl px-5 py-4 text-ink text-[16px]"
+            autoFocusOnMount
+            status={
+              displayName.trim().length > 0 && displayName.trim().length < 2
+                ? "invalid" : "idle"
+            }
+            hint={
+              displayName.trim().length > 0 && displayName.trim().length < 2
+                ? "At least 2 characters." : undefined
+            }
           />
-          {error && <Text className="text-red-600 text-[14px] mt-2.5">{error}</Text>}
+
+          {error && (
+            <View className="flex-row items-center gap-2 bg-red-50 rounded-xl p-3.5 mb-4">
+              <Ionicons name="alert-circle" size={18} color="#dc2626" />
+              <Text className="flex-1 text-[13px] text-danger leading-[18px]">{error}</Text>
+            </View>
+          )}
         </View>
 
-        <View className="px-7 pb-8">
-          <Pressable
-            onPress={submit}
-            disabled={!canSubmit || starting}
-            className={`flex-row items-center justify-center gap-2.5 rounded-2xl py-[18px] ${
-              canSubmit && !starting ? "bg-primary active:opacity-85" : "bg-slate-200"
-            }`}
-          >
-            {starting ? (
-              <>
-                <ActivityIndicator size="small" color="#fff" />
-                <Text className="text-white font-bold text-[16px]">Starting your session…</Text>
-              </>
-            ) : (
-              <>
-                <Text className={`font-bold text-[16px] ${canSubmit ? "text-white" : "text-slate-400"}`}>
-                  Start new session
-                </Text>
-                {canSubmit && <Ionicons name="arrow-forward" size={17} color="#fff" />}
-              </>
-            )}
-          </Pressable>
+        {/* CTA pinned to bottom — above keyboard */}
+        <View className="px-6 pb-8 pt-2">
+          <Button onPress={submit} disabled={!canSubmit} loading={starting}>
+            {starting ? "Starting session\u2026" : "Start new session"}
+          </Button>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
