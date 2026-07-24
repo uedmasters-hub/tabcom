@@ -11,7 +11,7 @@ import { Avatar, AVATAR_SIZES } from "./Avatar";
 const RAIL_AVATAR = AVATAR_SIZES.lg;      // 60
 const RING = 9;                            // 2.5px border + 2px pad, both sides
 const RAIL_SLOT = RAIL_AVATAR + RING;      // 69
-const PANEL = RAIL_SLOT + 22;              // revealed height
+const PANEL = RAIL_SLOT + 17;              // revealed height
 
 /** No bounce anywhere — timing curves, not springs. */
 const EASE = { duration: 260, easing: Easing.out(Easing.cubic) };
@@ -129,7 +129,7 @@ export const ChatSwitcherSheet = forwardRef<ChatSwitcherHandle, Props>(function 
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 11 }}
+            contentContainerStyle={{ paddingHorizontal: 14, paddingTop: 6 }}
           >
             {rows.map((r, i) => (
               <StaggeredAvatar

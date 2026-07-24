@@ -189,9 +189,9 @@ export default function CreateCommunityScreen() {
           hitSlop={10}
           className="pr-1.5 active:opacity-50"
         >
-          <Ionicons name="chevron-back" size={26} color="#94a3b8" />
+          <Ionicons name="chevron-back" size={23} color="#0f172a" />
         </Pressable>
-        <Text className="text-slate-400 font-semibold text-[20px]">Create community</Text>
+        <Text className="text-ink font-extrabold text-[24px]">Create community</Text>
       </View>
 
       <KeyboardAvoidingView behavior="padding" className="flex-1">
@@ -262,7 +262,7 @@ export default function CreateCommunityScreen() {
                     }`}
                   >
                     <Text
-                      className={`text-[17px] ${
+                      className={`text-[15px] ${
                         active ? "text-white font-bold" : "text-[#5b7a9d] font-semibold"
                       }`}
                     >
@@ -287,7 +287,7 @@ export default function CreateCommunityScreen() {
             <View className="px-5">
               <Animated.Text
                 entering={enter(80)}
-                className="text-[#5b7a9d] text-[19px] font-semibold mt-7 mb-3"
+                className="text-[#5b7a9d] text-[15px] font-semibold mt-7 mb-3"
               >
                 Invite user
               </Animated.Text>
@@ -307,7 +307,7 @@ export default function CreateCommunityScreen() {
                   onChangeText={setMemberQuery}
                   placeholder="Search"
                   placeholderTextColor="#94a3b8"
-                  className="flex-1 py-3.5 text-ink text-[16.5px]"
+                  className="flex-1 py-3.5 text-ink text-[16px]"
                 />
               </Animated.View>
               )}
@@ -378,11 +378,11 @@ export default function CreateCommunityScreen() {
             <Pressable
               onPress={confirmName}
               disabled={!valid}
-              className={`rounded-full py-4.5 items-center py-5 ${
-                valid ? "bg-[#101a33] active:opacity-90" : "bg-slate-200"
+              className={`rounded-[14px] h-[54px] items-center justify-center ${
+                valid ? "bg-ink active:opacity-85" : "bg-[#e2e8f0]"
               }`}
             >
-              <Text className={`font-bold text-[17px] tracking-widest ${valid ? "text-white" : "text-slate-400"}`}>
+              <Text className={`font-semibold text-[16px] ${valid ? "text-white" : "text-[#94a3b8]"}`}>
                 DONE
               </Text>
             </Pressable>
@@ -391,7 +391,7 @@ export default function CreateCommunityScreen() {
               <Pressable
                 onPress={handleCreate}
                 disabled={!valid || creating || created}
-                className={`rounded-full py-5 items-center ${
+                className={`rounded-[14px] h-[54px] items-center justify-center ${
                   created
                     ? "bg-emerald-600"
                     : valid && !creating
@@ -400,11 +400,11 @@ export default function CreateCommunityScreen() {
                 }`}
               >
                 <Text
-                  className={`font-bold text-[17px] tracking-widest ${
+                  className={`font-semibold text-[16px] ${
                     valid || created ? "text-white" : "text-slate-400"
                   }`}
                 >
-                  {created ? "✓  CREATED" : creating ? "CREATING…" : "CREATE"}
+                  {created ? "Created ✓" : creating ? "CREATING…" : "CREATE"}
                 </Text>
               </Pressable>
             </Animated.View>
@@ -429,7 +429,7 @@ function MemberRow({
         <Avatar name={name} color={color} size="md" presence={presence} />
       </View>
       <View className="flex-1 flex-row items-center border-b border-slate-100 pb-4">
-        <Text className="flex-1 text-ink font-semibold text-[18px]" numberOfLines={1}>
+        <Text className="flex-1 text-ink font-semibold text-[15px]" numberOfLines={1}>
           {name}
         </Text>
         {right}

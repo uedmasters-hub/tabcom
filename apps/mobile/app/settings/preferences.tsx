@@ -58,7 +58,7 @@ export default function PreferencesScreen() {
         </Pressable>
       </View>
 
-      <Text className="text-ink text-[30px] font-extrabold tracking-tight px-6 mb-6">
+      <Text className="text-ink text-[28px] font-extrabold tracking-tight px-6 mb-6">
         Preferences
       </Text>
 

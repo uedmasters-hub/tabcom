@@ -78,7 +78,7 @@ export default function RequestInviteScreen() {
         className="flex-1"
       >
         <View className="flex-1 px-6 pt-4">
-          <Text className="text-ink text-[30px] font-extrabold tracking-tight">
+          <Text className="text-ink text-[28px] font-extrabold tracking-tight">
             Request an invite
           </Text>
           <Text className="text-muted text-[15px] leading-[22px] mt-2 mb-8">

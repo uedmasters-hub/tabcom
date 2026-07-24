@@ -35,7 +35,7 @@ export default function InviteCodesScreen() {
         </Pressable>
       </View>
 
-      <Text className="text-ink text-[30px] font-extrabold tracking-tight px-6">
+      <Text className="text-ink text-[28px] font-extrabold tracking-tight px-6">
         Invite Codes
       </Text>
       <Text className="text-muted text-[15px] leading-[22px] px-6 mt-1 mb-6">

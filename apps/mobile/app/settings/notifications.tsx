@@ -60,7 +60,7 @@ export default function NotificationSettingsScreen() {
       </Pressable>
 
       <View className="px-6 pt-3 pb-1">
-        <Text className="text-ink text-[30px] font-extrabold tracking-tight">Notifications</Text>
+        <Text className="text-ink text-[28px] font-extrabold tracking-tight">Notifications</Text>
         <Text className="text-muted text-[14px] mt-1">Control how you get notified.</Text>
       </View>
 

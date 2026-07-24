@@ -95,7 +95,7 @@ export default function ChatSettingsScreen() {
       </Pressable>
 
       <View className="px-6 pt-3 pb-1">
-        <Text className="text-ink text-[30px] font-extrabold tracking-tight">Chat</Text>
+        <Text className="text-ink text-[28px] font-extrabold tracking-tight">Chat</Text>
         <Text className="text-muted text-[14px] mt-1">Manage your chat experience.</Text>
       </View>
 

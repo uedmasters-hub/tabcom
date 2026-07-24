@@ -44,7 +44,7 @@ export default function WelcomeScreen() {
             className="flex-row items-center justify-center gap-2.5 bg-ink rounded-full py-[19px] active:opacity-85"
           >
             <Ionicons name="ticket-outline" size={20} color="#fff" />
-            <Text className="text-white font-bold text-[17px]">Join with an invite code</Text>
+            <Text className="text-white font-semibold text-[16px]">Join with an invite code</Text>
           </Pressable>
 
           <Pressable
@@ -52,7 +52,7 @@ export default function WelcomeScreen() {
             className="flex-row items-center justify-center gap-2.5 bg-white border border-border rounded-full py-[19px] active:opacity-70"
           >
             <Ionicons name="person-outline" size={20} color="#0f172a" />
-            <Text className="text-ink font-bold text-[17px]">Continue as a guest</Text>
+            <Text className="text-ink font-semibold text-[16px]">Continue as a guest</Text>
           </Pressable>
 
           <Pressable

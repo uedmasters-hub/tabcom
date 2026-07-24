@@ -308,7 +308,7 @@ function Copy({
 
   return (
     <Animated.View style={[style, { position: "absolute", left: 32, right: 32, top: 36 }]}>
-      <Text className="text-ink text-[38px] font-extrabold text-center leading-[46px] tracking-tight">
+      <Text className="text-ink text-[36px] font-extrabold text-center leading-[46px] tracking-tight">
         {title}
       </Text>
       <Text className="text-muted text-[17px] leading-[26px] text-center mt-4">

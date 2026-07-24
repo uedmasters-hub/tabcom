@@ -396,7 +396,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               mine={mine}
             />
           ) : (
-            <Text className={`text-[16.5px] leading-[23px] px-4 py-3 ${mine ? "text-white" : "text-ink"}`}>
+            <Text className={`text-[16px] leading-[23px] px-4 py-3 ${mine ? "text-white" : "text-ink"}`}>
               {m.text}
             </Text>
           )}
@@ -564,7 +564,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               blurOnSubmit={false}
               onSubmitEditing={send}
               submitBehavior="submit"
-              className="flex-1 py-3 px-2.5 text-ink text-[16.5px] max-h-24"
+              className="flex-1 py-3 px-2.5 text-ink text-[16px] max-h-24"
             />
             <Pressable onPress={() => { dismissSwitcher(); void startRecording(); }} hitSlop={10} className="active:opacity-50">
               <Ionicons name="mic-outline" size={23} color="#94a3b8" />

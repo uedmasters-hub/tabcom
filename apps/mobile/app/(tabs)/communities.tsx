@@ -137,13 +137,13 @@ export default function CommunitiesScreen() {
               <View className="flex-row gap-2.5">
                 <Pressable
                   onPress={() => { respondToCommunityInvite(inv.community.id, "accept"); useChatStore.getState().receiveCommunityLeft(inv.community.id); }}
-                  className="flex-1 bg-primary rounded-2xl py-3.5 items-center active:opacity-85"
+                  className="flex-1 bg-ink rounded-[14px] py-3.5 items-center active:opacity-85"
                 >
                   <Text className="text-white font-bold text-[15px]">Accept</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => { respondToCommunityInvite(inv.community.id, "decline"); useChatStore.getState().receiveCommunityLeft(inv.community.id); }}
-                  className="flex-1 bg-white border border-slate-200 rounded-2xl py-3.5 items-center active:opacity-70"
+                  className="flex-1 bg-white border border-border rounded-[14px] py-3.5 items-center active:opacity-70"
                 >
                   <Text className="text-muted text-[15px] font-semibold">Decline</Text>
                 </Pressable>
@@ -166,7 +166,7 @@ export default function CommunitiesScreen() {
                 </View>
                 <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
                   <View className="flex-1">
-                    <Text className="text-ink font-bold text-[19px]">{item.name}</Text>
+                    <Text className="text-ink font-bold text-[17px]">{item.name}</Text>
                     <Text className="text-[#5b7a9d] text-[15px] mt-0.5">
                       {item.members.length} members{item.admin === user?.username ? "  •  Admin" : ""}
                     </Text>
@@ -192,10 +192,10 @@ export default function CommunitiesScreen() {
               className="items-center pt-16 px-10 active:opacity-70"
             >
               <Ionicons name="people-outline" size={56} color="#cbd5e1" />
-              <Text className="text-ink text-xl font-bold mt-4 mb-2">
+              <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
                 {q ? "No matches" : "No communities yet"}
               </Text>
-              <Text className="text-muted text-base text-center leading-6">
+              <Text className="text-muted text-[15px] text-center leading-6">
                 {q ? "Try a different search." : "Tap here to create your first community."}
               </Text>
             </Pressable>
@@ -211,8 +211,8 @@ export default function CommunitiesScreen() {
           ListEmptyComponent={
             <View className="items-center pt-16 px-10">
               <Ionicons name="albums-outline" size={56} color="#cbd5e1" />
-              <Text className="text-ink text-xl font-bold mt-4 mb-2">No activity yet</Text>
-              <Text className="text-muted text-base text-center leading-6">
+              <Text className="text-ink text-[20px] font-bold mt-4 mb-2">No activity yet</Text>
+              <Text className="text-muted text-[15px] text-center leading-6">
                 Tabs shared to any of your community boards will appear here.
               </Text>
             </View>
@@ -228,7 +228,7 @@ export default function CommunitiesScreen() {
                     <Ionicons name="open-outline" size={28} color="#94a3b8" />
                   </View>
                   <View className="flex-1 justify-center">
-                    <Text className="text-ink font-bold text-[18px]" numberOfLines={2}>{row.title}</Text>
+                    <Text className="text-ink font-bold text-[17px]" numberOfLines={2}>{row.title}</Text>
                     <Text className="text-slate-400 text-[14px] mt-1">
                       added by @{row.addedBy} · {formatListTime(row.addedAt)}
                     </Text>
@@ -315,10 +315,10 @@ export default function CommunitiesScreen() {
         people.length === 0 ? (
           <View className="flex-1 items-center justify-center px-10">
             <Ionicons name="planet-outline" size={56} color="#cbd5e1" />
-            <Text className="text-ink text-xl font-bold mt-4 mb-2">
+            <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
               {connected ? (q ? "No matches" : "No one else is online") : "Connecting…"}
             </Text>
-            <Text className="text-muted text-base text-center leading-6">
+            <Text className="text-muted text-[15px] text-center leading-6">
               People who sign in on public will appear here instantly.
             </Text>
           </View>
@@ -335,7 +335,7 @@ export default function CommunitiesScreen() {
                     <View style={{ backgroundColor: person.color }} className="w-[60px] h-[60px] rounded-full items-center justify-center">
                       <Text className="text-white font-bold text-2xl">{person.name.slice(0, 1).toUpperCase()}</Text>
                     </View>
-                    <View className="absolute bottom-0 right-0 w-[18px] h-[18px] rounded-full border-[3px] border-white bg-amber-400" />
+                    <View className="absolute bottom-0 right-0 w-[18px] h-[18px] rounded-full border-[3px] border-white bg-emerald-500" />
                   </View>
                   <View className="flex-1 border-b border-slate-100 py-4 flex-row items-center">
                     <Text className="flex-1 text-ink font-semibold text-[19px]">{person.name}</Text>

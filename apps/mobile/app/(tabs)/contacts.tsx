@@ -230,7 +230,7 @@ export default function ContactsScreen() {
               autoFocus
               className="flex-1 border border-border rounded-xl px-4 py-2.5 text-ink text-sm"
             />
-            <Pressable onPress={submitAdd} disabled={!newUsername.trim()} className={`px-4 py-2.5 rounded-xl ${newUsername.trim() ? "bg-slate-900" : "bg-slate-300"}`}>
+            <Pressable onPress={submitAdd} disabled={!newUsername.trim()} className={`px-4 py-2.5 rounded-[14px] ${newUsername.trim() ? "bg-ink" : "bg-slate-200"}`}>
               <Text className="text-white text-sm font-semibold">Request</Text>
             </Pressable>
             <Pressable onPress={() => { setAdding(false); setNewUsername(""); }} className="py-2.5">
@@ -246,7 +246,7 @@ export default function ContactsScreen() {
       {/* Contact list */}
       {allContacts.length === 0 ? (
         <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-ink text-lg font-semibold mb-2">No contacts yet</Text>
+          <Text className="text-ink text-[17px] font-semibold mb-2">No contacts yet</Text>
           <Text className="text-muted text-center">
             Add someone by username, or connect through a community.
           </Text>
@@ -264,7 +264,7 @@ export default function ContactsScreen() {
                   {members.map((c) => renderContact(c, "remove-member"))}
                   {nonMembers.length > 0 && members.length > 0 && (
                     <View className="px-6 py-2 bg-surface">
-                      <Text className="text-muted text-xs uppercase font-semibold">
+                      <Text className="text-[12px] font-semibold text-slate-400 uppercase tracking-wider">
                         Not in {selectedCommunity?.name}
                       </Text>
                     </View>

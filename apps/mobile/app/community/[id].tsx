@@ -28,7 +28,7 @@ export default function CommunityDetailScreen() {
   if (!community || !id) {
     return (
       <SafeAreaView className="flex-1 bg-background items-center justify-center">
-        <Text className="text-muted text-base">Community not found</Text>
+        <Text className="text-muted text-[15px]">Community not found</Text>
       </SafeAreaView>
     );
   }
@@ -79,7 +79,7 @@ export default function CommunityDetailScreen() {
         ListEmptyComponent={
           <View className="items-center py-16">
             <Ionicons name="albums-outline" size={52} color="#cbd5e1" />
-            <Text className="text-ink font-bold text-lg mt-4">No tabs shared yet</Text>
+            <Text className="text-ink font-bold text-[17px] mt-4">No tabs shared yet</Text>
             <Text className="text-muted text-center mt-1">Tabs are added from the extension.</Text>
           </View>
         }

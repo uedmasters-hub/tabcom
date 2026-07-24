@@ -26,7 +26,7 @@ export default function ManageCommunityScreen() {
         <SecondaryHeader title="Manage" />
         <View className="flex-1 items-center justify-center px-10">
           <Ionicons name="people-outline" size={52} color="#cbd5e1" />
-          <Text className="text-ink font-bold text-lg mt-4">Community unavailable</Text>
+          <Text className="text-ink font-bold text-[17px] mt-4">Community unavailable</Text>
           <Text className="text-muted text-center mt-1">It may have been deleted.</Text>
         </View>
       </View>

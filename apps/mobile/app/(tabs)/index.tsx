@@ -110,10 +110,10 @@ export default function ChatScreen() {
       {filtered.length === 0 ? (
         <View className="flex-1 items-center justify-center px-10">
           <Ionicons name="chatbubbles-outline" size={56} color="#cbd5e1" />
-          <Text className="text-ink text-xl font-bold mt-4 mb-2">
+          <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
             {query ? "No matches" : "No conversations yet"}
           </Text>
-          <Text className="text-muted text-base text-center leading-6">
+          <Text className="text-muted text-[15px] text-center leading-6">
             {query ? "Try a different search." : "Add someone in Contacts and start chatting once they accept."}
           </Text>
         </View>
@@ -173,7 +173,7 @@ export default function ChatScreen() {
                 </View>
                 <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
                   <View className="flex-1 mr-3">
-                    <Text className="text-ink font-bold text-[19px]" numberOfLines={1}>{getTitle(c)}</Text>
+                    <Text className="text-ink font-bold text-[17px]" numberOfLines={1}>{getTitle(c)}</Text>
                     <Preview conv={c} />
                   </View>
                   <View className="items-end gap-1.5">

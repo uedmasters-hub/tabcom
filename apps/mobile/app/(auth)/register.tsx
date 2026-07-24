@@ -192,7 +192,7 @@ export default function RegisterScreen() {
               <View className="items-center mb-4">
                 <Badge>Invite only</Badge>
               </View>
-              <Text className="text-ink text-[30px] font-extrabold text-center tracking-tight leading-[38px]">
+              <Text className="text-ink text-[28px] font-extrabold text-center tracking-tight leading-[36px]">
                 Type your invite code
               </Text>
               <Text className="text-muted text-[15px] leading-[22px] text-center mt-2.5 px-3">
@@ -230,7 +230,7 @@ export default function RegisterScreen() {
             </View>
           ) : (
             <View className="pt-5">
-              <Text className="text-ink text-[30px] font-extrabold tracking-tight">
+              <Text className="text-ink text-[28px] font-extrabold tracking-tight">
                 Create Account
               </Text>
               <Text className="text-muted text-[15px] leading-[22px] mt-1.5">
