@@ -1,7 +1,9 @@
-import { Text, View, Pressable } from "react-native";
+import { View, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { color, space, radius, size } from "@/theme";
+import { SectionTitle, Caption } from "@/theme";
 
 interface Props {
   title: string;
@@ -10,26 +12,45 @@ interface Props {
   right?: React.ReactNode;
 }
 
-/** Shared header for secondary/detail screens. Matches ScreenHeader's
- *  weight and spacing so sub-pages don't feel like a different app. */
+/** Header for detail/push screens. All geometry from tokens. */
 export function SecondaryHeader({ title, subtitle, onBack, right }: Props) {
   const router = useRouter();
   return (
-    <SafeAreaView edges={["top"]} className="bg-background">
-      <View className="flex-row items-center px-4 pt-1 pb-3">
+    <SafeAreaView edges={["top"]} style={{ backgroundColor: color.background }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          paddingHorizontal: space.lg,
+          paddingTop: space.xs,
+          paddingBottom: space.md,
+        }}
+      >
         <Pressable
           onPress={onBack ?? (() => router.back())}
           hitSlop={10}
-          className="w-11 h-11 rounded-full bg-surface items-center justify-center mr-3 active:opacity-60"
+          style={{
+            width: size.iconButton,
+            height: size.iconButton,
+            borderRadius: radius.full,
+            backgroundColor: color.surface,
+            alignItems: "center",
+            justifyContent: "center",
+            marginRight: space.md,
+          }}
         >
-          <Ionicons name="chevron-back" size={23} color="#0f172a" />
+          <Ionicons name="chevron-back" size={size.iconLg} color={color.ink} />
         </Pressable>
-        <View className="flex-1">
-          <Text className="text-ink font-extrabold text-[24px]" numberOfLines={1}>{title}</Text>
+
+        <View style={{ flex: 1 }}>
+          <SectionTitle numberOfLines={1}>{title}</SectionTitle>
           {subtitle ? (
-            <Text className="text-muted text-[14px] mt-0.5" numberOfLines={1}>{subtitle}</Text>
+            <Caption numberOfLines={1} style={{ marginTop: space.xxs }}>
+              {subtitle}
+            </Caption>
           ) : null}
         </View>
+
         {right}
       </View>
     </SafeAreaView>

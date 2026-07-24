@@ -31,18 +31,18 @@ function Row({ icon, label, sub, onPress, danger, locked, trailing }: {
       className={`flex-row items-center px-6 py-[14px] ${locked ? "opacity-40" : "active:bg-slate-50"}`}
     >
       <View className="w-9 items-center">
-        <Ionicons name={icon} size={19} color={danger ? "#dc2626" : "#64748b"} />
+        <Ionicons name={icon} size={24} color={danger ? "#dc2626" : "#64748b"} />
       </View>
-      <View className="flex-1 ml-1">
-        <Text className={`text-[15px] ${danger ? "text-danger font-medium" : "text-ink font-medium"}`}>
+      <View className="flex-1 ml-3">
+        <Text className={`text-[16px] ${danger ? "text-danger font-medium" : "text-ink font-medium"}`}>
           {label}
         </Text>
-        {sub && <Text className="text-[12px] text-slate-400 mt-0.5">{sub}</Text>}
+        {sub && <Text className="text-[14px] text-slate-400 mt-0.5">{sub}</Text>}
       </View>
       {locked ? (
         <View className="flex-row items-center gap-1">
-          <Ionicons name="lock-closed" size={13} color="#cbd5e1" />
-          <Text className="text-[11px] text-slate-300">Account required</Text>
+          <Ionicons name="lock-closed" size={14} color="#64748b" />
+          <Text className="text-[12px] text-slate-600">Account required</Text>
         </View>
       ) : trailing !== undefined ? trailing : (
         <Ionicons name="chevron-forward" size={16} color="#d1d5db" />
@@ -112,11 +112,11 @@ export default function SettingsScreen() {
               </Text>
               {isGuest && (
                 <View className="bg-amber-50 rounded-md px-2 py-0.5">
-                  <Text className="text-amber-600 text-[10px] font-bold uppercase">Guest</Text>
+                  <Text className="text-amber-600 text-[12px] font-bold uppercase">Guest</Text>
                 </View>
               )}
             </View>
-            <Text className="text-slate-400 text-[14px] mt-0.5">
+            <Text className="text-slate-600 text-[14px] mt-0.5">
               @{user?.username}
             </Text>
           </View>
@@ -139,11 +139,11 @@ export default function SettingsScreen() {
                   <Ionicons name="ticket-outline" size={20} color="#2563eb" />
                 </View>
                 <View className="flex-1">
-                  <Text className="text-ink text-[15px] font-semibold">
+                  <Text className="text-ink text-[16px] font-semibold">
                     Get a Tabcom account
                   </Text>
-                  <Text className="text-slate-400 text-[12px] mt-0.5">
-                    Request an invitation to unlock all features
+                  <Text className="text-slate-400 text-[14px] mt-0.5">
+                    Request to unlock all features
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#2563eb" />

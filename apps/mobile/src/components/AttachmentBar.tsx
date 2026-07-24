@@ -17,8 +17,8 @@ export type AttachmentAction =
 /** Geometry shared with the composer so the button can travel exactly
  *  between the two anchor points without magic numbers drifting apart. */
 export const ATTACH_BTN = 44;
-export const ATTACH_ROW_H = 52;
-export const ATTACH_GAP = 10;
+export const ATTACH_ROW_H = 56;
+export const ATTACH_GAP = 12;
 export const ATTACH_LEFT = 12;
 /** Vertical distance the button travels when detaching. */
 export const ATTACH_TRAVEL = ATTACH_ROW_H + ATTACH_GAP;
@@ -41,10 +41,10 @@ export const ATTACH_SPRING = {
  */
 export const CHIP_SHADOW = {
   shadowColor: "#0f172a",
-  shadowOpacity: 0.06,
+  shadowOpacity: 0.03,
   shadowRadius: 12,
   shadowOffset: { width: 0, height: 4 },
-  elevation: 2,
+  elevation: 1,
 } as const;
 
 /** The row's height fully resolves in this first slice of the spring,
@@ -119,6 +119,7 @@ export function AttachmentBar({ progress, onPick, settled, onClose }: Props) {
           paddingRight: 12,
           alignItems: "center",
           height: ATTACH_ROW_H,
+          paddingBottom: 6,
         }}
       >
         {settled && (

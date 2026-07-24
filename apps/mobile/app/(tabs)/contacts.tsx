@@ -162,7 +162,7 @@ export default function ContactsScreen() {
         )}
         {action === "add-member" && (
           isPendingInvite ? (
-            <Text className="text-slate-400 text-xs font-semibold uppercase">Invited</Text>
+            <Text className="text-slate-400 text-sm font-semibold uppercase">Invited</Text>
           ) : (
             <Pressable onPress={() => handleInviteToCommunity(contact)} className="active:opacity-60">
               <Text className="text-primary text-sm font-bold uppercase">Add</Text>
@@ -189,7 +189,7 @@ export default function ContactsScreen() {
             <View className={`w-14 h-14 rounded-full items-center justify-center ${selected === "all" ? "bg-primary" : "bg-blue-100"}`}>
               <Text className={`font-bold text-lg ${selected === "all" ? "text-white" : "text-primary"}`}>A</Text>
             </View>
-            <Text className={`text-xs mt-1.5 ${selected === "all" ? "text-ink font-bold" : "text-muted"}`}>All</Text>
+            <Text className={`text-sm mt-1.5 ${selected === "all" ? "text-ink font-bold" : "text-muted"}`}>All</Text>
             {selected === "all" && <View className="h-0.5 bg-ink w-10 mt-1 rounded-full" />}
           </Pressable>
 
@@ -199,7 +199,7 @@ export default function ContactsScreen() {
               <View style={{ backgroundColor: communityInitialColor(idx) }} className={`w-14 h-14 rounded-full items-center justify-center ${selected === c.id ? "" : "opacity-70"}`}>
                 <Text className="text-white font-bold text-lg">{c.name.slice(0, 1).toUpperCase()}</Text>
               </View>
-              <Text className={`text-xs mt-1.5 ${selected === c.id ? "text-ink font-bold" : "text-muted"}`} numberOfLines={1} style={{ maxWidth: 70 }}>
+              <Text className={`text-sm mt-1.5 ${selected === c.id ? "text-ink font-bold" : "text-muted"}`} numberOfLines={1} style={{ maxWidth: 70 }}>
                 {c.name}
               </Text>
               {selected === c.id && <View className="h-0.5 bg-ink w-10 mt-1 rounded-full" />}
@@ -211,7 +211,7 @@ export default function ContactsScreen() {
             <View className="w-14 h-14 rounded-full items-center justify-center border-2 border-dashed border-slate-300">
               <Text className="text-ink text-2xl font-light">+</Text>
             </View>
-            <Text className="text-xs mt-1.5 text-ink font-bold uppercase">Add</Text>
+            <Text className="text-sm mt-1.5 text-ink font-bold uppercase">Add</Text>
           </Pressable>
         </ScrollView>
       </View>
@@ -237,7 +237,7 @@ export default function ContactsScreen() {
               <Text className="text-muted text-sm">✕</Text>
             </Pressable>
           </View>
-          <Text className="text-slate-400 text-xs mt-2">
+          <Text className="text-slate-400 text-sm mt-2">
             Sends a connection request — they appear here after accepting.
           </Text>
         </View>

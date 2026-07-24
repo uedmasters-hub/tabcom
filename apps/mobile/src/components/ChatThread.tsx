@@ -136,7 +136,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   const insets = useSafeAreaInsets();
   // Composer sat flush against the gesture bar; reserve real space.
-  const composerPad = Math.max(insets.bottom, 10);
+  const composerPad = Math.max(insets.bottom - 8, 4);
 
   const messages = useChatStore((s) => s.messages[conversationId] ?? []);
   const typing = useChatStore((s) => s.typing);
@@ -501,7 +501,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             progress={attachProgress}
             settled={attachSettled}
             onClose={closeAttachmentsIfOpen}
-            onPick={(action) => { closeAttachmentsIfOpen(); void handleAttachment(action); }}
+            onPick={(action) => {
+                setAttachSettled(false);
+                setAttachOpen(false);
+                attachProgress.value = 0;
+                void handleAttachment(action);
+              }}
           />
         )}
 
@@ -540,7 +545,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             </Pressable>
           </View>
         ) : (
-        <View className="flex-row items-center px-3 py-2.5 bg-background border-t border-slate-100">
+        <View style={{ paddingTop: 8, paddingBottom: 8 }} className="flex-row items-center px-3 bg-background border-t border-slate-100">
           {/* Healing slot: full-width while the "+" rests here, zero
               once it has detached. The input flows into the space. */}
           <Animated.View style={[attachSlotStyle, { overflow: "hidden" }]} />
@@ -564,7 +569,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               blurOnSubmit={false}
               onSubmitEditing={send}
               submitBehavior="submit"
-              className="flex-1 py-3 px-2.5 text-ink text-[16px] max-h-24"
+              className="flex-1 py-2 px-2.5 text-ink text-[16px] max-h-24"
             />
             <Pressable onPress={() => { dismissSwitcher(); void startRecording(); }} hitSlop={10} className="active:opacity-50">
               <Ionicons name="mic-outline" size={23} color="#94a3b8" />
@@ -587,7 +592,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         {!gated && !recording && (
           <MorphAttachButton
             progress={attachProgress}
-            restBottom={11}
+            restBottom={6}
             onToggle={toggleAttachments}
             disabled={busy}
             busy={busy}

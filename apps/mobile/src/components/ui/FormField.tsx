@@ -1,28 +1,13 @@
 import { useRef, useEffect } from "react";
 import {
-  Text,
-  View,
-  TextInput,
-  ActivityIndicator,
-  type TextInputProps,
-  type TextStyle,
+  View, TextInput, ActivityIndicator,
+  type TextInputProps, type TextStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { color, radius, size, space, type } from "@/theme";
+import { Label, Caption } from "@/theme";
 
-const COLOR = {
-  ink: "#0f172a",
-  muted: "#64748b",
-  border: "#e2e8f0",
-  primary: "#2563eb",
-  success: "#16a34a",
-  danger: "#dc2626",
-  warning: "#d97706",
-  placeholder: "#94a3b8",
-  white: "#ffffff",
-} as const;
-
-export type FieldStatus =
-  | "idle" | "checking" | "valid" | "invalid" | "warning";
+export type FieldStatus = "idle" | "checking" | "valid" | "invalid" | "warning";
 
 export interface FormFieldProps extends Omit<TextInputProps, "style"> {
   label: string;
@@ -33,18 +18,26 @@ export interface FormFieldProps extends Omit<TextInputProps, "style"> {
 }
 
 const BORDER: Record<FieldStatus, string> = {
-  idle: COLOR.border, checking: COLOR.primary, valid: COLOR.success,
-  invalid: COLOR.danger, warning: COLOR.warning,
+  idle: color.border,
+  checking: color.primary,
+  valid: color.success,
+  invalid: color.danger,
+  warning: color.warning,
 };
-const HINT_COLOR: Record<FieldStatus, string> = {
-  idle: COLOR.muted, checking: COLOR.muted, valid: COLOR.success,
-  invalid: COLOR.danger, warning: COLOR.warning,
+
+const HINT_TONE: Record<FieldStatus, "muted" | "success" | "danger" | "warning"> = {
+  idle: "muted",
+  checking: "muted",
+  valid: "success",
+  invalid: "danger",
+  warning: "warning",
 };
 
 export function FormField({
   label, status = "idle", hint, inputStyle, autoFocusOnMount, ...rest
 }: FormFieldProps) {
   const inputRef = useRef<TextInput>(null);
+
   useEffect(() => {
     if (autoFocusOnMount) {
       const t = setTimeout(() => inputRef.current?.focus(), 350);
@@ -52,57 +45,84 @@ export function FormField({
     }
   }, [autoFocusOnMount]);
 
-  const borderColor = BORDER[status];
-  const labelColor = status === "invalid" ? COLOR.danger : COLOR.muted;
-
   return (
-    <View className="mb-5">
+    <View style={{ marginBottom: space.xl }}>
       {label ? (
-        <Text
-          style={{ color: labelColor, fontSize: 13, letterSpacing: 0.1 }}
-          className="font-medium mb-1.5"
-        >{label}</Text>
+        <Label
+          tone={status === "invalid" ? "danger" : "muted"}
+          style={{ marginBottom: space.sm }}
+        >
+          {label}
+        </Label>
       ) : null}
+
       <View
-        style={{ borderColor, borderWidth: 1.5 }}
-        className="flex-row items-center rounded-xl bg-white px-4 h-[52px]"
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          borderWidth: 1.5,
+          borderColor: BORDER[status],
+          borderRadius: radius.md,
+          backgroundColor: color.white,
+          paddingHorizontal: space.lg,
+          height: size.input,
+        }}
       >
         <TextInput
           ref={inputRef}
-          placeholderTextColor={COLOR.placeholder}
-          selectionColor={COLOR.primary}
-          className="flex-1 text-[16px] text-ink"
-          style={[{ paddingVertical: 0, paddingHorizontal: 0 }, inputStyle]}
+          placeholderTextColor={color.subtle}
+          selectionColor={color.primary}
+          style={[
+            {
+              flex: 1,
+              fontSize: type.input.fontSize,
+              color: color.ink,
+              paddingVertical: 0,
+              paddingHorizontal: 0,
+            },
+            inputStyle,
+          ]}
           {...rest}
         />
+
         {status === "checking" && (
-          <View className="ml-2.5">
-            <ActivityIndicator size={16} color={COLOR.primary} />
-          </View>
+          <ActivityIndicator size={16} color={color.primary} style={{ marginLeft: space.sm }} />
         )}
-        {status === "valid" && (
-          <View style={{ backgroundColor: COLOR.success }}
-            className="ml-2.5 w-[22px] h-[22px] rounded-full items-center justify-center">
-            <Ionicons name="checkmark" size={14} color={COLOR.white} />
-          </View>
-        )}
-        {status === "invalid" && (
-          <View style={{ backgroundColor: COLOR.danger }}
-            className="ml-2.5 w-[22px] h-[22px] rounded-full items-center justify-center">
-            <Ionicons name="close" size={14} color={COLOR.white} />
+        {(status === "valid" || status === "invalid") && (
+          <View
+            style={{
+              marginLeft: space.sm,
+              width: 22,
+              height: 22,
+              borderRadius: radius.full,
+              backgroundColor: status === "valid" ? color.success : color.danger,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Ionicons
+              name={status === "valid" ? "checkmark" : "close"}
+              size={14}
+              color={color.white}
+            />
           </View>
         )}
         {status === "warning" && (
-          <View className="ml-2.5">
-            <Ionicons name="alert-circle" size={20} color={COLOR.warning} />
-          </View>
+          <Ionicons
+            name="alert-circle"
+            size={size.icon}
+            color={color.warning}
+            style={{ marginLeft: space.sm }}
+          />
         )}
       </View>
+
       {hint ? (
-        <Text style={{ color: HINT_COLOR[status] }}
-          className="text-xs leading-4 mt-1.5 pl-0.5">{hint}</Text>
+        <Caption tone={HINT_TONE[status]} style={{ marginTop: space.sm }}>
+          {hint}
+        </Caption>
       ) : (
-        <View className="h-[22px]" />
+        <View style={{ height: 22 }} />
       )}
     </View>
   );

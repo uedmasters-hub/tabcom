@@ -56,7 +56,7 @@ export default function ChatScreen() {
 
   const Preview = ({ conv }: { conv: Conversation }) => {
     const m = lastMessage(conv);
-    if (!m) return <Text className="text-muted text-[15px]">No messages yet</Text>;
+    if (!m) return <Text className="text-muted text-[14px]">No messages yet</Text>;
 
     const mine = m.authorId === "me";
     const receipt = mine ? (
@@ -92,7 +92,7 @@ export default function ChatScreen() {
       <View className="flex-row items-center mt-0.5">
         {receipt}
         {icon}
-        <Text className={`text-[15px] flex-1 ${conv.unread > 0 ? "text-slate-700 font-medium" : "text-[#5b7a9d]"}`} numberOfLines={1}>
+        <Text className={`text-[14px] flex-1 ${conv.unread > 0 ? "text-slate-700 font-medium" : "text-[#5b7a9d]"}`} numberOfLines={1}>
           {label}
         </Text>
       </View>
@@ -113,7 +113,7 @@ export default function ChatScreen() {
           <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
             {query ? "No matches" : "No conversations yet"}
           </Text>
-          <Text className="text-muted text-[15px] text-center leading-6">
+          <Text className="text-muted text-[14px] text-center leading-6">
             {query ? "Try a different search." : "Add someone in Contacts and start chatting once they accept."}
           </Text>
         </View>
@@ -173,7 +173,7 @@ export default function ChatScreen() {
                 </View>
                 <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
                   <View className="flex-1 mr-3">
-                    <Text className="text-ink font-bold text-[17px]" numberOfLines={1}>{getTitle(c)}</Text>
+                    <Text className="text-ink font-bold text-[16px]" numberOfLines={1}>{getTitle(c)}</Text>
                     <Preview conv={c} />
                   </View>
                   <View className="items-end gap-1.5">
