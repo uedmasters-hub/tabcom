@@ -183,21 +183,21 @@ export default function CreateCommunityScreen() {
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
       {/* Header */}
-      <View className="flex-row items-center px-4 pt-1 pb-2">
+      <View className="flex-row items-center px-4 pt-8 pb-2">
         <Pressable
           onPress={() => router.back()}
           hitSlop={10}
-          className="pr-1.5 active:opacity-50"
+          className="pr-2 active:opacity-50"
         >
-          <Ionicons name="chevron-back" size={23} color="#0f172a" />
+          <Ionicons name="chevron-back" size={30} color="#2563eb" />
         </Pressable>
-        <Text className="text-ink font-extrabold text-[24px]">Create community</Text>
+        <Text className="text-ink font-medium text-[16px]">Create community</Text>
       </View>
 
       <KeyboardAvoidingView behavior="padding" className="flex-1">
         <ScrollView
           className="flex-1"
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: 16 }}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: 32 }}
           keyboardShouldPersistTaps="handled"
         >
           {/* Naming: hero floats in the upper-middle so it sits above
@@ -373,12 +373,12 @@ export default function CreateCommunityScreen() {
 
         {/* Bottom action — DONE while naming, CREATE once expanded.
             Matures with validity instead of hard-toggling (§10). */}
-        <View className="px-5 pb-4 pt-1 bg-background">
+        <View className="px-5 pb-10 pt-1 bg-background">
           {naming ? (
             <Pressable
               onPress={confirmName}
               disabled={!valid}
-              className={`rounded-[14px] h-[54px] items-center justify-center ${
+              className={`rounded-[99px] h-[56px] items-center justify-center ${
                 valid ? "bg-ink active:opacity-85" : "bg-[#e2e8f0]"
               }`}
             >
@@ -391,7 +391,7 @@ export default function CreateCommunityScreen() {
               <Pressable
                 onPress={handleCreate}
                 disabled={!valid || creating || created}
-                className={`rounded-[14px] h-[54px] items-center justify-center ${
+                className={`rounded-[99px] h-[56px] items-center justify-center ${
                   created
                     ? "bg-emerald-600"
                     : valid && !creating
