@@ -434,11 +434,11 @@ export const useChatStore = create<ChatState>()((set, get) => {
       if (!trimmed) return;
       const message: Message = {
         id: uid(), authorId: ME, kind: "text", text: trimmed,
-        sentAt: Date.now(), status: get().connected ? "sending" : "failed",
+        sentAt: Date.now(), status: "sending" as const,
         replyToId,
       };
       set((state) => appendMessage(state, conversationId, message, false));
-      if (get().connected) deliver(conversationId, message);
+      deliver(conversationId, message);
     },
 
     addDeviceMediaNotice: (peer, kind, from) => {
@@ -536,7 +536,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         status: get().connected ? "sending" : "failed",
       };
       set((state) => appendMessage(state, conversationId, message, false));
-      if (get().connected) deliver(conversationId, message);
+      deliver(conversationId, message);
     },
 
     editMessage: (conversationId, messageId, text) => {

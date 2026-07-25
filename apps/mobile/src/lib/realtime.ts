@@ -276,15 +276,21 @@ function startAppStateWatcher(): void {
       if (!socket.connected) {
         socket.connect();
       }
-      // Re-announce presence as online on foreground return.
-      updatePresence("online");
+      // Re-announce on foreground return. Restore the user's chosen
+      // presence rather than forcing "online" — they may have
+      // deliberately set busy/away before backgrounding.
+      if (currentMe?.presence) {
+        updatePresence(currentMe.presence);
+      }
     }
 
     if (next === "background" && socket?.connected) {
-      // Signal the server that we're going away — peers see our
-      // presence change immediately instead of waiting for a
-      // socket timeout.
-      updatePresence("away");
+      // Keep the socket alive — Socket.IO's ping/pong keeps the
+      // connection warm on most Android devices for several minutes.
+      // Don't flip to away: the user's chosen presence should persist
+      // so messages still route to this socket while backgrounded.
+      // Android will eventually kill the JS thread; on return to
+      // foreground the reconnect block above handles recovery.
     }
   });
 }
