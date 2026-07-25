@@ -18,3 +18,4 @@ dev-online.sh
 # Deploy secrets — never commit
 deploy/.env.production
 apps/extension/.env.production
+apps/extension/tabcom-extension.zip
