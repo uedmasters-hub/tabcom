@@ -688,7 +688,7 @@ export function sendCommunityMessage(
         { communityId, message },
         (err: unknown, ack?: { delivered?: boolean }) => {
           if (err) return onAck("unknown");
-          onAck(ack?.delivered === true ? "delivered" : "rejected");
+          onAck(ack?.delivered === true ? "delivered" : "unknown");
         }
       );
     return;
@@ -1059,7 +1059,7 @@ export function sendDm(
       .timeout(timeoutMs)
       .emit("dm", { to: toUsername, message }, (err: unknown, ack?: { delivered?: boolean }) => {
         if (err) return onAck("unknown"); // timeout / no-ack server
-        onAck(ack?.delivered === true ? "delivered" : "rejected");
+        onAck(ack?.delivered === true ? "delivered" : "unknown");
       });
   } else {
     socket.emit("dm", { to: toUsername, message });

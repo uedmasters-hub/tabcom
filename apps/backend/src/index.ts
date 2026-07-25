@@ -2982,8 +2982,8 @@ async function ensureUniqueGuestUsername(
         // see it as a push notification even though no live socket
         // was available. dm_notice with recipient_away lets the UI
         // show "Sent" instead of the green "Delivered" checkmarks.
-        socket.emit("dm_notice", { to, reason: "recipient_away" });
-        ack?.({ delivered: false });
+        socket.emit("dm_notice", { to, reason: "pushed" });
+        ack?.({ delivered: false, pushed: true });
         return;
       }
 

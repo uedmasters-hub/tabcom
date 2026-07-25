@@ -462,7 +462,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
       </View>
 
       {/* Scrollable body */}
-      <KeyboardAvoidingView behavior="padding" className="flex-1 bg-[#eef0f2]">
+      <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={-10} className="flex-1 bg-[#eef0f2]">
         {switching ? (
           <ChatSkeleton />
         ) : (

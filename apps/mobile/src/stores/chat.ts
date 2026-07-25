@@ -605,8 +605,12 @@ export const useChatStore = create<ChatState>()((set, get) => {
         const departed = state.contacts
           .filter((c) => c.id.startsWith("u-") && !rosterUsernames.has(c.username))
           .map((c) => ({ ...c, presence: "offline" as const }));
+        // Preserve seed contacts (c-* prefix) so preloaded demo
+        // conversations keep showing names and avatars. They stay
+        // until the user removes them individually.
+        const seeds = state.contacts.filter((c) => c.seeded);
         return {
-          contacts: [...liveContacts, ...departed],
+          contacts: [...liveContacts, ...departed, ...seeds],
           rosterUsernames: [...rosterUsernames],
         };
       }),
