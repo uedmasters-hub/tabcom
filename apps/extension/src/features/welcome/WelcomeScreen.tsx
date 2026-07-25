@@ -1,7 +1,7 @@
 import { ArrowRight, Ticket, UserRound } from "lucide-react";
 
 import AppShell from "../../components/layout/AppShell";
-import { Illustration, Button } from "../../components/ui";
+import { Avatar, Illustration, Button } from "../../components/ui";
 import { useAppStore } from "../../stores/app.store";
 
 export default function WelcomeScreen() {
@@ -11,33 +11,22 @@ export default function WelcomeScreen() {
     <AppShell>
       <div className="flex h-full flex-col overflow-y-auto px-6 py-8">
         <div className="flex flex-1 flex-col items-center justify-center text-center">
-          {/* Brand mark, not a generated avatar — the identity should be
-              the real logo everywhere it appears. */}
-          <img
-            src="/icon/128.png"
-            alt=""
-            aria-hidden="true"
-            className="h-14 w-14 rounded-2xl"
-          />
+          <Avatar name="Tabcom" color="#2563EB" size="lg" />
 
-          <h1 className="mt-5 text-2xl font-bold tracking-tight">
-            Meet Tabcom
+          <h1 className="mt-6 text-2xl font-bold tracking-tight">
+            Start your journey
           </h1>
           <p className="mt-2 max-w-xs text-sm leading-6 text-slate-500">
-            For teams, communities, and collaboration.
+            with Tabcom — a new era of browser-first communication.
           </p>
 
-          <div className="mt-6">
+          <div className="mt-8">
             <Illustration
-              name="hero-logo.png"
-              alt="The Tabcom mark — a speech bubble formed from a twisting ribbon"
-              size={180}
+              name="welcome.png"
+              alt="Illustration of secure messaging and account credentials"
+              size={200}
             />
           </div>
-
-          <p className="mt-6 text-sm text-slate-500">
-            Made for teams. Built for everyone.
-          </p>
         </div>
 
         <div className="flex flex-col gap-3 pt-6">
