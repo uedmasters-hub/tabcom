@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import * as SecureStore from "expo-secure-store";
+import { clearAllLocalData } from "@/lib/persistence";
 import type { AuthenticatedUser } from "@tabcom/shared";
 import { auth } from "@/lib/auth-client";
 
@@ -110,6 +111,8 @@ export const useAuth = create<AuthState>((set, get) => ({
       await SecureStore.deleteItemAsync(GUEST_KEY);
     }
     await SecureStore.deleteItemAsync(TOKEN_KEY);
+    // Wipe all local SQLite data + media files
+    await clearAllLocalData();
     set({ sessionToken: null, user: null, guest: null });
   },
 }));

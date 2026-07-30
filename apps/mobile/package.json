@@ -27,6 +27,7 @@
     "expo-router": "~57.0.8",
     "expo-secure-store": "~57.0.1",
     "expo-splash-screen": "~57.0.5",
+    "expo-sqlite": "~57.0.1",
     "expo-status-bar": "~57.0.1",
     "expo-video-thumbnails": "~57.0.1",
     "nativewind": "^4.2.6",

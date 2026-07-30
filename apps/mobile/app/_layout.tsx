@@ -9,6 +9,7 @@ import { useOnboarding } from "@/lib/onboarding";
 import { useChatStore } from "@/stores/chat";
 import { useRealtime } from "@/stores/realtime";
 import "../global.css";
+import { hydrateFromLocalStorage, startPersistence } from "@/lib/persistence";
 
 export default function RootLayout() {
   const { hydrated, sessionToken, guest, hydrate } = useAuth();
@@ -33,6 +34,25 @@ export default function RootLayout() {
       configureNotifications()
     );
   }, []);
+
+  // Hydrate chat store from SQLite on cold start — user sees their
+  // conversations instantly, before the socket even connects.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      hydrateFromLocalStorage();
+    } catch (err) {
+      if (__DEV__) console.warn("[tabcom] hydration error:", err);
+    }
+  }, [hydrated]);
+
+  // Write-through persistence — every chat store mutation is saved
+  // to SQLite. Only active while signed in; cleaned up on sign-out.
+  useEffect(() => {
+    if (!signedIn) return;
+    const unsub = startPersistence();
+    return () => unsub();
+  }, [signedIn]);
 
   // Notification taps deep-link straight to the relevant screen. The
   // server puts the destination in `route`, so routing stays server-

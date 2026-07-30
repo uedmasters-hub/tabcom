@@ -76,7 +76,17 @@ export function initRealtime(
   baseUrl: string,
   sessionToken?: string
 ): void {
-  if (socket) return;
+  // If a socket already exists AND is connected, nothing to do.
+  // If it exists but is disconnected/dead, tear it down so we can
+  // create a fresh one — otherwise connect() becomes a permanent no-op
+  // after the first disconnect.
+  if (socket) {
+    if (socket.connected) return;
+    if (__DEV__) console.log("[tabcom] stale socket detected — tearing down for fresh connect");
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+  }
 
   currentMe = me;
   currentHandlers = handlers;
@@ -118,17 +128,27 @@ export function initRealtime(
       if (ack?.username && ack.username !== me.username) {
         handlers.onUsernameAssigned?.(ack.username);
       }
+
+      // Register push token INSIDE the hello ack — the server now
+      // has this socket in its users map, so register_push_token
+      // can look up the username. Registering before hello completes
+      // causes the server to silently drop the token (users.get()
+      // returns undefined).
+      import("@/lib/notifications").then(({ registerForPush }) => {
+        registerForPush().then((token) => {
+          if (token) {
+            if (__DEV__) console.log(`[tabcom] registering push token: ${token.slice(0, 30)}...`);
+            socket?.emit("register_push_token", { token });
+          } else {
+            if (__DEV__) console.log("[tabcom] no push token available (emulator or permissions denied)");
+          }
+        });
+      });
     });
     handlers.onConnectionChange(true);
 
-    // Re-register push token on EVERY reconnect — a server restart
-    // wipes the in-memory token map, so the first message after
-    // restart would silently fail push delivery without this.
-    import("@/lib/notifications").then(({ registerForPush }) => {
-      registerForPush().then((token) => {
-        if (token) socket?.emit("register_push_token", { token });
-      });
-    });
+    // Announce device kind after hello so the server knows this is mobile
+    socket?.emit("device_kind", { kind: "mobile" });
   });
 
   socket.on("disconnect", () => handlers.onConnectionChange(false));
@@ -305,12 +325,15 @@ function startAppStateWatcher(): void {
       }
 
       // Re-register push token — server may have restarted while
-      // we were backgrounded.
-      import("@/lib/notifications").then(({ registerForPush }) => {
-        registerForPush().then((token) => {
-          if (token) socket?.emit("register_push_token", { token });
+      // we were backgrounded. Wrapped in a short delay to ensure
+      // hello has been processed first.
+      setTimeout(() => {
+        import("@/lib/notifications").then(({ registerForPush }) => {
+          registerForPush().then((token) => {
+            if (token) socket?.emit("register_push_token", { token });
+          });
         });
-      });
+      }, 500);
     }
 
     if (next === "background" && socket?.connected) {
