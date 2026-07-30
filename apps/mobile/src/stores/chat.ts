@@ -210,6 +210,14 @@ interface ChatState {
   applyRoster: (users: WireUser[]) => void;
   receiveDm: (from: WireUser, message: WireMessage) => void;
   receiveTyping: (fromUsername: string) => void;
+  receivePushDm: (push: {
+    from: string;
+    fromName: string;
+    fromColor: string;
+    messageId: string;
+    messageKind: string;
+    messageText: string;
+  }) => void;
   receiveDmEdited: (from: string, messageId: string, text: string, editedAt: number) => void;
   receiveDmDeleted: (from: string, messageId: string) => void;
   receiveDmReaction: (from: string, messageId: string, emoji: string) => void;
@@ -641,6 +649,52 @@ export const useChatStore = create<ChatState>()((set, get) => {
       setTimeout(() => {
         set((state) => ({ typing: state.typing.filter((id) => id !== contactId) }));
       }, 3000);
+    },
+
+    receivePushDm: (push) => {
+      const contactId = `u-${push.from}`;
+
+      // Ensure the contact exists in the contacts list
+      set((state) => {
+        const exists = state.contacts.some((c) => c.id === contactId);
+        if (exists) return state;
+        return {
+          contacts: [
+            ...state.contacts,
+            {
+              id: contactId,
+              username: push.from,
+              name: push.fromName,
+              alias: undefined,
+              color: push.fromColor,
+              presence: "online",
+              visibility: "public" as const,
+            },
+          ],
+        };
+      });
+
+      // Build a lightweight WireMessage from push data
+      const wireMsg = {
+        id: push.messageId,
+        kind: push.messageKind as any,
+        text: push.messageText,
+        timestamp: Date.now(),
+      };
+
+      // Re-use the existing receiveDm path which handles conversation
+      // creation, unread counting, and message appending
+      const { receiveDm } = get();
+      receiveDm(
+        {
+          username: push.from,
+          name: push.fromName,
+          color: push.fromColor,
+          presence: "online",
+          visibility: "public",
+        } as any,
+        wireMsg as any,
+      );
     },
 
     receiveDmEdited: (from, messageId, text, editedAt) => {

@@ -92,13 +92,17 @@ export async function configureNotifications(): Promise<void> {
   // which would be noise while the user is already in the app.
   N.setNotificationHandler({
     handleNotification: async (notification: any) => {
-      const category = notification?.request?.content?.data?.category;
-      const quiet = category === "typing";
+      const data = notification?.request?.content?.data;
+      const category = data?.category;
+      const isTyping = category === "typing";
+
+      // Typing: show banner (silent, no badge) so user sees "X is typing…"
+      // Messages: always show with sound
       return {
-        shouldShowBanner: !quiet,
-        shouldShowList: !quiet,
-        shouldPlaySound: !quiet,
-        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: !isTyping,
+        shouldPlaySound: !isTyping,
+        shouldSetBadge: !isTyping,
       };
     },
   });
@@ -174,6 +178,67 @@ export async function clearThreadNotifications(threadId: string): Promise<void> 
   } catch {
     /* best effort */
   }
+}
+
+/**
+ * Foreground push bridge — routes incoming push data into the Zustand
+ * chat store so typing indicators and messages appear even when the
+ * socket is stale or reconnecting. Deduplication is message-id based:
+ * if the socket delivered the DM first, the push is a no-op.
+ *
+ * Must be called once from _layout.tsx after sign-in. Returns unsub.
+ */
+export function attachForegroundPushBridge(): () => void {
+  const N = mod();
+  if (!N) return () => {};
+
+  const sub = N.addNotificationReceivedListener((notification: any) => {
+    const data = notification?.request?.content?.data;
+    if (!data) return;
+
+    // Lazy import to avoid circular deps (notifications ↔ stores)
+    const { useChatStore } = require("@/stores/chat");
+    const store = useChatStore.getState();
+
+    if (data.category === "typing" && data.from) {
+      // Feed typing indicator into the store — same path as the
+      // socket "typing" event. The 3s auto-clear in receiveTyping
+      // handles expiry.
+      store.receiveTyping(data.from);
+    }
+
+    if (data.category === "messages" && data.from && data.messageId) {
+      // Deduplicate: if the socket already delivered this message,
+      // the store will have it. Skip to avoid double-render.
+      const contactId = `u-${data.from}`;
+      const conv = store.conversations.find(
+        (c: any) => c.contactId === contactId
+      );
+      if (conv) {
+        const existing = (store.messages[conv.id] ?? []).find(
+          (m: any) => m.id === data.messageId
+        );
+        if (existing) return; // already delivered via socket
+      }
+
+      // Socket didn't deliver — create a lightweight placeholder
+      // so the user sees the notification AND the conversation list
+      // updates. The full message body arrives when they open the
+      // app and the socket reconnects.
+      store.receivePushDm({
+        from: data.from,
+        fromName: data.fromName ?? data.from,
+        fromColor: data.fromColor ?? "#2563eb",
+        messageId: data.messageId,
+        messageKind: data.messageKind ?? "text",
+        messageText: data.messageText ?? "New message",
+      });
+    }
+  });
+
+  return () => {
+    try { sub?.remove?.(); } catch { /* already removed */ }
+  };
 }
 
 /**

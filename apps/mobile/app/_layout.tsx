@@ -55,6 +55,18 @@ export default function RootLayout() {
     return () => unsub();
   }, []);
 
+  // Foreground push bridge — routes incoming push notifications (typing,
+  // DM) into the chat store so indicators + messages appear even when
+  // the socket is stale or reconnecting. Only active while signed in.
+  useEffect(() => {
+    if (!signedIn) return;
+    let unsub = () => {};
+    void import("@/lib/notifications").then(({ attachForegroundPushBridge }) => {
+      unsub = attachForegroundPushBridge();
+    });
+    return () => unsub();
+  }, [signedIn]);
+
   useEffect(() => {
     if (!hydrated) return;
     if (signedIn) connect();

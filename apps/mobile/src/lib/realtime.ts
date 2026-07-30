@@ -89,9 +89,12 @@ export function initRealtime(
   socket = io(baseUrl, {
     reconnection: true,
     reconnectionAttempts: Infinity,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    timeout: 10000,
+    // Aggressive reconnection — WhatsApp-grade: 500ms first try,
+    // back off to 3s max. Keeps the gap between "Android killed the
+    // socket" and "we're live again" as short as possible.
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 3000,
+    timeout: 8000,
     // Allow polling as a fallback. Some tunnels and proxies fail the
     // websocket upgrade; forcing websocket-only means the client never
     // connects at all rather than degrading to long-polling.
@@ -117,6 +120,15 @@ export function initRealtime(
       }
     });
     handlers.onConnectionChange(true);
+
+    // Re-register push token on EVERY reconnect — a server restart
+    // wipes the in-memory token map, so the first message after
+    // restart would silently fail push delivery without this.
+    import("@/lib/notifications").then(({ registerForPush }) => {
+      registerForPush().then((token) => {
+        if (token) socket?.emit("register_push_token", { token });
+      });
+    });
   });
 
   socket.on("disconnect", () => handlers.onConnectionChange(false));
@@ -268,20 +280,37 @@ function startAppStateWatcher(): void {
     lastState = next;
 
     if (next === "active" && wasBackground && socket && currentMe) {
-      // Android may have killed the socket while backgrounded.
-      // Socket.IO's built-in reconnection handles most cases, but
-      // after a long sleep the transport is dead — force reconnect
-      // and re-announce identity (same takeover pattern as MV3
-      // service worker restarts).
+      // Android kills the JS thread or dozes the socket while
+      // backgrounded. On return: disconnect the stale transport
+      // entirely, then reconnect fresh — this is faster than
+      // waiting for Socket.IO's ping timeout to detect the dead
+      // socket (can take 25-60s).
       if (!socket.connected) {
         socket.connect();
+      } else {
+        // Socket thinks it's connected but the server may have
+        // already dropped it. Force a fresh hello to confirm liveness
+        // and re-sync presence + push token.
+        socket.emit("hello", currentMe, (ack?: { username: string }) => {
+          if (ack?.username && currentMe && ack.username !== currentMe.username) {
+            currentHandlers?.onUsernameAssigned?.(ack.username);
+          }
+        });
       }
-      // Re-announce on foreground return. Restore the user's chosen
-      // presence rather than forcing "online" — they may have
+
+      // Restore the user's chosen presence — they may have
       // deliberately set busy/away before backgrounding.
       if (currentMe?.presence) {
         updatePresence(currentMe.presence);
       }
+
+      // Re-register push token — server may have restarted while
+      // we were backgrounded.
+      import("@/lib/notifications").then(({ registerForPush }) => {
+        registerForPush().then((token) => {
+          if (token) socket?.emit("register_push_token", { token });
+        });
+      });
     }
 
     if (next === "background" && socket?.connected) {
@@ -289,8 +318,8 @@ function startAppStateWatcher(): void {
       // connection warm on most Android devices for several minutes.
       // Don't flip to away: the user's chosen presence should persist
       // so messages still route to this socket while backgrounded.
-      // Android will eventually kill the JS thread; on return to
-      // foreground the reconnect block above handles recovery.
+      // Push notifications (now dual-delivered) cover the gap when
+      // Android eventually kills the JS thread.
     }
   });
 }

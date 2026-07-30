@@ -2967,21 +2967,29 @@ async function ensureUniqueGuestUsername(
       }
 
       const targets = publicSocketIdsFor(to);
+
+      // Always push — guarantees delivery even when the socket is
+      // technically connected but Android has dozed the JS thread.
+      // The client deduplicates via message id.
+      sendPushToUser(to, {
+        title: from.name || from.username,
+        body: describeMessageKind(message.kind, message.text),
+        category: "messages",
+        route: `/conversation/u-${from.username}`,
+        threadId: `dm:${from.username}`,
+        data: {
+          type: "dm",
+          from: from.username,
+          fromName: from.name || from.username,
+          fromColor: from.color,
+          messageId: message.id,
+          messageKind: message.kind,
+          messageText: (message.text ?? "").slice(0, 160),
+        },
+      });
+
       if (targets.length === 0) {
-        // Recipient has no live socket — wake their phone instead.
-        sendPushToUser(to, {
-          title: from.name || from.username,
-          body: describeMessageKind(message.kind, message.text),
-          category: "messages",
-          route: `/conversation/u-${from.username}`,
-          threadId: `dm:${from.username}`,
-          data: { type: "dm", from: from.username },
-        });
-        // Push notification sent — tell the sender the message was
-        // accepted ("sent") rather than failed. The recipient will
-        // see it as a push notification even though no live socket
-        // was available. dm_notice with recipient_away lets the UI
-        // show "Sent" instead of the green "Delivered" checkmarks.
+        // No live socket — push is the only delivery path.
         socket.emit("dm_notice", { to, reason: "pushed" });
         ack?.({ delivered: false, pushed: true });
         return;
@@ -3264,19 +3272,20 @@ async function ensureUniqueGuestUsername(
     }
 
     const typingTargets = publicSocketIdsFor(to);
-    if (typingTargets.length === 0) {
-      // Offline — a throttled, silent, short-TTL nudge. push.ts caps
-      // these at one per thread per 25s and expires them after 8s.
-      sendPushToUser(to, {
-        title: from.name || from.username,
-        body: "is typing…",
-        category: "typing",
-        route: `/conversation/u-${from.username}`,
-        threadId: `dm:${from.username}`,
-        data: { type: "typing", from: from.username },
-      });
-      return;
-    }
+
+    // Always push — belt-and-suspenders with the live socket relay.
+    // push.ts throttle (5s) prevents battery drain. The mobile client
+    // deduplicates: if the socket delivers first the push is consumed
+    // silently; if the push arrives first (stale socket, Android dozed)
+    // the typing indicator appears instantly.
+    sendPushToUser(to, {
+      title: from.name || from.username,
+      body: "is typing…",
+      category: "typing",
+      route: `/conversation/u-${from.username}`,
+      threadId: `dm:${from.username}`,
+      data: { type: "typing", from: from.username, fromName: from.name || from.username },
+    });
 
     for (const id of typingTargets) {
       io.to(id).emit("typing", { from: from.username });

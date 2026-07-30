@@ -72,7 +72,7 @@ const CHANNELS: Record<PushCategory, CategoryConfig> = {
   tabs: { channelId: "tabs", priority: "normal", sound: "default", collapse: true },
   // Snapchat-style. Silent, low priority, expires almost immediately —
   // a stale "is typing" is actively misleading.
-  typing: { channelId: "typing", priority: "normal", sound: null, ttl: 8, collapse: true },
+  typing: { channelId: "typing", priority: "high", sound: null, ttl: 12, collapse: true },
 };
 
 export interface PushPayload {
@@ -90,7 +90,7 @@ export interface PushPayload {
 
 /** Typing pushes are throttled per (recipient, thread). */
 const typingThrottle = new Map<string, number>();
-const TYPING_THROTTLE_MS = 25_000;
+const TYPING_THROTTLE_MS = 5_000;
 
 function typingAllowed(username: string, threadId: string): boolean {
   const key = `${username}:${threadId}`;
