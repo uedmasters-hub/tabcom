@@ -30,6 +30,7 @@ import { isCallingAvailable } from "@/lib/call-manager";
 import { EmojiPicker } from "./EmojiPicker";
 import { useVoiceRecorder, ensureMicPermission, packageRecording, MAX_VOICE_SECONDS } from "@/lib/voice";
 import { captureWithCamera, pickFromLibrary, pickDocument, pickLocation } from "@/lib/media";
+import { alert } from "@/lib/alert";
 
 const ME = "me";
 
@@ -44,6 +45,8 @@ export interface ThreadPeer {
   presence?: string;
   /** DM only — enables call buttons. */
   username?: string;
+  /** Profile photo URI from server. */
+  photoUri?: string;
 }
 
 interface Props {
@@ -285,7 +288,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
       });
     }
     if (options.length === 0) return;
-    Alert.alert("Message", undefined, [...options, { text: "Cancel", style: "cancel" }]);
+    alert("Message", undefined, [...options, { text: "Cancel", style: "cancel" }]);
   };
 
   const Bubble = ({ m }: { m: Message }) => {
@@ -427,22 +430,36 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         <Pressable onPress={() => router.back()} hitSlop={8} className="pr-2 active:opacity-50">
           <Ionicons name="chevron-back" size={30} color="#2563eb" />
         </Pressable>
-        <View className="relative mr-3">
-          <View style={{ backgroundColor: peer.color }} className="w-11 h-11 rounded-full items-center justify-center">
-            <Text className="text-white font-bold text-base">{peer.title.slice(0, 1).toUpperCase()}</Text>
+        <Pressable
+          onPress={() => {
+            if (peer.username) {
+              router.push(`/profile/${peer.username}` as any);
+            }
+          }}
+          disabled={!peer.username}
+          className="flex-row items-center flex-1 active:opacity-70"
+        >
+          <View className="relative mr-3">
+            <View style={{ backgroundColor: peer.color }} className="w-11 h-11 rounded-full items-center justify-center overflow-hidden">
+              {peer.photoUri ? (
+                <Image source={{ uri: peer.photoUri }} style={{ width: 44, height: 44 }} />
+              ) : (
+                <Text className="text-white font-bold text-base">{peer.title.slice(0, 1).toUpperCase()}</Text>
+              )}
+            </View>
+            {peer.presence && presenceColor[peer.presence] && (
+              <View style={{ backgroundColor: presenceColor[peer.presence] }} className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white" />
+            )}
           </View>
-          {peer.presence && presenceColor[peer.presence] && (
-            <View style={{ backgroundColor: presenceColor[peer.presence] }} className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white" />
-          )}
-        </View>
-        <View className="flex-1">
-          <Text className="text-ink font-bold text-[21px]" numberOfLines={1}>{peer.title}</Text>
-          {isTyping ? (
-            <Text className="text-primary text-[13px]">typing…</Text>
-          ) : peer.subtitle ? (
-            <Text className="text-muted text-[13px]" numberOfLines={1}>{peer.subtitle}</Text>
-          ) : null}
-        </View>
+          <View className="flex-1">
+            <Text className="text-ink font-bold text-[21px]" numberOfLines={1}>{peer.title}</Text>
+            {isTyping ? (
+              <Text className="text-primary text-[13px]">typing…</Text>
+            ) : peer.subtitle ? (
+              <Text className="text-muted text-[13px]" numberOfLines={1}>{peer.subtitle}</Text>
+            ) : null}
+          </View>
+        </Pressable>
 
         {isDm && !gated && isCallingAvailable() ? (
           <View className="flex-row items-center bg-surface rounded-full px-1.5 py-1.5">

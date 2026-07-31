@@ -19,6 +19,7 @@ import * as Location from "expo-location";
 import * as VideoThumbnails from "expo-video-thumbnails";
 import * as FileSystem from "expo-file-system/legacy";
 import { Alert } from "react-native";
+import { alert } from "@/lib/alert";
 
 // Every send costs roughly 2.7x the file size in billed bandwidth
 // (base64 adds ~33%, then it travels up to the relay and back down).
@@ -71,7 +72,7 @@ async function sizeOf(uri: string): Promise<number> {
 
 function tooBig(label: string, bytes: number, cap: number): boolean {
   if (bytes <= cap) return false;
-  Alert.alert(
+  alert(
     `${label} too large`,
     `That ${label.toLowerCase()} is ${(bytes / 1024 / 1024).toFixed(1)} MB. The limit is ${(cap / 1024 / 1024).toFixed(0)} MB so messages stay fast on mobile data.`
   );
@@ -83,7 +84,7 @@ function tooBig(label: string, bytes: number, cap: number): boolean {
 export async function pickFromLibrary(): Promise<MediaResult | null> {
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) {
-    Alert.alert("Permission needed", "Allow photo library access to attach media.");
+    alert("Permission needed", "Allow photo library access to attach media.");
     return null;
   }
 
@@ -121,7 +122,7 @@ export async function captureWithCamera(
 ): Promise<MediaResult | null> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) {
-    Alert.alert("Permission needed", "Allow camera access to capture media.");
+    alert("Permission needed", "Allow camera access to capture media.");
     return null;
   }
 
@@ -176,7 +177,7 @@ export async function pickDocument(): Promise<MediaResult | null> {
 export async function pickLocation(): Promise<{ latitude: number; longitude: number } | null> {
   const perm = await Location.requestForegroundPermissionsAsync();
   if (!perm.granted) {
-    Alert.alert("Permission needed", "Allow location access to share where you are.");
+    alert("Permission needed", "Allow location access to share where you are.");
     return null;
   }
   const pos = await Location.getCurrentPositionAsync({

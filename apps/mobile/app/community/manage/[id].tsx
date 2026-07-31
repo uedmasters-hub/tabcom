@@ -10,6 +10,7 @@ import {
   renameCommunity, inviteToCommunity, removeCommunityMember,
   leaveCommunity, deleteCommunity,
 } from "@/lib/realtime";
+import { alert } from "@/lib/alert";
 
 export default function ManageCommunityScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -46,18 +47,18 @@ export default function ManageCommunityScreen() {
     if (!u) return;
     inviteToCommunity(id, u);
     setInviteName("");
-    Alert.alert("Invite sent", `@${u} was invited to ${community.name}.`);
+    alert("Invite sent", `@${u} was invited to ${community.name}.`);
   };
 
   const confirmRemove = (username: string) =>
-    Alert.alert("Remove member", `Remove @${username} from ${community.name}?`, [
+    alert("Remove member", `Remove @${username} from ${community.name}?`, [
       { text: "Cancel", style: "cancel" },
       { text: "Remove", style: "destructive", onPress: () => removeCommunityMember(id, username) },
     ]);
 
   const confirmDestructive = () => {
     if (isAdmin) {
-      Alert.alert("Delete community", `Delete "${community.name}" for everyone? This cannot be undone.`, [
+      alert("Delete community", `Delete "${community.name}" for everyone? This cannot be undone.`, [
         { text: "Cancel", style: "cancel" },
         {
           text: "Delete", style: "destructive",
@@ -69,7 +70,7 @@ export default function ManageCommunityScreen() {
         },
       ]);
     } else {
-      Alert.alert("Leave community", `Leave "${community.name}"? You'll need a new invite to rejoin.`, [
+      alert("Leave community", `Leave "${community.name}"? You'll need a new invite to rejoin.`, [
         { text: "Cancel", style: "cancel" },
         {
           text: "Leave", style: "destructive",

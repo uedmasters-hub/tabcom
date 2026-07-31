@@ -12,6 +12,7 @@ import {
   removeCommunityMember,
 } from "@/lib/realtime";
 import type { Contact } from "@tabcom/shared";
+import { alert } from "@/lib/alert";
 
 const presenceColors: Record<string, string> = {
   online: "#16a34a",
@@ -87,7 +88,7 @@ export default function ContactsScreen() {
   };
 
   const confirmRemoveConnection = (contact: Contact) => {
-    Alert.alert(
+    alert(
       "Remove contact",
       `Remove @${contact.username}? This silently ends the connection.`,
       [
@@ -99,7 +100,7 @@ export default function ContactsScreen() {
 
   const confirmRemoveFromCommunity = (contact: Contact) => {
     if (!selectedCommunity) return;
-    Alert.alert(
+    alert(
       "Remove from community",
       `Remove @${contact.username} from ${selectedCommunity.name}?`,
       [
@@ -112,7 +113,7 @@ export default function ContactsScreen() {
   const handleInviteToCommunity = (contact: Contact) => {
     if (!selectedCommunity) return;
     inviteToCommunity(selectedCommunity.id, contact.username);
-    Alert.alert("Invite sent", `@${contact.username} was invited to ${selectedCommunity.name}.`);
+    alert("Invite sent", `@${contact.username} was invited to ${selectedCommunity.name}.`);
   };
 
   const openChat = (contact: Contact) => {

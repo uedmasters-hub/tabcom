@@ -51,6 +51,7 @@ export default function ConversationScreen() {
         color: contact?.color ?? "#2563eb",
         presence: contact?.presence,
         username: contact?.username,
+        photoUri: (contact as any)?.photoUri,
       }}
     />
   );

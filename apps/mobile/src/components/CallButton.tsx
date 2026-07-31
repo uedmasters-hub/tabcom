@@ -1,5 +1,6 @@
 import { Pressable, Text, Alert } from "react-native";
 import { useRouter } from "expo-router";
+import { alert } from "@/lib/alert";
 
 interface Props { peer: { username: string; name: string; color: string }; }
 
@@ -11,7 +12,7 @@ export function CallButton({ peer }: Props) {
       startCall(peer);
       router.push(`/call/${peer.username}?peerName=${encodeURIComponent(peer.name)}&peerColor=${encodeURIComponent(peer.color)}&role=caller` as any);
     } catch {
-      Alert.alert("Voice calls", "Calls require a development build. Run: npx expo prebuild && npx expo run:android");
+      alert("Voice calls", "Calls require a development build. Run: npx expo prebuild && npx expo run:android");
     }
   };
   return (

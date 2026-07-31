@@ -58,7 +58,7 @@ export default function TabBar() {
               <Icon size={20} strokeWidth={isActive ? 2.4 : 2} />
 
               {showBadge && (
-                <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white">
+                <span className="absolute -right-6 -top-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-semibold text-white">
                   {badgeCount}
                 </span>
               )}

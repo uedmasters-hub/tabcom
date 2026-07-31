@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/stores/auth";
 import { useChatStore } from "@/stores/chat";
 import { clearMyHistory } from "@/lib/realtime";
+import { alert } from "@/lib/alert";
 
 function SectionTitle({ children }: { children: string }) {
   return (
@@ -77,7 +78,7 @@ export default function ChatSettingsScreen() {
   const [autoDownload, setAutoDownload] = useState(true);
 
   const handleClear = () => {
-    Alert.alert("Clear chat history",
+    alert("Clear chat history",
       "This removes all messages and conversations. Contacts and communities stay intact.",
       [{ text: "Cancel", style: "cancel" },
        { text: "Clear", style: "destructive", onPress: async () => {

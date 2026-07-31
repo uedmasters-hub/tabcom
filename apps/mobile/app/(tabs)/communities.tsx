@@ -13,6 +13,7 @@ import {
   voteOnBoardItem, commentOnBoardItem, leaveCommunity, deleteCommunity,
 } from "@/lib/realtime";
 import type { BoardItem } from "@tabcom/shared";
+import { alert } from "@/lib/alert";
 
 type Segment = "groups" | "activities" | "discover";
 
@@ -66,7 +67,7 @@ export default function CommunitiesScreen() {
 
   const confirmLeaveOrDelete = (communityId: string, name: string, isAdmin: boolean) => {
     if (isAdmin) {
-      Alert.alert(
+      alert(
         "Delete community",
         `Delete "${name}" for everyone? Members lose access to its chat and board. This cannot be undone.`,
         [
@@ -82,7 +83,7 @@ export default function CommunitiesScreen() {
         ]
       );
     } else {
-      Alert.alert(
+      alert(
         "Leave community",
         `Leave "${name}"? You'll need a new invite to rejoin.`,
         [
@@ -260,7 +261,7 @@ export default function CommunitiesScreen() {
                   {canDelete && (
                     <Pressable
                       onPress={() =>
-                        Alert.alert("Remove tab", `Remove "${row.title}" from ${row.communityName}'s board?`, [
+                        alert("Remove tab", `Remove "${row.title}" from ${row.communityName}'s board?`, [
                           { text: "Cancel", style: "cancel" },
                           { text: "Remove", style: "destructive", onPress: () => router.push(`/community/${row.communityId}` as any) },
                         ])
@@ -330,7 +331,15 @@ export default function CommunitiesScreen() {
             renderItem={({ item: person }) => {
               const status = connections[person.username] ?? "none";
               return (
-                <View className="flex-row items-center px-5 py-3">
+                <Pressable
+                  onPress={() => {
+                    if (status === "accepted") {
+                      const convId = useChatStore.getState().startConversation(person.id);
+                      router.push(`/conversation/${convId}` as any);
+                    }
+                  }}
+                  className="flex-row items-center px-5 py-3 active:bg-surface"
+                >
                   <View className="relative mr-4">
                     <View style={{ backgroundColor: person.color }} className="w-[60px] h-[60px] rounded-full items-center justify-center">
                       <Text className="text-white font-bold text-2xl">{person.name.slice(0, 1).toUpperCase()}</Text>
@@ -362,7 +371,7 @@ export default function CommunitiesScreen() {
                       </Pressable>
                     )}
                   </View>
-                </View>
+                </Pressable>
               );
             }}
           />

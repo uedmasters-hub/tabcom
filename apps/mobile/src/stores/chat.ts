@@ -210,6 +210,7 @@ interface ChatState {
   applyRoster: (users: WireUser[]) => void;
   receiveDm: (from: WireUser, message: WireMessage) => void;
   receiveTyping: (fromUsername: string) => void;
+  deleteConversationLocally: (conversationId: string) => void;
   receivePushDm: (push: {
     from: string;
     fromName: string;
@@ -649,6 +650,20 @@ export const useChatStore = create<ChatState>()((set, get) => {
       setTimeout(() => {
         set((state) => ({ typing: state.typing.filter((id) => id !== contactId) }));
       }, 3000);
+    },
+
+    deleteConversationLocally: (conversationId) => {
+      set((state) => ({
+        conversations: state.conversations.filter((c) => c.id !== conversationId),
+        messages: Object.fromEntries(
+          Object.entries(state.messages).filter(([k]) => k !== conversationId)
+        ),
+      }));
+      // Also remove from SQLite
+      try {
+        const { deleteConversation } = require("@/lib/local-storage");
+        deleteConversation(conversationId);
+      } catch { /* local-storage not initialized */ }
     },
 
     receivePushDm: (push) => {

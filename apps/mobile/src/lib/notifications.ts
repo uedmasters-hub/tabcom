@@ -146,11 +146,32 @@ export async function registerForPush(): Promise<Nullable<string>> {
       const asked = await N.requestPermissionsAsync();
       status = asked.status;
     }
-    if (status !== "granted") return null;
+    if (status !== "granted") {
+      if (__DEV__) console.log("[tabcom-push] permission not granted");
+      return null;
+    }
 
-    const token = await N.getExpoPushTokenAsync();
+    // SDK 57+ requires projectId for getExpoPushTokenAsync().
+    // Pull it from app config (Constants.expoConfig) or hardcode
+    // the EAS project id. Without this, the call silently fails.
+    let projectId: string | undefined;
+    try {
+      const Constants = require("expo-constants").default;
+      projectId = Constants.expoConfig?.extra?.eas?.projectId
+        ?? Constants.easConfig?.projectId;
+    } catch {
+      // expo-constants not available — try without projectId
+    }
+
+    const tokenOpts: any = {};
+    if (projectId) tokenOpts.projectId = projectId;
+
+    if (__DEV__) console.log(`[tabcom-push] requesting token (projectId=${projectId ?? "none"})`);
+    const token = await N.getExpoPushTokenAsync(tokenOpts);
+    if (__DEV__) console.log(`[tabcom-push] got token: ${token?.data?.slice(0, 30)}...`);
     return token?.data ?? null;
-  } catch {
+  } catch (err) {
+    if (__DEV__) console.warn("[tabcom-push] token error:", err);
     return null;
   }
 }

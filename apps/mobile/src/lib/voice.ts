@@ -14,6 +14,7 @@ import {
 } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 import { Alert } from "react-native";
+import { alert } from "@/lib/alert";
 
 export const MAX_VOICE_SECONDS = 120;
 export const MAX_VOICE_BYTES = 2 * 1024 * 1024;
@@ -27,7 +28,7 @@ export function useVoiceRecorder() {
 export async function ensureMicPermission(): Promise<boolean> {
   const status = await AudioModule.requestRecordingPermissionsAsync();
   if (!status.granted) {
-    Alert.alert("Microphone needed", "Allow microphone access to record voice notes.");
+    alert("Microphone needed", "Allow microphone access to record voice notes.");
     return false;
   }
   await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
@@ -48,7 +49,7 @@ export async function packageRecording(
     const info = await FileSystem.getInfoAsync(uri);
     const size = info.exists && "size" in info ? ((info as { size?: number }).size ?? 0) : 0;
     if (size > MAX_VOICE_BYTES) {
-      Alert.alert("Voice note too long", "Keep voice notes under about two minutes.");
+      alert("Voice note too long", "Keep voice notes under about two minutes.");
       return null;
     }
     const base64 = await FileSystem.readAsStringAsync(uri, {

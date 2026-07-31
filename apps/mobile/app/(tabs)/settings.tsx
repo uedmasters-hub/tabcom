@@ -9,6 +9,7 @@ import { usePresence } from "@/stores/presence";
 import { useRealtime } from "@/stores/realtime";
 import { useChatStore } from "@/stores/chat";
 import { auth } from "@/lib/auth-client";
+import { alert } from "@/lib/alert";
 
 /* ── Shared row components ── */
 
@@ -77,14 +78,14 @@ export default function SettingsScreen() {
   };
 
   const handleDeleteAccount = () => {
-    Alert.alert("Delete account",
+    alert("Delete account",
       "This permanently deletes your account and all data. This cannot be undone.",
       [{ text: "Cancel", style: "cancel" },
        { text: "Delete forever", style: "destructive", onPress: async () => {
          if (!sessionToken) return;
          const r = await auth.deleteAccount(sessionToken);
          if (r.ok) { useChatStore.getState().resetChat(); await signOut(); }
-         else Alert.alert("Error", "Couldn't delete account.");
+         else alert("Error", "Couldn't delete account.");
        }}],
     );
   };

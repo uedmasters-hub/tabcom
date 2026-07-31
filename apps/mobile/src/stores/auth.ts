@@ -109,10 +109,15 @@ export const useAuth = create<AuthState>((set, get) => ({
     if (guest) {
       void auth.endGuestSession(guest.username);
       await SecureStore.deleteItemAsync(GUEST_KEY);
+      // Guests: wipe ALL local data — nothing should survive session end.
+      // Registered users' data about this guest stays in THEIR local
+      // storage (messages, media, etc.) until they manually clear it.
+      await clearAllLocalData();
     }
     await SecureStore.deleteItemAsync(TOKEN_KEY);
-    // Wipe all local SQLite data + media files
-    await clearAllLocalData();
+    // Registered users: keep local storage (messages, media, communities).
+    // They can manually clear via Settings → Storage → Clear cache.
+    // Only wipe for guests (handled above).
     set({ sessionToken: null, user: null, guest: null });
   },
 }));

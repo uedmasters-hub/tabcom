@@ -16,6 +16,7 @@ import { auth } from "@/lib/auth-client";
 import { reannounce } from "@/lib/realtime";
 import { syncSettingsToServer } from "@/lib/settings-sync";
 import type { WirePresence } from "@tabcom/shared";
+import { alert } from "@/lib/alert";
 
 const AVATAR_COLORS = [
   "#2563eb", "#7c3aed", "#a855f7", "#ec4899",
@@ -102,7 +103,7 @@ export default function ProfileScreen() {
       mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.7,
     });
     if (!result.canceled && result.assets[0]) {
-      Alert.alert("Photo selected", "Photo upload will be available soon.");
+      alert("Photo selected", "Photo upload will be available soon.");
     }
   };
 
@@ -279,7 +280,7 @@ export default function ProfileScreen() {
                 <Pressable
                   onPress={() => {
                     if (sessionToken) auth.sendVerificationEmail(sessionToken).then((r) => {
-                      Alert.alert(r.ok ? "Sent" : "Error", r.ok ? "Check your inbox." : "Try again.");
+                      alert(r.ok ? "Sent" : "Error", r.ok ? "Check your inbox." : "Try again.");
                     });
                   }}
                   className="bg-success rounded-lg px-3.5 py-1.5 active:opacity-80"
@@ -301,7 +302,7 @@ export default function ProfileScreen() {
               icon="mail-open-outline"
               value="Add secondary email"
               editable
-              onPress={() => Alert.alert("Coming soon", "Secondary email support will be added soon.")}
+              onPress={() => alert("Coming soon", "Secondary email support will be added soon.")}
               trailing={
                 <View className="w-7 h-7 rounded-full bg-slate-100 items-center justify-center">
                   <Ionicons name="add" size={16} color="#64748b" />
@@ -316,7 +317,7 @@ export default function ProfileScreen() {
             label="Mobile"
             value={isRegistered ? "Add phone number" : "Not available for guests"}
             editable={isRegistered}
-            onPress={isRegistered ? () => Alert.alert("Coming soon", "Phone number editing will be added soon.") : undefined}
+            onPress={isRegistered ? () => alert("Coming soon", "Phone number editing will be added soon.") : undefined}
           />
 
           {/* Address */}
@@ -325,7 +326,7 @@ export default function ProfileScreen() {
             label="Address"
             value={isRegistered ? "Add home address" : "Not available for guests"}
             editable={isRegistered}
-            onPress={isRegistered ? () => Alert.alert("Coming soon", "Address editing will be added soon.") : undefined}
+            onPress={isRegistered ? () => alert("Coming soon", "Address editing will be added soon.") : undefined}
           />
         </View>
 

@@ -10,6 +10,7 @@ import { useChatStore } from "@/stores/chat";
 import { useRealtime } from "@/stores/realtime";
 import "../global.css";
 import { hydrateFromLocalStorage, startPersistence } from "@/lib/persistence";
+import { AlertHost } from "@/lib/alert";
 
 export default function RootLayout() {
   const { hydrated, sessionToken, guest, hydrate } = useAuth();
@@ -128,10 +129,12 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
       <StatusBar style="dark" />
+      <AlertHost>
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#ffffff" } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)" />
       </Stack>
+      </AlertHost>
       </KeyboardProvider>
     </GestureHandlerRootView>
   );

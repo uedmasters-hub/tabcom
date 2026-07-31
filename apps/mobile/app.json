@@ -4,5 +4,13 @@
     "expo-router",
     "expo-splash-screen",
     "expo-sqlite"
-  ]
+  ],
+  "extra": {
+    "router": {},
+    "eas": {
+      "projectId": "f8ae74c2-0ab2-4cc5-9a21-2819f45d97e7"
+    }
+  },
+  "owner": "ramsmandal",
+  "slug": "tabcommobile"
 }

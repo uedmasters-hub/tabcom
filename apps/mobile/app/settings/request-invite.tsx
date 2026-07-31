@@ -10,6 +10,7 @@ import { Button } from "@/components/ui";
 import { FormField } from "@/components/ui";
 import { useAuth } from "@/stores/auth";
 import { REALTIME_URL } from "@/lib/config";
+import { alert } from "@/lib/alert";
 
 export default function RequestInviteScreen() {
   const router = useRouter();
@@ -37,7 +38,7 @@ export default function RequestInviteScreen() {
       });
       setSubmitted(true);
     } catch {
-      Alert.alert("Error", "Couldn't send your request. Please try again.");
+      alert("Error", "Couldn't send your request. Please try again.");
     }
     setSubmitting(false);
   };

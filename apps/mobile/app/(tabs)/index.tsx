@@ -9,6 +9,7 @@ import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
 import { usePendingRequests } from "@/hooks/useConnections";
 import { formatListTime } from "@/lib/format-time";
 import type { Conversation, Message } from "@tabcom/shared";
+import { SwipeableRow } from "@/components/SwipeableRow";
 
 const presenceDot: Record<string, string> = {
   online: "#16a34a",
@@ -152,40 +153,48 @@ export default function ChatScreen() {
             const contact = c.kind === "dm" ? contacts.find((x) => x.id === c.contactId) : null;
             const dot = contact ? presenceDot[contact.presence] : null;
             return (
-              <Pressable
-                onPress={() => {
-                  useChatStore.getState().openConversation(c.id);
-                  router.push(
-                    c.kind === "community" && c.communityId
-                      ? (`/community/${c.communityId}` as any)
-                      : (`/conversation/${c.id}` as any)
-                  );
+              <SwipeableRow
+                onDelete={() => {
+                  useChatStore.getState().deleteConversationLocally(c.id);
                 }}
-                className="flex-row items-center px-5 py-3 active:bg-surface"
+                confirmTitle="Delete chat"
+                confirmMessage={`Delete your conversation with ${getTitle(c)}? Messages will be removed from this device.`}
               >
-                <View className="mr-4">
-                  <Avatar
-                    name={getTitle(c)}
-                    color={contact?.color ?? "#2563eb"}
-                    size="lg"
-                    presence={contact?.presence}
-                  />
-                </View>
-                <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
-                  <View className="flex-1 mr-3">
-                    <Text className="text-ink font-bold text-[16px]" numberOfLines={1}>{getTitle(c)}</Text>
-                    <Preview conv={c} />
+                <Pressable
+                  onPress={() => {
+                    useChatStore.getState().openConversation(c.id);
+                    router.push(
+                      c.kind === "community" && c.communityId
+                        ? (`/community/${c.communityId}` as any)
+                        : (`/conversation/${c.id}` as any)
+                    );
+                  }}
+                  className="flex-row items-center px-5 py-3 active:bg-surface"
+                >
+                  <View className="mr-4">
+                    <Avatar
+                      name={getTitle(c)}
+                      color={contact?.color ?? "#2563eb"}
+                      size="lg"
+                      presence={contact?.presence}
+                    />
                   </View>
-                  <View className="items-end gap-1.5">
-                    <Text className="text-slate-400 text-[14px]">{formatListTime(c.lastMessageAt)}</Text>
-                    {c.unread > 0 && (
-                      <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center">
-                        <Text className="text-white text-xs font-bold">{c.unread}</Text>
-                      </View>
-                    )}
+                  <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
+                    <View className="flex-1 mr-3">
+                      <Text className="text-ink font-bold text-[16px]" numberOfLines={1}>{getTitle(c)}</Text>
+                      <Preview conv={c} />
+                    </View>
+                    <View className="items-end gap-1.5">
+                      <Text className="text-slate-400 text-[14px]">{formatListTime(c.lastMessageAt)}</Text>
+                      {c.unread > 0 && (
+                        <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center">
+                          <Text className="text-white text-xs font-bold">{c.unread}</Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                </View>
-              </Pressable>
+                </Pressable>
+              </SwipeableRow>
             );
           }}
         />
