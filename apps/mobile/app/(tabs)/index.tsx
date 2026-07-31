@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import { Text, View, Pressable, FlatList } from "react-native";
+import { Text, View, Pressable, FlatList, RefreshControl } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useChatStore } from "@/stores/chat";
+import { useAuth } from "@/stores/auth";
+import { reannounce } from "@/lib/realtime";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { Avatar } from "@/components/Avatar";
 import { ConnectionRequestCard } from "@/components/ConnectionRequestCard";
@@ -10,6 +12,7 @@ import { usePendingRequests } from "@/hooks/useConnections";
 import { formatListTime } from "@/lib/format-time";
 import type { Conversation, Message } from "@tabcom/shared";
 import { SwipeableRow } from "@/components/SwipeableRow";
+import { toast } from "@/lib/toast";
 
 const presenceDot: Record<string, string> = {
   online: "#16a34a",
@@ -22,6 +25,25 @@ const presenceDot: Record<string, string> = {
 export default function ChatScreen() {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    const user = useAuth.getState().user;
+    if (user) {
+      reannounce({
+        username: user.username ?? "",
+        name: user.displayName ?? "",
+        color: user.avatarColor ?? "#7C6CF6",
+        presence: "online",
+        visibility: "public",
+      });
+    }
+    setTimeout(() => {
+      setRefreshing(false);
+      toast("Chat list refreshed", "success");
+    }, 800);
+  };
   const conversations = useChatStore((s) => s.conversations);
   const contacts = useChatStore((s) => s.contacts);
   const communities = useChatStore((s) => s.communities);
@@ -123,6 +145,17 @@ export default function ChatScreen() {
           data={filtered}
           keyExtractor={(i) => i.id}
           contentContainerStyle={{ paddingBottom: 24 }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#2563eb"]}
+              tintColor="#2563eb"
+              progressBackgroundColor="#ffffff"
+              title=""
+              titleColor="transparent"
+            />
+          }
           ListHeaderComponent={
             pending.length > 0 ? (
               <View className="px-5 pt-1 pb-3">

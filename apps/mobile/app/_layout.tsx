@@ -11,6 +11,7 @@ import { useRealtime } from "@/stores/realtime";
 import "../global.css";
 import { hydrateFromLocalStorage, startPersistence } from "@/lib/persistence";
 import { AlertHost } from "@/lib/alert";
+import { ToastHost } from "@/lib/toast";
 
 export default function RootLayout() {
   const { hydrated, sessionToken, guest, hydrate } = useAuth();
@@ -130,10 +131,12 @@ export default function RootLayout() {
       <KeyboardProvider>
       <StatusBar style="dark" />
       <AlertHost>
+      <ToastHost>
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#ffffff" } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)" />
       </Stack>
+      </ToastHost>
       </AlertHost>
       </KeyboardProvider>
     </GestureHandlerRootView>

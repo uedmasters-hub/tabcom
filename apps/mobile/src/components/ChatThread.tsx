@@ -5,7 +5,7 @@ import Animated, {
 } from "react-native-reanimated";
 import {
   Text, View, TextInput, Pressable, FlatList, Image, Linking,
-  Platform, ActivityIndicator, Alert, Keyboard,
+  Platform, ActivityIndicator, Keyboard, RefreshControl,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -30,6 +30,9 @@ import { isCallingAvailable } from "@/lib/call-manager";
 import { EmojiPicker } from "./EmojiPicker";
 import { useVoiceRecorder, ensureMicPermission, packageRecording, MAX_VOICE_SECONDS } from "@/lib/voice";
 import { captureWithCamera, pickFromLibrary, pickDocument, pickLocation } from "@/lib/media";
+import { toast } from "@/lib/toast";
+import { useAuth } from "@/stores/auth";
+import { reannounce } from "@/lib/realtime";
 import { alert } from "@/lib/alert";
 
 const ME = "me";
@@ -80,6 +83,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [switching, setSwitching] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
   const recorder = useVoiceRecorder();
   const recStartedAt = useRef(0);
@@ -89,6 +93,24 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
    *  switcher — the panel exists to change chats, so continuing to use
    *  this one means the user is done with it. */
   const dismissSwitcher = () => { switcherRef.current?.close(); closeAttachmentsIfOpen(); };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    const user = useAuth.getState().user;
+    if (user) {
+      reannounce({
+        username: user.username ?? "",
+        name: user.displayName ?? "",
+        color: user.avatarColor ?? "#7C6CF6",
+        presence: "online",
+        visibility: "public",
+      });
+    }
+    setTimeout(() => {
+      setRefreshing(false);
+      toast("Conversation refreshed", "success");
+    }, 800);
+  };
 
   const closeAttachmentsIfOpen = () => {
     if (attachProgress.value !== 0) {
@@ -495,6 +517,18 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble m={item} />}
           contentContainerStyle={{ paddingVertical: 14 }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={["#2563eb"]}
+              tintColor="#2563eb"
+              progressBackgroundColor="transparent"
+              style={{ backgroundColor: "transparent", elevation: 0 }}
+              title=""
+              titleColor="transparent"
+            />
+          }
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           onScrollBeginDrag={dismissSwitcher}
           onTouchStart={dismissSwitcher}
