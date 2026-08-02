@@ -801,7 +801,30 @@ export const useChatStore = create<ChatState>()((set, get) => {
     receiveConnections: (snapshot) => {
       const connections: Record<string, ConnectionStatus> = {};
       for (const item of snapshot) connections[item.username] = item.status;
-      set({ connections });
+
+      // A pending_in request that arrived while we were OFFLINE reaches
+      // us only through this snapshot (the live connect_request event
+      // fired to a socket that didn't exist yet). The snapshot carries
+      // status but no profile, so usePendingRequests — which filters
+      // contacts by status — would find no contact to show. Create a
+      // placeholder contact for every pending_in requester we don't
+      // already know, so the request is actually visible on open.
+      set((state) => {
+        const contacts = [...state.contacts];
+        for (const item of snapshot) {
+          if (item.status !== "pending_in") continue;
+          const contactId = `u-${item.username}`;
+          if (contacts.some((c) => c.id === contactId)) continue;
+          contacts.unshift({
+            id: contactId,
+            name: item.username,
+            username: item.username,
+            color: "#334155",
+            presence: "offline" as const,
+          });
+        }
+        return { connections, contacts };
+      });
     },
 
     receiveConnectRequest: (from) => {

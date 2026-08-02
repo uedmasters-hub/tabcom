@@ -1532,8 +1532,22 @@ async function ensureUniqueGuestUsername(
       return;
     }
 
+    // Persist the pending request FIRST — an offline recipient is the
+    // normal case, not a failure. This is what makes the request a
+    // durable queue entry: when the recipient next sends "hello", the
+    // sendConnections() snapshot replays it as pending_in. Skipping
+    // this (the old early-return) is why offline requests vanished.
+    pairs.set(key, { status: "pending", requester: from.username });
+
+    // The requester's own view: pending_out, always. Never an error —
+    // requesting an offline user is legitimate.
+    socket.emit("connect_update", { username: to, status: "pending_out" });
+
     const targets = publicSocketIdsFor(to);
     if (targets.length === 0) {
+      // Offline recipient — wake their device now. The request itself
+      // is already saved above and will surface on their next connect
+      // even if this push is missed.
       sendPushToUser(to, {
         title: from.name || from.username,
         body: "wants to connect on Tabcom",
@@ -1542,18 +1556,19 @@ async function ensureUniqueGuestUsername(
         threadId: `req:${from.username}`,
         data: { type: "connect_request", from: from.username },
       });
-      // NOTE: "connect_error" is a Socket.IO RESERVED event name — the
-      // server throws if it's emitted with a custom payload, which
-      // crashed the entire process for every connected user any time
-      // someone requested an offline/unknown/mistyped username. Renamed
-      // to a namespaced, non-reserved event.
-      socket.emit("connect_request_error", { to, reason: "unavailable" });
       return;
     }
 
-    pairs.set(key, { status: "pending", requester: from.username });
-
-    socket.emit("connect_update", { username: to, status: "pending_out" });
+    // Online recipient — relay live AND push, so a dozed JS thread
+    // (Android Doze) still gets woken. Client dedupes on the request.
+    sendPushToUser(to, {
+      title: from.name || from.username,
+      body: "wants to connect on Tabcom",
+      category: "requests",
+      route: "/notifications",
+      threadId: `req:${from.username}`,
+      data: { type: "connect_request", from: from.username },
+    });
     for (const id of targets) {
       io.to(id).emit("connect_request", { from });
     }
