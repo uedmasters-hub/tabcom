@@ -19,3 +19,4 @@ dev-online.sh
 deploy/.env.production
 apps/extension/.env.production
 apps/extension/tabcom-extension.zip
+apps/mobile/google-services.json

@@ -2222,6 +2222,30 @@ async function ensureUniqueGuestUsername(
 
   // ---- Boards (shared decision layer, scoped to community membership) --
 
+  // Push board activity to members who have no live socket. Online
+  // members already got the community_update relay; this is purely the
+  // offline path, mirroring how DMs and community messages behave.
+  function pushBoardActivity(
+    community: { id: string; name: string; members: Set<string> },
+    actorUsername: string,
+    actorName: string,
+    body: string,
+    itemKey: string
+  ): void {
+    for (const member of community.members) {
+      if (member === actorUsername) continue;
+      if (publicSocketIdsFor(member).length > 0) continue; // online → already relayed
+      sendPushToUser(member, {
+        title: community.name,
+        body,
+        category: "tabs",
+        route: `/community/${community.id}`,
+        threadId: `board:${community.id}:${itemKey}`,
+        data: { type: "board", communityId: community.id },
+      });
+    }
+  }
+
   socket.on(
     "board_add_item",
     ({
@@ -2498,6 +2522,14 @@ async function ensureUniqueGuestUsername(
           community: serializeCommunity(community, member),
         });
       }
+
+      pushBoardActivity(
+        community,
+        me.username,
+        me.name || me.username,
+        `${me.name || me.username} pinned a note on ${item.title}`,
+        item.canonicalKey
+      );
     }
   );
 
@@ -2597,6 +2629,14 @@ async function ensureUniqueGuestUsername(
           community: serializeCommunity(community, member),
         });
       }
+
+      pushBoardActivity(
+        community,
+        me.username,
+        me.name || me.username,
+        `${me.name || me.username} highlighted an area on ${item.title}`,
+        item.canonicalKey
+      );
     }
   );
 

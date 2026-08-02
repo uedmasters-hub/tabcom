@@ -779,13 +779,22 @@ export const useChatStore = create<ChatState>()((set, get) => {
       );
     },
     receiveDmError: (toUsername, reason) => {
-      systemNotice(
-        { contactId: `u-${toUsername}` },
+      const text =
         reason === "not_connected"
           ? `Not sent — you're not connected with @${toUsername}.`
-          : `Not delivered — @${toUsername} is unavailable.`,
-        false
-      );
+          : `Not delivered — @${toUsername} is unavailable.`;
+
+      // Don't stack an identical notice if the last message already
+      // says the same thing (e.g. duplicate error from the server).
+      const contactId = `u-${toUsername}`;
+      const conv = get().conversations.find((c) => c.contactId === contactId);
+      if (conv) {
+        const msgs = get().messages[conv.id] ?? [];
+        const last = msgs[msgs.length - 1];
+        if (last?.kind === "system" && last.text === text) return;
+      }
+
+      systemNotice({ contactId: `u-${toUsername}` }, text, false);
     },
 
     // ── Connections ──

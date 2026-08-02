@@ -3,8 +3,13 @@
     "expo-audio",
     "expo-router",
     "expo-splash-screen",
-    "expo-sqlite"
+    "expo-sqlite",
+    "expo-notifications"
   ],
+  "android": {
+    "package": "dev.tabcom.app",
+    "googleServicesFile": "./google-services.json"
+  },
   "extra": {
     "router": {},
     "eas": {

@@ -22,7 +22,7 @@ import { MorphAttachButton } from "./MorphAttachButton";
 import { ContactPickerSheet } from "./ContactPickerSheet";
 import { NoteComposer } from "./NoteComposer";
 import { LocationPreview } from "./LocationPreview";
-import { ConnectionRequestCard, PendingOutgoingCard } from "./ConnectionRequestCard";
+import { ConnectionRequestCard, PendingOutgoingCard, NotConnectedCard } from "./ConnectionRequestCard";
 import { VoiceBubble } from "./VoiceBubble";
 import { ChatSwitcherSheet, type ChatSwitcherHandle } from "./ChatSwitcherSheet";
 import { ChatSkeleton } from "./ChatSkeleton";
@@ -77,6 +77,9 @@ interface Props {
 export function ChatThread({ conversationId, peer, onHeaderAction, headerActionIcon, onSwitchConversation }: Props) {
   const router = useRouter();
   const [text, setText] = useState("");
+  // Guards against Android firing both onSubmitEditing AND the send
+  // button for a single user action, which sent every message twice.
+  const sendLock = useRef(false);
   const attachProgress = useSharedValue(0);
   const [attachOpen, setAttachOpen] = useState(false);
   /** Spring fully at rest in the Expanded state — the row's real close
@@ -195,7 +198,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const threadContact = contacts.find((c) => c.username === peer.username);
   const awaitingMe = isDm && connectionStatus === "pending_in" && !!threadContact;
   const awaitingThem = isDm && connectionStatus === "pending_out" && !!threadContact;
-  const gated = awaitingMe || awaitingThem;
+  // Not connected at all — no composer, only a "send request" card.
+  // This is the same boundary the server enforces; showing the composer
+  // here would let a user type a message that can only ever be rejected.
+  const notConnected =
+    isDm &&
+    (connectionStatus === "none" || connectionStatus === "declined") &&
+    !!threadContact;
+  const gated = awaitingMe || awaitingThem || notConnected;
 
   useEffect(() => {
     setSwitching(true);
@@ -218,12 +228,19 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   }, [conversationId, peer.username]);
 
   const send = () => {
-    dismissSwitcher();
     const t = text.trim();
     if (!t) return;
+    // Synchronous lock — a ref, not state, so the second call in the
+    // same tick sees it immediately. Released on the next frame once
+    // the input has cleared.
+    if (sendLock.current) return;
+    sendLock.current = true;
+
+    dismissSwitcher();
     useChatStore.getState().sendText(conversationId, t);
     setText("");
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+    setTimeout(() => { sendLock.current = false; }, 300);
   };
 
   const handleAttachment = async (action: AttachmentAction) => {
@@ -630,8 +647,13 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           >
             {awaitingMe && threadContact ? (
               <ConnectionRequestCard contact={threadContact} />
-            ) : threadContact ? (
+            ) : awaitingThem && threadContact ? (
               <PendingOutgoingCard contact={threadContact} />
+            ) : notConnected && threadContact ? (
+              <NotConnectedCard
+                contact={threadContact}
+                declined={connectionStatus === "declined"}
+              />
             ) : null}
           </View>
         ) : recording ? (
