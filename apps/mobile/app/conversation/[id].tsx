@@ -12,12 +12,43 @@ export default function ConversationScreen() {
   // The switcher swaps threads in place — the route param is only the
   // STARTING conversation, not the source of truth thereafter.
   const [activeId, setActiveId] = useState(id);
-  useEffect(() => { if (id) setActiveId(id); }, [id]);
+
   const conversation = useChatStore((s) => s.conversations.find((c) => c.id === activeId));
   const contacts = useChatStore((s) => s.contacts);
   const communities = useChatStore((s) => s.communities);
+  const startConversation = useChatStore((s) => s.startConversation);
+
+  // Deep links from push notifications route to /conversation/u-<username>
+  // (a CONTACT id), but conversation `.id`s are random uids the server
+  // can't know. Resolve the incoming param: if it already matches a
+  // conversation use it; if it's a contact id (u-… / c-…) ensure the
+  // conversation exists and switch to its real id. This is what turns a
+  // tapped notification into an open thread instead of "not found".
+  useEffect(() => {
+    if (!id) return;
+    const state = useChatStore.getState();
+    const direct = state.conversations.find((c) => c.id === id);
+    if (direct) {
+      setActiveId(direct.id);
+      return;
+    }
+    if (id.startsWith("u-") || id.startsWith("c-")) {
+      // ensureConversation creates the thread even if the contact isn't
+      // in the roster yet (cold start) — the header fills in once the
+      // roster syncs, which is far better than a dead-end screen.
+      setActiveId(startConversation(id));
+    }
+  }, [id, startConversation]);
+
+  // While a contact-id deep link is resolving into a real conversation,
+  // don't flash "not found".
+  const resolving =
+    !conversation && !!id && (id.startsWith("u-") || id.startsWith("c-"));
 
   if (!conversation || !activeId) {
+    if (resolving) {
+      return <SafeAreaView className="flex-1 bg-background" />;
+    }
     return (
       <SafeAreaView className="flex-1 bg-background items-center justify-center">
         <Text className="text-muted text-base">Conversation not found</Text>

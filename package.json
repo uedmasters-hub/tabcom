@@ -20,5 +20,10 @@
     "turbo": "^2.10.2",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.1"
+  },
+  "dependencies": {
+    "expo": "~57.0.7",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
   }
 }

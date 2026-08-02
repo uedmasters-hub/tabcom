@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
-import { Text, View, Pressable, FlatList, RefreshControl } from "react-native";
+import { Text, View, Pressable, FlatList, RefreshControl, StyleSheet } from "react-native";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useChatStore } from "@/stores/chat";
@@ -16,6 +17,7 @@ import { toast } from "@/lib/toast";
 import { NoteWall } from "@/components/NoteWall";
 import { NoteSandbox } from "@/components/NoteSandbox";
 import type { NoteCard } from "@/stores/notes";
+import { ChatListSkeleton } from "@/components/ChatListSkeleton";
 
 const presenceDot: Record<string, string> = {
   online: "#16a34a",
@@ -141,6 +143,7 @@ export default function ChatScreen() {
         search={query}
         onSearch={setQuery}
       />
+      <View className="flex-1">
       {filtered.length === 0 ? (
         <View className="flex-1 items-center justify-center px-10">
           <Ionicons name="chatbubbles-outline" size={56} color="#cbd5e1" />
@@ -247,6 +250,23 @@ export default function ChatScreen() {
           }}
         />
       )}
+
+      {/* Pull-to-refresh skeleton. Opaque overlay so the shimmer
+          replaces the live rows while refreshing, then fades out to
+          reveal the refreshed list. pointerEvents="none" keeps the
+          RefreshControl gesture underneath fully functional. */}
+      {refreshing && (
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          exiting={FadeOut.duration(320)}
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+          className="bg-background"
+        >
+          <ChatListSkeleton />
+        </Animated.View>
+      )}
+      </View>
 
       <NoteSandbox
         note={openNote}

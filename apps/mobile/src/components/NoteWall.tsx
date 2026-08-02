@@ -28,8 +28,17 @@ interface Props {
 }
 
 export function NoteWall({ onOpen }: Props) {
-  const notes = useNotesStore((s) => s.notes);
+  const allNotes = useNotesStore((s) => s.notes);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+
+  // The wall only ever shows incoming notes, each once. Filtering here
+  // as well as in the store keeps a stray outgoing/duplicate from ever
+  // rendering (and from tripping a duplicate React key) between a bad
+  // write and the next hydrate.
+  const seen = new Set<string>();
+  const notes = allNotes.filter(
+    (n) => !n.outgoing && !seen.has(n.id) && seen.add(n.id)
+  );
 
   if (notes.length === 0) return null;
 

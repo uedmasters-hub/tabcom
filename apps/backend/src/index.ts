@@ -3328,20 +3328,15 @@ async function ensureUniqueGuestUsername(
 
     const typingTargets = publicSocketIdsFor(to);
 
-    // Always push — belt-and-suspenders with the live socket relay.
-    // push.ts throttle (5s) prevents battery drain. The mobile client
-    // deduplicates: if the socket delivers first the push is consumed
-    // silently; if the push arrives first (stale socket, Android dozed)
-    // the typing indicator appears instantly.
-    sendPushToUser(to, {
-      title: from.name || from.username,
-      body: "is typing…",
-      category: "typing",
-      route: `/conversation/u-${from.username}`,
-      threadId: `dm:${from.username}`,
-      data: { type: "typing", from: from.username, fromName: from.name || from.username },
-    });
-
+    // Typing is SOCKET-ONLY by design. We must never push it:
+    //  - Push (FCM/Expo) has seconds of latency and no ordering, so a
+    //    pushed "is typing…" routinely arrives stale — the code's own
+    //    comment above notes a stale typing indicator is misleading.
+    //  - It clutters the notification tray (a persistent "X is typing…"
+    //    entry), wakes the device, and drains battery for an ephemeral
+    //    signal that is meaningless once the socket is asleep.
+    // If the recipient's socket is stale/asleep there is no live typing
+    // to convey; we simply relay to any connected sockets and stop.
     for (const id of typingTargets) {
       io.to(id).emit("typing", { from: from.username });
     }

@@ -94,7 +94,14 @@ export const useNotesStore = create<NotesState>((set, get) => ({
   notes: [],
 
   hydrate: (notes) => {
-    set({ notes: [...notes].sort((a, b) => b.sentAt - a.sentAt) });
+    // Defensive de-dupe: a note id must appear at most once, and
+    // outgoing notes never belong on the wall. This guarantees no
+    // repeated cards even if a stale or echoed row slips through.
+    const seen = new Set<string>();
+    const clean = notes
+      .filter((n) => !n.outgoing && !seen.has(n.id) && seen.add(n.id))
+      .sort((a, b) => b.sentAt - a.sentAt);
+    set({ notes: clean });
   },
 
   addIncoming: (from, message, conversationId) => {

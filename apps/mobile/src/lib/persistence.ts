@@ -198,27 +198,44 @@ export function hydrateFromLocalStorage(): void {
   // restored from disk or every relaunch would re-blur old notes.
   const dbNotes = getNotes();
   if (dbNotes.length > 0) {
-    import("@/stores/notes")
-      .then(({ useNotesStore }) =>
-        useNotesStore.getState().hydrate(
-          dbNotes.map((n) => ({
-            id: n.id,
-            conversationId: n.conversation_id,
-            contactId: n.contact_id,
-            fromUsername: n.from_username,
-            fromName: n.from_name,
-            fromColor: n.from_color,
-            text: n.text,
-            imageUri: n.image_uri ?? undefined,
-            sentAt: n.sent_at,
-            readAt: n.read_at ?? undefined,
-            outgoing: n.outgoing === 1,
-          }))
+    // The wall is the RECIPIENT's view of a status, so outgoing notes
+    // must never appear on it. Older builds mirrored the sender's own
+    // note here (addOutgoing) before that was removed; those stale rows
+    // are exactly the "You" cards — and their repeats — that show up on
+    // the wall today. Drop them from hydration AND purge them from disk
+    // so they can't come back on the next launch.
+    const outgoing = dbNotes.filter((n) => n.outgoing === 1);
+    const incoming = dbNotes.filter((n) => n.outgoing !== 1);
+
+    if (outgoing.length > 0) {
+      import("@/lib/local-storage")
+        .then(({ deleteNote }) => outgoing.forEach((n) => deleteNote(n.id)))
+        .catch(() => { /* best-effort cleanup */ });
+    }
+
+    if (incoming.length > 0) {
+      import("@/stores/notes")
+        .then(({ useNotesStore }) =>
+          useNotesStore.getState().hydrate(
+            incoming.map((n) => ({
+              id: n.id,
+              conversationId: n.conversation_id,
+              contactId: n.contact_id,
+              fromUsername: n.from_username,
+              fromName: n.from_name,
+              fromColor: n.from_color,
+              text: n.text,
+              imageUri: n.image_uri ?? undefined,
+              sentAt: n.sent_at,
+              readAt: n.read_at ?? undefined,
+              outgoing: n.outgoing === 1,
+            }))
+          )
         )
-      )
-      .catch((err) => {
-        if (__DEV__) console.warn("[tabcom] note hydration failed:", err);
-      });
+        .catch((err) => {
+          if (__DEV__) console.warn("[tabcom] note hydration failed:", err);
+        });
+    }
   }
 
   // ── Communities ──

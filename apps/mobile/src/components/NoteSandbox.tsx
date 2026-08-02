@@ -54,6 +54,19 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
     setReply("");
   }, [note?.id]);
 
+  // Push the sheet up by exactly the keyboard height. keyboardHeight
+  // is negative when open (reanimated convention), so translateY by it
+  // lifts the sheet to sit right above the keyboard.
+  //
+  // This hook (useAnimatedStyle calls useRef internally) MUST run on
+  // every render, so it has to sit ABOVE the `!note` early return.
+  // Otherwise the hook count changes as the sandbox opens/closes and
+  // React throws a Rules-of-Hooks error. It only reads keyboardHeight,
+  // never `note`, so running it when note is null is harmless.
+  const sheetShift = useAnimatedStyle(() => ({
+    transform: [{ translateY: keyboardHeight.value }],
+  }));
+
   if (!note) return null;
 
   const send = () => {
@@ -73,13 +86,6 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
       setSending(false);
     }
   };
-
-  // Push the sheet up by exactly the keyboard height. keyboardHeight
-  // is negative when open (reanimated convention), so translateY by it
-  // lifts the sheet to sit right above the keyboard.
-  const sheetShift = useAnimatedStyle(() => ({
-    transform: [{ translateY: keyboardHeight.value }],
-  }));
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="box-none">

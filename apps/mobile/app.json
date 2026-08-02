@@ -1,21 +1,95 @@
 {
-  "plugins": [
-    "expo-audio",
-    "expo-router",
-    "expo-splash-screen",
-    "expo-sqlite",
-    "expo-notifications"
-  ],
-  "android": {
-    "package": "dev.tabcom.app",
-    "googleServicesFile": "./google-services.json"
-  },
-  "extra": {
-    "router": {},
-    "eas": {
-      "projectId": "f8ae74c2-0ab2-4cc5-9a21-2819f45d97e7"
+  "expo": {
+    "name": "Tabcom",
+    "slug": "tabcommobile",
+    "owner": "ramsmandal",
+    "version": "0.2.0",
+    "scheme": "tabcom",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "icon": "./assets/images/icon.png",
+    "android": {
+      "package": "dev.tabcom.app",
+      "versionCode": 3,
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png",
+        "backgroundColor": "#2563eb"
+      },
+      "permissions": [
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "WAKE_LOCK"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "dev.tabcom.app",
+      "supportsTablet": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Tabcom needs photo access so you can share images and videos in chats.",
+          "cameraPermission": "Tabcom needs camera access so you can capture photos and videos in chats."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Tabcom needs camera access to capture photos and videos.",
+          "microphonePermission": "Tabcom needs microphone access to record video with sound and make calls."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Tabcom uses your location only when you choose to share it in a chat."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Tabcom needs microphone access to record voice notes and make calls."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/android-icon-monochrome.png",
+          "color": "#2563eb",
+          "defaultChannel": "messages"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f8ae74c2-0ab2-4cc5-9a21-2819f45d97e7"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
     }
-  },
-  "owner": "ramsmandal",
-  "slug": "tabcommobile"
+  }
 }

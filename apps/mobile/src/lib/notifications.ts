@@ -96,13 +96,26 @@ export async function configureNotifications(): Promise<void> {
       const category = data?.category;
       const isTyping = category === "typing";
 
-      // Typing: show banner (silent, no badge) so user sees "X is typing…"
-      // Messages: always show with sound
+      // Typing is a live, socket-only signal — it must NEVER surface as a
+      // notification. The server no longer pushes it, but older/stale
+      // servers might; suppress it entirely here so a pushed "is typing…"
+      // can never land in the tray, play a sound, or bump the badge.
+      if (isTyping) {
+        return {
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
+
+      // Everything else (messages, calls, requests, communities, tabs)
+      // shows a banner with sound.
       return {
         shouldShowBanner: true,
-        shouldShowList: !isTyping,
-        shouldPlaySound: !isTyping,
-        shouldSetBadge: !isTyping,
+        shouldShowList: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
       };
     },
   });
@@ -217,16 +230,14 @@ export function attachForegroundPushBridge(): () => void {
     const data = notification?.request?.content?.data;
     if (!data) return;
 
+    // Typing is delivered exclusively over the live socket. A pushed
+    // typing signal is always stale by the time it arrives, so we never
+    // feed it into the store here — it is intentionally ignored.
+    if (data.category === "typing") return;
+
     // Lazy import to avoid circular deps (notifications ↔ stores)
     const { useChatStore } = require("@/stores/chat");
     const store = useChatStore.getState();
-
-    if (data.category === "typing" && data.from) {
-      // Feed typing indicator into the store — same path as the
-      // socket "typing" event. The 3s auto-clear in receiveTyping
-      // handles expiry.
-      store.receiveTyping(data.from);
-    }
 
     if (data.category === "messages" && data.from && data.messageId) {
       // Deduplicate: if the socket already delivered this message,
