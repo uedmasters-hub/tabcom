@@ -572,15 +572,10 @@ export const useChatStore = create<ChatState>()((set, get) => {
       set((state) => appendMessage(state, conversationId, message, false));
       deliver(conversationId, message);
 
-      // Mirror onto my own wall so I can see what's still live.
-      const conv = get().conversations.find((c) => c.id === conversationId);
-      if (conv?.contactId) {
-        import("@/stores/notes")
-          .then(({ useNotesStore }) =>
-            useNotesStore.getState().addOutgoing(message, conversationId, conv.contactId!)
-          )
-          .catch(() => { /* wall is best-effort */ });
-      }
+      // No wall mirror for the sender. A note is a "status" the
+      // RECIPIENT sees on their chat list; the sender already has a
+      // full record of it in the conversation thread. Showing it on
+      // your own wall too was redundant and confusing.
     },
 
     editMessage: (conversationId, messageId, text) => {

@@ -56,5 +56,6 @@
     "overrides": {
       "react-native-worklets": "0.10.2"
     }
-  }
+  },
+  "packageManager": "pnpm@10.15.0"
 }

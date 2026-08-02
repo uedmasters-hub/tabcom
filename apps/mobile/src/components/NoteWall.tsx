@@ -18,23 +18,6 @@ import { useNotesStore, type NoteCard } from "@/stores/notes";
 import { color, radius, space, elevation } from "@/theme";
 import { formatListTime } from "@/lib/format-time";
 
-// ── Blur, guarded ───────────────────────────────────────────────────
-
-let blurMod: any = null;
-let blurChecked = false;
-
-function getBlurView(): any | null {
-  if (!blurChecked) {
-    blurChecked = true;
-    try {
-      blurMod = require("expo-blur").BlurView;
-    } catch {
-      blurMod = null;
-    }
-  }
-  return blurMod;
-}
-
 // ── Geometry ────────────────────────────────────────────────────────
 
 const CARD_W = 172;
@@ -94,7 +77,6 @@ function NoteCardView({
 }) {
   const markRead = useNotesStore((s) => s.markRead);
   const dismiss = useNotesStore((s) => s.dismiss);
-  const BlurView = getBlurView();
 
   // Outgoing notes are mine — never hidden. Incoming stay veiled
   // until explicitly revealed.
@@ -124,19 +106,32 @@ function NoteCardView({
 
         {/* Body */}
         <View style={styles.body}>
-          {note.imageUri ? (
-            <Image
-              source={{ uri: note.imageUri }}
-              style={styles.image}
-              resizeMode="cover"
-            />
-          ) : null}
-          <Text
-            style={[styles.text, note.imageUri ? styles.textWithImage : null]}
-            numberOfLines={note.imageUri ? 2 : 5}
-          >
-            {note.text}
-          </Text>
+          {hidden ? (
+            /* Hidden: render NOTHING real. A veil over live text can
+               leak (blur module missing, low opacity, screenshots).
+               The only safe hide is to not draw the content at all. */
+            <View style={styles.maskLines}>
+              <View style={[styles.maskLine, { width: "85%" }]} />
+              <View style={[styles.maskLine, { width: "60%" }]} />
+              <View style={[styles.maskLine, { width: "72%" }]} />
+            </View>
+          ) : (
+            <>
+              {note.imageUri ? (
+                <Image
+                  source={{ uri: note.imageUri }}
+                  style={styles.image}
+                  resizeMode="cover"
+                />
+              ) : null}
+              <Text
+                style={[styles.text, note.imageUri ? styles.textWithImage : null]}
+                numberOfLines={note.imageUri ? 2 : 5}
+              >
+                {note.text}
+              </Text>
+            </>
+          )}
         </View>
 
         {/* Footer */}
@@ -147,27 +142,16 @@ function NoteCardView({
           )}
         </View>
 
-        {/* Privacy veil */}
-        {hidden &&
-          (BlurView ? (
-            <BlurView
-              intensity={38}
-              tint="light"
-              style={StyleSheet.absoluteFill}
-            >
-              <View style={styles.veilCentre}>
-                <Ionicons name="eye-outline" size={22} color={color.ink} />
-                <Text style={styles.veilLabel}>Tap to read</Text>
-              </View>
-            </BlurView>
-          ) : (
-            <View style={[StyleSheet.absoluteFill, styles.veilFallback]}>
-              <View style={styles.veilCentre}>
-                <Ionicons name="eye-outline" size={22} color={color.ink} />
-                <Text style={styles.veilLabel}>Tap to read</Text>
-              </View>
+        {/* Privacy veil — text is already masked above, this is just
+            the tap affordance. Fully opaque so nothing shows through. */}
+        {hidden && (
+          <View style={[StyleSheet.absoluteFill, styles.veilFallback]}>
+            <View style={styles.veilCentre}>
+              <Ionicons name="eye-outline" size={22} color={color.ink} />
+              <Text style={styles.veilLabel}>Tap to read</Text>
             </View>
-          ))}
+          </View>
+        )}
       </Pressable>
 
       {/* Contextual menu */}
@@ -298,9 +282,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-  /** No native blur available — a heavy scrim still hides content. */
+  /** No native blur needed — text is masked, so an opaque scrim. */
   veilFallback: {
-    backgroundColor: "rgba(248,250,252,0.94)",
+    backgroundColor: color.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  maskLines: {
+    gap: 9,
+    width: "100%",
+  },
+  maskLine: {
+    height: 13,
+    borderRadius: 7,
+    backgroundColor: color.border,
   },
   menuScrim: {
     position: "absolute",

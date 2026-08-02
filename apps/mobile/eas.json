@@ -1,24 +1,35 @@
 {
   "cli": {
     "version": ">= 21.3.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "remote",
+    "requireCommit": false
   },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "android": {
-        "buildType": "apk"
+      "android": { "buildType": "apk" },
+      "node": "22.19.0",
+      "env": {
+        "EAS_NO_VCS": "1",
+        "npm_config_node_linker": "hoisted"
       }
     },
     "preview": {
       "distribution": "internal",
-      "android": {
-        "buildType": "apk"
+      "android": { "buildType": "apk" },
+      "node": "22.19.0",
+      "env": {
+        "EAS_NO_VCS": "1",
+        "npm_config_node_linker": "hoisted"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "node": "22.19.0",
+      "env": {
+        "npm_config_node_linker": "hoisted"
+      }
     }
   },
   "submit": {

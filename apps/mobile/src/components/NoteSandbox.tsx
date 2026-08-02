@@ -10,10 +10,13 @@
 
 import { useEffect, useState } from "react";
 import {
-  Modal, View, Text, Pressable, Image, TextInput,
-  ScrollView, StyleSheet, Platform,
+  View, Text, Pressable, Image, TextInput,
+  ScrollView, StyleSheet,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import Animated, {
+  useAnimatedStyle,
+} from "react-native-reanimated";
+import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useNotesStore, type NoteCard } from "@/stores/notes";
@@ -31,6 +34,11 @@ interface Props {
 
 export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
   const insets = useSafeAreaInsets();
+  // Tracks the real keyboard height on the UI thread. Works because
+  // this overlay lives INSIDE the app's KeyboardProvider tree — a
+  // native <Modal> renders in a separate window the provider can't
+  // measure, which is why the keyboard used to overflow the sheet.
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
   const markRead = useNotesStore((s) => s.markRead);
   const dismiss = useNotesStore((s) => s.dismiss);
   const [reply, setReply] = useState("");
@@ -66,21 +74,19 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
     }
   };
 
+  // Push the sheet up by exactly the keyboard height. keyboardHeight
+  // is negative when open (reanimated convention), so translateY by it
+  // lifts the sheet to sit right above the keyboard.
+  const sheetShift = useAnimatedStyle(() => ({
+    transform: [{ translateY: keyboardHeight.value }],
+  }));
+
   return (
-    <Modal
-      visible
-      transparent
-      statusBarTranslucent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <View style={styles.overlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={styles.centre}
-        >
+        <Animated.View style={[styles.centre, sheetShift]}>
           <View style={[styles.sheet, { marginBottom: insets.bottom }]}>
             {/* Header */}
             <View style={styles.header}>
@@ -177,9 +183,9 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
               </View>
             )}
           </View>
-        </KeyboardAvoidingView>
+        </Animated.View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
