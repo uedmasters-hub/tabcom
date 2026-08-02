@@ -20,3 +20,9 @@ deploy/.env.production
 apps/extension/.env.production
 apps/extension/tabcom-extension.zip
 apps/mobile/google-services.json
+
+# stray root-level prebuild artifacts — Expo lives in apps/mobile
+/app.json
+/tsconfig.json
+/android/
+/ios/
