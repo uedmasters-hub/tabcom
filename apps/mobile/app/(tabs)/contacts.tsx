@@ -139,6 +139,7 @@ export default function ContactsScreen() {
               color={contact.color}
               size="lg"
               presence={contact.presence}
+              photo={contact.photo}
             />
           </View>
           <View className="flex-1">

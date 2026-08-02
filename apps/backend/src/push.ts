@@ -182,6 +182,7 @@ export function describeMessageKind(kind: string, text?: string): string {
     case "file": return "📎 File";
     case "location": return "📍 Location";
     case "contact": return "👤 Contact";
+    case "note": return "📝 Note";
     default: return (text ?? "").slice(0, 160) || "New message";
   }
 }

@@ -7,6 +7,7 @@ import Animated, {
 import { Ionicons } from "@expo/vector-icons";
 
 export type AttachmentAction =
+  | "note"
   | "camera-photo"
   | "camera-video"
   | "library"
@@ -57,10 +58,13 @@ const CHIPS: Array<{
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
 }> = [
-  { id: "camera-photo", icon: "camera-outline", label: "Camera" },
-  { id: "camera-video", icon: "videocam-outline", label: "Video" },
+  // Notes lead — the newest capability and the one people reach for
+  // when they want to be seen rather than just heard.
+  { id: "note", icon: "reader-outline", label: "Note" },
   { id: "library", icon: "image-outline", label: "Images" },
   { id: "document", icon: "document-outline", label: "Files" },
+  { id: "camera-photo", icon: "camera-outline", label: "Camera" },
+  { id: "camera-video", icon: "videocam-outline", label: "Video" },
   { id: "location", icon: "location-outline", label: "Location" },
   { id: "contact", icon: "person-outline", label: "Contacts" },
 ];

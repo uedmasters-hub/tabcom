@@ -44,6 +44,7 @@ import {
   getMessages as dbGetMessages,
   getConnections,
   getAllCommunities,
+  getNotes,
   getBoardItems,
   getAnnotations,
   getBoardComments,
@@ -190,6 +191,34 @@ export function hydrateFromLocalStorage(): void {
     const connections: Record<string, ConnectionStatus> = {};
     for (const c of dbConns) connections[c.username] = c.status as ConnectionStatus;
     useChatStore.setState({ connections });
+  }
+
+  // ── Notes (the wall) ──
+  // Read state and dismissals live only here, so the wall must be
+  // restored from disk or every relaunch would re-blur old notes.
+  const dbNotes = getNotes();
+  if (dbNotes.length > 0) {
+    import("@/stores/notes")
+      .then(({ useNotesStore }) =>
+        useNotesStore.getState().hydrate(
+          dbNotes.map((n) => ({
+            id: n.id,
+            conversationId: n.conversation_id,
+            contactId: n.contact_id,
+            fromUsername: n.from_username,
+            fromName: n.from_name,
+            fromColor: n.from_color,
+            text: n.text,
+            imageUri: n.image_uri ?? undefined,
+            sentAt: n.sent_at,
+            readAt: n.read_at ?? undefined,
+            outgoing: n.outgoing === 1,
+          }))
+        )
+      )
+      .catch((err) => {
+        if (__DEV__) console.warn("[tabcom] note hydration failed:", err);
+      });
   }
 
   // ── Communities ──
@@ -339,9 +368,13 @@ export function startPersistence(): () => void {
                 reactions: m.reactions ? JSON.stringify(m.reactions) : undefined,
               });
 
-              // Save media file async (don't block the store)
+              // Save media file async (don't block the store).
+              // MUST have a catch — an unhandled rejection here is
+              // fatal in React Native, not just a console warning.
               if (m.dataUrl?.startsWith("data:")) {
-                void saveMediaFile(m.id, m.dataUrl, m.kind, convId);
+                saveMediaFile(m.id, m.dataUrl, m.kind, convId).catch((err) => {
+                  if (__DEV__) console.warn("[tabcom-persist] media save failed:", err);
+                });
               }
 
               // Log activity (no content — just that it happened)

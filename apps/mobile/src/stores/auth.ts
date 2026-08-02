@@ -110,6 +110,10 @@ export const useAuth = create<AuthState>((set, get) => ({
       void auth.endGuestSession(guest.username);
       await SecureStore.deleteItemAsync(GUEST_KEY);
       // Guests: wipe ALL local data — nothing should survive session end.
+      // The note wall is in-memory as well as on disk, so clear both.
+      await import("@/stores/notes")
+        .then(({ useNotesStore }) => useNotesStore.getState().clear())
+        .catch(() => { /* nothing to clear */ });
       // Registered users' data about this guest stays in THEIR local
       // storage (messages, media, etc.) until they manually clear it.
       await clearAllLocalData();

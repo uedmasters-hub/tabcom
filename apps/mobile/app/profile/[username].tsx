@@ -102,6 +102,7 @@ export default function ProfileScreen() {
             color={contact.color}
             size="xl"
             presence={contact.presence}
+            photo={contact.photo}
           />
           <Text className="text-ink font-bold text-[26px] mt-5">
             {contact.alias ?? contact.name}

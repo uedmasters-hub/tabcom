@@ -11,6 +11,7 @@ import { useAuth } from "./auth";
 import { useChatStore } from "./chat";
 import { usePresence } from "./presence";
 import { REALTIME_URL } from "@/lib/config";
+import { router } from "expo-router";
 import {
   initRealtime,
   disconnectRealtime,
@@ -74,7 +75,37 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       onCommunityReaction: (cid, from, id, emoji) => useChatStore.getState().receiveCommunityReaction(cid, from, id, emoji),
       onCommunityError: () => {},
 
-      // Calls — routed directly into the call manager
+      // ── Calls ──
+      // Every incoming offer/answer/ice/reject/end goes straight into
+      // the call manager, which owns the RTCPeerConnection lifecycle.
+      // Without this the callee never learns a call exists and the
+      // caller rings forever.
+      onCallSignal: (payload) => {
+        import("@/lib/call-manager").then(({ handleCallSignal }) => {
+          handleCallSignal(payload);
+
+          // An incoming OFFER must also bring the call screen up —
+          // the manager only tracks state, it can't navigate.
+          if (payload.signal.kind === "offer") {
+            const name = encodeURIComponent(payload.from.name || payload.from.username);
+            const color = encodeURIComponent(payload.from.color || "#2563eb");
+            const video = payload.signal.video ? "true" : "false";
+            router.push(
+              `/call/${payload.from.username}?peerName=${name}&peerColor=${color}&role=callee&video=${video}` as never
+            );
+          }
+        });
+      },
+      onCallError: (to, reason) => {
+        import("@/lib/toast").then(({ toast }) => {
+          toast(
+            reason === "not_connected"
+              ? "You need to be connected to call this person"
+              : "Call failed",
+            "error"
+          );
+        });
+      },
     };
 
     initRealtime(me, handlers, REALTIME_URL, auth.sessionToken ?? undefined);

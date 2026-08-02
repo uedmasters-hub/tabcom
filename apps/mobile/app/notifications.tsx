@@ -29,6 +29,12 @@ export default function NotificationsScreen() {
     return contact?.color ?? "#2563eb";
   };
 
+  // Communities have no photo — only DMs resolve to a contact.
+  const photoOf = (c: (typeof conversations)[number]) => {
+    if (c.kind === "community") return undefined;
+    return contacts.find((x) => x.id === c.contactId)?.photo;
+  };
+
   return (
     <View className="flex-1 bg-background">
       <SecondaryHeader title="Notifications" />
@@ -57,7 +63,7 @@ export default function NotificationsScreen() {
                   }}
                   className="flex-row items-center gap-3.5 mb-4 active:opacity-70"
                 >
-                  <Avatar name={c.name} color={c.color} size="md" />
+                  <Avatar name={c.name} color={c.color} size="md" photo={c.photo} />
                   <View className="flex-1">
                     <Text className="text-ink font-bold text-[16px]">{c.name}</Text>
                     <Text className="text-muted text-[14px]">@{c.username}</Text>
@@ -89,7 +95,7 @@ export default function NotificationsScreen() {
                 className="flex-row items-center py-3 active:bg-surface rounded-xl px-1"
               >
                 <View className="mr-3.5">
-                  <Avatar name={titleOf(c)} color={colorOf(c)} size="md" />
+                  <Avatar name={titleOf(c)} color={colorOf(c)} size="md" photo={photoOf(c)} />
                 </View>
                 <View className="flex-1">
                   <Text className="text-ink font-bold text-[16px]">{titleOf(c)}</Text>

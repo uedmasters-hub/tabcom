@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Text, View, Pressable, FlatList, RefreshControl } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,6 +13,9 @@ import { formatListTime } from "@/lib/format-time";
 import type { Conversation, Message } from "@tabcom/shared";
 import { SwipeableRow } from "@/components/SwipeableRow";
 import { toast } from "@/lib/toast";
+import { NoteWall } from "@/components/NoteWall";
+import { NoteSandbox } from "@/components/NoteSandbox";
+import type { NoteCard } from "@/stores/notes";
 
 const presenceDot: Record<string, string> = {
   online: "#16a34a",
@@ -26,8 +29,12 @@ export default function ChatScreen() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [openNote, setOpenNote] = useState<NoteCard | null>(null);
+  const refreshLock = useRef(false);
 
   const onRefresh = () => {
+    if (refreshLock.current) return;
+    refreshLock.current = true;
     setRefreshing(true);
     const user = useAuth.getState().user;
     if (user) {
@@ -40,6 +47,7 @@ export default function ChatScreen() {
       });
     }
     setTimeout(() => {
+      refreshLock.current = false;
       setRefreshing(false);
       toast("Chat list refreshed", "success");
     }, 800);
@@ -106,6 +114,9 @@ export default function ChatScreen() {
     } else if (m.kind === "file") {
       icon = <Ionicons name="document" size={16} color="#64748b" style={{ marginRight: 4 }} />;
       label = m.fileName ?? "File";
+    } else if (m.kind === "note") {
+      icon = <Ionicons name="reader" size={16} color="#2563eb" style={{ marginRight: 4 }} />;
+      label = m.text || "Note";
     } else if (m.kind === "link") {
       icon = <Ionicons name="link" size={16} color="#64748b" style={{ marginRight: 4 }} />;
       label = m.url ?? "Link";
@@ -157,7 +168,9 @@ export default function ChatScreen() {
             />
           }
           ListHeaderComponent={
-            pending.length > 0 ? (
+            <>
+            <NoteWall onOpen={setOpenNote} />
+            {pending.length > 0 ? (
               <View className="px-5 pt-1 pb-3">
                 {pending.map((c) => (
                   <View key={c.id} className="bg-surface rounded-3xl px-4 py-4 mb-2.5">
@@ -169,7 +182,7 @@ export default function ChatScreen() {
                       className="flex-row items-center mb-3.5 active:opacity-70"
                     >
                       <View className="mr-3.5">
-                        <Avatar name={c.name} color={c.color} size="md" />
+                        <Avatar name={c.name} color={c.color} size="md" photo={c.photo} />
                       </View>
                       <View className="flex-1">
                         <Text className="text-ink font-bold text-[16px]">{c.name}</Text>
@@ -180,7 +193,8 @@ export default function ChatScreen() {
                   </View>
                 ))}
               </View>
-            ) : null
+            ) : null}
+            </>
           }
           renderItem={({ item: c }) => {
             const contact = c.kind === "dm" ? contacts.find((x) => x.id === c.contactId) : null;
@@ -210,6 +224,7 @@ export default function ChatScreen() {
                       color={contact?.color ?? "#2563eb"}
                       size="lg"
                       presence={contact?.presence}
+                      photo={contact?.photo}
                     />
                   </View>
                   <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
@@ -232,6 +247,15 @@ export default function ChatScreen() {
           }}
         />
       )}
+
+      <NoteSandbox
+        note={openNote}
+        onClose={() => setOpenNote(null)}
+        onOpenConversation={(conversationId) => {
+          useChatStore.getState().openConversation(conversationId);
+          router.push(`/conversation/${conversationId}` as any);
+        }}
+      />
     </View>
   );
 }

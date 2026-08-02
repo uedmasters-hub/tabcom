@@ -1,4 +1,4 @@
-import { View, Text } from "react-native";
+import { View, Text, Image } from "react-native";
 import { avatarSize, color, presenceColor, radius } from "@/theme";
 
 export const AVATAR_SIZES = avatarSize;
@@ -10,14 +10,17 @@ interface Props {
   size?: AvatarSize;
   presence?: string;
   square?: boolean;
+  /** Profile photo data URL or remote URI. Renders as image when set. */
+  photo?: string;
 }
 
 export function Avatar({
-  name, color: fill = color.primary, size = "lg", presence, square,
+  name, color: fill = color.primary, size = "lg", presence, square, photo,
 }: Props) {
   const px = avatarSize[size];
   const dot = presence ? presenceColor[presence] : undefined;
   const dotPx = Math.max(10, Math.round(px * 0.3));
+  const borderRadius = square ? px * 0.28 : radius.full;
 
   return (
     <View style={{ width: px, height: px, position: "relative" }}>
@@ -26,20 +29,28 @@ export function Avatar({
           width: px,
           height: px,
           backgroundColor: fill,
-          borderRadius: square ? px * 0.28 : radius.full,
+          borderRadius,
           alignItems: "center",
           justifyContent: "center",
+          overflow: "hidden",
         }}
       >
-        <Text
-          style={{
-            fontSize: Math.round(px * 0.4),
-            color: color.white,
-            fontWeight: "700",
-          }}
-        >
-          {(name || "?").slice(0, 1).toUpperCase()}
-        </Text>
+        {photo ? (
+          <Image
+            source={{ uri: photo }}
+            style={{ width: px, height: px, borderRadius }}
+          />
+        ) : (
+          <Text
+            style={{
+              fontSize: Math.round(px * 0.4),
+              color: color.white,
+              fontWeight: "700",
+            }}
+          >
+            {(name || "?").slice(0, 1).toUpperCase()}
+          </Text>
+        )}
       </View>
       {dot && (
         <View

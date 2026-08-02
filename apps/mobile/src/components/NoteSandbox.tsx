@@ -1,0 +1,310 @@
+/**
+ * NoteSandbox — read a note and reply to it in place.
+ *
+ * The point of the sandbox is that a note can be dealt with WITHOUT
+ * navigating into the conversation. Opening it reveals the note
+ * permanently (`markRead`) and a reply goes out as a normal DM to
+ * the same thread, so the conversation history stays coherent —
+ * the note and its reply both live in the chat.
+ */
+
+import { useEffect, useState } from "react";
+import {
+  Modal, View, Text, Pressable, Image, TextInput,
+  ScrollView, StyleSheet, Platform,
+} from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { useNotesStore, type NoteCard } from "@/stores/notes";
+import { useChatStore } from "@/stores/chat";
+import { toast } from "@/lib/toast";
+import { color, radius, space, elevation } from "@/theme";
+import { formatListTime } from "@/lib/format-time";
+
+interface Props {
+  note: NoteCard | null;
+  onClose: () => void;
+  /** Escape hatch to the full conversation. */
+  onOpenConversation: (conversationId: string) => void;
+}
+
+export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
+  const insets = useSafeAreaInsets();
+  const markRead = useNotesStore((s) => s.markRead);
+  const dismiss = useNotesStore((s) => s.dismiss);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+
+  // Opening IS reading — that's the whole interaction.
+  useEffect(() => {
+    if (note && !note.readAt) markRead(note.id);
+  }, [note?.id]);
+
+  // Don't carry a half-typed reply between different notes.
+  useEffect(() => {
+    setReply("");
+  }, [note?.id]);
+
+  if (!note) return null;
+
+  const send = () => {
+    const text = reply.trim();
+    if (!text || sending) return;
+
+    setSending(true);
+    try {
+      useChatStore.getState().sendText(note.conversationId, text);
+      setReply("");
+      toast("Reply sent", "success");
+      onClose();
+    } catch (err) {
+      if (__DEV__) console.warn("[tabcom-notes] reply failed:", err);
+      toast("Couldn't send reply", "error");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <Modal
+      visible
+      transparent
+      statusBarTranslucent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <View style={styles.overlay}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.centre}
+        >
+          <View style={[styles.sheet, { marginBottom: insets.bottom }]}>
+            {/* Header */}
+            <View style={styles.header}>
+              <View style={[styles.avatar, { backgroundColor: note.fromColor }]}>
+                <Text style={styles.avatarText}>
+                  {(note.fromName || "?").slice(0, 1).toUpperCase()}
+                </Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name} numberOfLines={1}>
+                  {note.outgoing ? "Your note" : note.fromName}
+                </Text>
+                <Text style={styles.time}>{formatListTime(note.sentAt)}</Text>
+              </View>
+              <Pressable onPress={onClose} hitSlop={10} style={styles.close}>
+                <Ionicons name="close" size={22} color={color.muted} />
+              </Pressable>
+            </View>
+
+            {/* Content */}
+            <ScrollView
+              style={styles.content}
+              contentContainerStyle={{ paddingBottom: space.lg }}
+              showsVerticalScrollIndicator={false}
+            >
+              {note.imageUri ? (
+                <Image
+                  source={{ uri: note.imageUri }}
+                  style={styles.image}
+                  resizeMode="cover"
+                />
+              ) : null}
+              {note.text ? (
+                <Text
+                  style={[
+                    styles.noteText,
+                    note.imageUri ? styles.noteTextWithImage : null,
+                  ]}
+                >
+                  {note.text}
+                </Text>
+              ) : null}
+            </ScrollView>
+
+            {/* Actions */}
+            <View style={styles.actions}>
+              <Pressable
+                style={styles.actionBtn}
+                onPress={() => {
+                  onClose();
+                  onOpenConversation(note.conversationId);
+                }}
+              >
+                <Ionicons name="chatbubble-outline" size={17} color={color.muted} />
+                <Text style={styles.actionText}>Open chat</Text>
+              </Pressable>
+              <Pressable
+                style={styles.actionBtn}
+                onPress={() => {
+                  dismiss(note.id);
+                  onClose();
+                }}
+              >
+                <Ionicons name="trash-outline" size={17} color={color.danger} />
+                <Text style={[styles.actionText, { color: color.danger }]}>
+                  Delete
+                </Text>
+              </Pressable>
+            </View>
+
+            {/* Reply — outgoing notes have no one to reply to */}
+            {!note.outgoing && (
+              <View style={styles.composer}>
+                <TextInput
+                  value={reply}
+                  onChangeText={setReply}
+                  placeholder={`Reply to ${note.fromName}…`}
+                  placeholderTextColor={color.muted}
+                  style={styles.input}
+                  multiline
+                  maxLength={2000}
+                  onSubmitEditing={send}
+                />
+                <Pressable
+                  onPress={send}
+                  disabled={!reply.trim() || sending}
+                  style={[
+                    styles.sendBtn,
+                    (!reply.trim() || sending) && styles.sendBtnOff,
+                  ]}
+                >
+                  <Ionicons name="arrow-up" size={20} color={color.white} />
+                </Pressable>
+              </View>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+}
+
+// ── Styles ──────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "flex-end",
+  },
+  centre: {
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    backgroundColor: color.white,
+    borderTopLeftRadius: radius.xxl,
+    borderTopRightRadius: radius.xxl,
+    paddingTop: space.xl,
+    maxHeight: "82%",
+    ...elevation.medium,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: space.xl,
+    paddingBottom: space.lg,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: space.md,
+  },
+  avatarText: {
+    color: color.white,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  name: {
+    color: color.ink,
+    fontSize: 17,
+    fontWeight: "700",
+  },
+  time: {
+    color: color.muted,
+    fontSize: 13,
+    marginTop: 1,
+  },
+  close: {
+    padding: 4,
+  },
+  content: {
+    paddingHorizontal: space.xl,
+  },
+  image: {
+    width: "100%",
+    height: 220,
+    borderRadius: radius.lg,
+    marginBottom: space.lg,
+    backgroundColor: color.surface,
+  },
+  noteText: {
+    color: color.ink,
+    fontSize: 26,
+    fontWeight: "700",
+    lineHeight: 34,
+  },
+  noteTextWithImage: {
+    fontSize: 17,
+    fontWeight: "500",
+    lineHeight: 24,
+  },
+  actions: {
+    flexDirection: "row",
+    gap: space.sm,
+    paddingHorizontal: space.xl,
+    paddingVertical: space.md,
+    borderTopWidth: 1,
+    borderTopColor: color.borderLight,
+  },
+  actionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: radius.full,
+    backgroundColor: color.surface,
+  },
+  actionText: {
+    color: color.muted,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  composer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: space.sm,
+    paddingHorizontal: space.xl,
+    paddingTop: space.sm,
+    paddingBottom: space.xl,
+  },
+  input: {
+    flex: 1,
+    backgroundColor: color.surface,
+    borderRadius: radius.xl,
+    paddingHorizontal: space.lg,
+    paddingTop: 12,
+    paddingBottom: 12,
+    fontSize: 15,
+    color: color.ink,
+    maxHeight: 110,
+  },
+  sendBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.full,
+    backgroundColor: color.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sendBtnOff: {
+    opacity: 0.35,
+  },
+});

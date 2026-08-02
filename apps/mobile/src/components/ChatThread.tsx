@@ -20,6 +20,7 @@ import {
 } from "./AttachmentBar";
 import { MorphAttachButton } from "./MorphAttachButton";
 import { ContactPickerSheet } from "./ContactPickerSheet";
+import { NoteComposer } from "./NoteComposer";
 import { LocationPreview } from "./LocationPreview";
 import { ConnectionRequestCard, PendingOutgoingCard } from "./ConnectionRequestCard";
 import { VoiceBubble } from "./VoiceBubble";
@@ -36,6 +37,11 @@ import { reannounce } from "@/lib/realtime";
 import { alert } from "@/lib/alert";
 
 const ME = "me";
+
+/** Shared frozen empty array — every conversation with no messages
+ *  yet selects THIS reference, so the selector stays referentially
+ *  stable and useSyncExternalStore doesn't re-render forever. */
+const EMPTY_MESSAGES: Message[] = [];
 
 const presenceColor: Record<string, string> = {
   online: "#16a34a", away: "#eab308", busy: "#ef4444",
@@ -78,6 +84,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [attachSettled, setAttachSettled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  const [noteComposerOpen, setNoteComposerOpen] = useState(false);
   // Brief shimmer on switch. Swapping content instantly reads as a
   // glitch; a short skeleton makes the change legible.
   const [switching, setSwitching] = useState(false);
@@ -94,7 +101,11 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
    *  this one means the user is done with it. */
   const dismissSwitcher = () => { switcherRef.current?.close(); closeAttachmentsIfOpen(); };
 
+  const refreshLock = useRef(false);
+
   const onRefresh = () => {
+    if (refreshLock.current) return;
+    refreshLock.current = true;
     setRefreshing(true);
     const user = useAuth.getState().user;
     if (user) {
@@ -107,6 +118,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
       });
     }
     setTimeout(() => {
+      refreshLock.current = false;
       setRefreshing(false);
       toast("Conversation refreshed", "success");
     }, 800);
@@ -163,7 +175,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   // Composer sat flush against the gesture bar; reserve real space.
   const composerPad = Math.max(insets.bottom - 8, 4);
 
-  const messages = useChatStore((s) => s.messages[conversationId] ?? []);
+  // A selector must return a STABLE reference for unchanged state.
+  // `s.messages[id] ?? []` built a brand-new array every call whenever
+  // the conversation had no messages yet (every pre-seeded chat), so
+  // useSyncExternalStore saw a "change" on every render and looped
+  // until React threw "Maximum update depth exceeded".
+  const messages = useChatStore((s) => s.messages[conversationId] ?? EMPTY_MESSAGES);
   const typing = useChatStore((s) => s.typing);
   const contacts = useChatStore((s) => s.contacts);
 
@@ -227,6 +244,8 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         if (loc) store.sendMedia(conversationId, { kind: "location", ...loc });
       } else if (action === "contact") {
         setContactPickerOpen(true);
+      } else if (action === "note") {
+        setNoteComposerOpen(true);
       }
     } finally {
       setBusy(false);
@@ -412,6 +431,49 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
                 <Text className={`text-[15px] font-semibold ${mine ? "text-white" : "text-ink"}`}>{m.contactName}</Text>
                 <Text className={mine ? "text-slate-400 text-xs" : "text-muted text-xs"}>@{m.contactUsername}</Text>
               </View>
+            </View>
+          ) : m.kind === "note" ? (
+            /* A note in the thread. Marked so it's distinguishable
+               from a plain message — it behaved differently on the
+               recipient's chat list, and the history should say so. */
+            <View className="px-4 py-3.5">
+              <View className="flex-row items-center mb-2">
+                <Ionicons
+                  name="reader-outline"
+                  size={13}
+                  color={mine ? "#cbd5e1" : "#64748b"}
+                />
+                <Text
+                  className={`text-[11px] font-semibold ml-1.5 uppercase ${
+                    mine ? "text-slate-400" : "text-muted"
+                  }`}
+                  style={{ letterSpacing: 0.5 }}
+                >
+                  Note
+                </Text>
+              </View>
+              {m.dataUrl ? (
+                <Image
+                  source={{ uri: m.dataUrl }}
+                  style={{
+                    width: 200,
+                    height: 140,
+                    borderRadius: 12,
+                    marginBottom: m.text ? 8 : 0,
+                    backgroundColor: "#e2e8f0",
+                  }}
+                  resizeMode="cover"
+                />
+              ) : null}
+              {m.text ? (
+                <Text
+                  className={`text-[17px] font-semibold leading-[24px] ${
+                    mine ? "text-white" : "text-ink"
+                  }`}
+                >
+                  {m.text}
+                </Text>
+              ) : null}
             </View>
           ) : m.kind === "voice" ? (
             <VoiceBubble
@@ -664,6 +726,16 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           <EmojiPicker onSelect={(e) => setText((t) => t + e)} />
         )}
       </KeyboardAvoidingView>
+
+      <NoteComposer
+        visible={noteComposerOpen}
+        onClose={() => setNoteComposerOpen(false)}
+        peerName={peer.title}
+        onSend={(text, image) => {
+          useChatStore.getState().sendNote(conversationId, text, image);
+          setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+        }}
+      />
 
       <ContactPickerSheet
         visible={contactPickerOpen}

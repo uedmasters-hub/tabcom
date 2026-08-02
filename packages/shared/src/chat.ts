@@ -28,7 +28,10 @@ export type MessageKind =
   | "video"
   | "file"
   | "contact"
-  | "location";
+  | "location"
+  /** A note: a message that also pins to the recipient's chat-list
+   *  wall until they read or dismiss it. Text plus an optional image. */
+  | "note";
 
 /** Only meaningful for messages authored by "me" — a fire-and-forget
  *  socket emit doesn't give a real delivery guarantee, so this is a

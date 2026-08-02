@@ -1,7 +1,9 @@
 import { defineConfig } from "wxt";
 import tailwindcss from "@tailwindcss/vite";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
@@ -43,8 +45,8 @@ export default defineConfig({
   vite: () => ({
     resolve: {
       alias: {
-        react: resolve(__dirname, "node_modules/react"),
-        "react-dom": resolve(__dirname, "node_modules/react-dom"),
+        react: dirname(require.resolve("react/package.json")),
+        "react-dom": dirname(require.resolve("react-dom/package.json")),
       },
     },
     plugins: [tailwindcss()],

@@ -42,7 +42,7 @@ export function ConnectionRequestCard({ contact, variant = "card", onResolved }:
   return (
     <View className="items-center px-7">
       <View className="w-full bg-white border border-slate-200 rounded-3xl px-6 py-7 items-center">
-        <Avatar name={contact.name} color={contact.color} size="xl" />
+        <Avatar name={contact.name} color={contact.color} size="xl" photo={contact.photo} />
         <Text className="text-ink font-bold text-[21px] mt-4">{contact.name}</Text>
         <Text className="text-muted text-[15px] mt-0.5">@{contact.username}</Text>
 
@@ -77,7 +77,7 @@ export function ConnectionRequestCard({ contact, variant = "card", onResolved }:
 export function PendingOutgoingCard({ contact }: { contact: Contact }) {
   return (
     <View className="items-center px-10">
-      <Avatar name={contact.name} color={contact.color} size="xl" />
+      <Avatar name={contact.name} color={contact.color} size="xl" photo={contact.photo} />
       <Text className="text-ink font-bold text-[19px] mt-4">Request sent</Text>
       <Text className="text-muted text-[15px] text-center leading-[22px] mt-2">
         You can chat with @{contact.username} once they accept.

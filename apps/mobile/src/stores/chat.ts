@@ -199,6 +199,7 @@ interface ChatState {
       contactColor?: string;
     }
   ) => void;
+  sendNote: (conversationId: string, text: string, imageDataUrl?: string) => void;
   editMessage: (conversationId: string, messageId: string, text: string) => void;
   deleteMessage: (conversationId: string, messageId: string) => void;
   reactToMessage: (conversationId: string, messageId: string, emoji: string) => void;
@@ -548,6 +549,40 @@ export const useChatStore = create<ChatState>()((set, get) => {
       deliver(conversationId, message);
     },
 
+    /**
+     * A note is an ordinary message on the wire — it just also pins
+     * itself to the recipient's wall. Sending it through the same
+     * deliver() path means retries, receipts and persistence all work
+     * with no special casing.
+     */
+    sendNote: (conversationId, text, imageDataUrl) => {
+      const trimmed = text.trim();
+      if (!trimmed && !imageDataUrl) return;
+
+      const message: Message = {
+        id: uid(),
+        authorId: ME,
+        kind: "note",
+        text: trimmed,
+        dataUrl: imageDataUrl,
+        sentAt: Date.now(),
+        status: get().connected ? "sending" : "failed",
+      };
+
+      set((state) => appendMessage(state, conversationId, message, false));
+      deliver(conversationId, message);
+
+      // Mirror onto my own wall so I can see what's still live.
+      const conv = get().conversations.find((c) => c.id === conversationId);
+      if (conv?.contactId) {
+        import("@/stores/notes")
+          .then(({ useNotesStore }) =>
+            useNotesStore.getState().addOutgoing(message, conversationId, conv.contactId!)
+          )
+          .catch(() => { /* wall is best-effort */ });
+      }
+    },
+
     editMessage: (conversationId, messageId, text) => {
       const trimmed = text.trim();
       if (!trimmed) return;
@@ -640,6 +675,16 @@ export const useChatStore = create<ChatState>()((set, get) => {
           typing: state.typing.filter((id) => id !== contactId),
         };
       });
+
+      // Notes also pin to the wall. Best-effort: a failure here costs
+      // the card, not the message — it's already in the thread.
+      if (incoming.kind === "note") {
+        import("@/stores/notes")
+          .then(({ useNotesStore }) =>
+            useNotesStore.getState().addIncoming(from, incoming, c.id)
+          )
+          .catch(() => { /* wall is best-effort */ });
+      }
     },
 
     receiveTyping: (fromUsername) => {
@@ -661,8 +706,9 @@ export const useChatStore = create<ChatState>()((set, get) => {
       }));
       // Also remove from SQLite
       try {
-        const { deleteConversation } = require("@/lib/local-storage");
-        deleteConversation(conversationId);
+        import("@/lib/local-storage").then(({ deleteConversation }) => {
+          deleteConversation(conversationId);
+        });
       } catch { /* local-storage not initialized */ }
     },
 

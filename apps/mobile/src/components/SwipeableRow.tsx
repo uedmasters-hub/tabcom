@@ -6,7 +6,7 @@
  *
  * Uses react-native-gesture-handler + reanimated for 60fps.
  */
-import { useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { View, Text, Pressable, Alert, type LayoutChangeEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
@@ -42,6 +42,11 @@ export function SwipeableRow({
 }: Props) {
   const translateX = useSharedValue(0);
   const rowWidth = useRef(300);
+  // Worklets can't read a plain ref — mirror the width into a shared value.
+  const rowWidthShared = useSharedValue(300);
+  // Stable handle so runOnJS always has the latest confirmDelete
+  // without needing a new function identity each render.
+  const confirmDeleteRef = useRef<(() => void) | null>(null);
 
   const confirmDelete = () => {
     alert(confirmTitle, confirmMessage, [
@@ -62,25 +67,34 @@ export function SwipeableRow({
     translateX.value = withSpring(0, SPRING);
   };
 
+  useEffect(() => {
+    confirmDeleteRef.current = confirmDelete;
+  });
+
+  // runOnJS needs a STABLE function reference. A closure re-created
+  // every render can't be serialised to the UI thread reliably and
+  // crashes on Android when the gesture handler initialises.
+  const askDelete = useCallback(() => {
+    confirmDeleteRef.current?.();
+  }, []);
+
   const pan = Gesture.Pan()
     .activeOffsetX([-10, 10])
     .failOffsetY([-5, 5])
     .onUpdate((e) => {
-      // Only allow left swipe (negative), clamp to row width
-      const x = Math.min(0, Math.max(-rowWidth.current, e.translationX));
+      "worklet";
+      const x = Math.min(0, Math.max(-rowWidthShared.value, e.translationX));
       translateX.value = x;
     })
-    .onEnd((e) => {
-      const ratio = Math.abs(translateX.value) / rowWidth.current;
+    .onEnd(() => {
+      "worklet";
+      const ratio = Math.abs(translateX.value) / rowWidthShared.value;
       if (ratio > FULL_SWIPE_THRESHOLD) {
-        // Full swipe — trigger delete
         translateX.value = withSpring(-BUTTON_WIDTH - 10, SPRING);
-        runOnJS(confirmDelete)();
+        runOnJS(askDelete)();
       } else if (Math.abs(translateX.value) > BUTTON_WIDTH * 0.4) {
-        // Partial swipe — snap to button reveal
         translateX.value = withSpring(-BUTTON_WIDTH, SPRING);
       } else {
-        // Too small — snap back
         translateX.value = withSpring(0, SPRING);
       }
     });
@@ -106,7 +120,9 @@ export function SwipeableRow({
   });
 
   const onLayout = (e: LayoutChangeEvent) => {
-    rowWidth.current = e.nativeEvent.layout.width;
+    const w = e.nativeEvent.layout.width;
+    rowWidth.current = w;
+    rowWidthShared.value = w;
   };
 
   return (

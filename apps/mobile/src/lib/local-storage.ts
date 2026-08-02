@@ -44,7 +44,7 @@ function db(): SQLite.SQLiteDatabase {
 
 // ── Schema ──────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -214,6 +214,28 @@ const MIGRATIONS: Record<number, string[]> = {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
+  ],
+
+  // ── v2: Notes ──
+  // A note is a message that also pins to the chat-list wall until
+  // read or dismissed. The wall lifecycle is purely local — the
+  // server has no concept of it — so it lives entirely here.
+  2: [
+    `CREATE TABLE IF NOT EXISTS notes (
+      id              TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      contact_id      TEXT NOT NULL,
+      from_username   TEXT NOT NULL DEFAULT '',
+      from_name       TEXT NOT NULL DEFAULT '',
+      from_color      TEXT NOT NULL DEFAULT '#2563eb',
+      text            TEXT NOT NULL DEFAULT '',
+      image_uri       TEXT,
+      sent_at         INTEGER NOT NULL,
+      read_at         INTEGER,
+      outgoing        INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_notes_sent ON notes(sent_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_notes_conv ON notes(conversation_id)`,
   ],
 };
 
@@ -905,6 +927,69 @@ export function getStorageStats(): StorageStats {
   };
 }
 
+// ── Notes ───────────────────────────────────────────────────────────
+
+export interface StoredNote {
+  id: string;
+  conversation_id: string;
+  contact_id: string;
+  from_username: string;
+  from_name: string;
+  from_color: string;
+  text: string;
+  image_uri: string | null;
+  sent_at: number;
+  read_at: number | null;
+  outgoing: number;
+}
+
+export function upsertNote(n: {
+  id: string;
+  conversationId: string;
+  contactId: string;
+  fromUsername: string;
+  fromName: string;
+  fromColor: string;
+  text: string;
+  imageUri?: string;
+  sentAt: number;
+  readAt?: number;
+  outgoing: boolean;
+}): void {
+  db().runSync(
+    `INSERT INTO notes (
+       id, conversation_id, contact_id, from_username, from_name,
+       from_color, text, image_uri, sent_at, read_at, outgoing
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       read_at   = excluded.read_at,
+       image_uri = COALESCE(excluded.image_uri, notes.image_uri),
+       text      = excluded.text`,
+    n.id, n.conversationId, n.contactId, n.fromUsername, n.fromName,
+    n.fromColor, n.text, n.imageUri ?? null, n.sentAt,
+    n.readAt ?? null, n.outgoing ? 1 : 0
+  );
+}
+
+export function getNotes(): StoredNote[] {
+  return db().getAllSync<StoredNote>(
+    "SELECT * FROM notes ORDER BY sent_at DESC"
+  );
+}
+
+export function deleteNote(id: string): void {
+  db().runSync("DELETE FROM notes WHERE id = ?", id);
+}
+
+export function clearNotes(): void {
+  db().runSync("DELETE FROM notes");
+}
+
+/** Swap a note's inline data URL for a persisted file URI. */
+export function updateNoteImageUri(id: string, uri: string): void {
+  db().runSync("UPDATE notes SET image_uri = ? WHERE id = ?", uri, id);
+}
+
 // ── Nuclear reset ───────────────────────────────────────────────────
 
 /** Wipe EVERYTHING — called on sign-out. */
@@ -912,6 +997,7 @@ export function resetAll(): void {
   const d = db();
   d.execSync("BEGIN TRANSACTION");
   try {
+    d.execSync("DELETE FROM notes");
     d.execSync("DELETE FROM activity_log");
     d.execSync("DELETE FROM board_comments");
     d.execSync("DELETE FROM board_annotations");

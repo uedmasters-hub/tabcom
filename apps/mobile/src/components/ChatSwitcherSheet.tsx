@@ -65,6 +65,7 @@ export const ChatSwitcherSheet = forwardRef<ChatSwitcherHandle, Props>(function 
             title: community?.name ?? "Community",
             color: "#2563eb",
             presence: undefined as string | undefined,
+            photo: undefined as string | undefined,
             unread: c.unread ?? 0,
             isCommunity: true,
           };
@@ -75,6 +76,7 @@ export const ChatSwitcherSheet = forwardRef<ChatSwitcherHandle, Props>(function 
           title: contact?.alias ?? contact?.name ?? "Unknown",
           color: contact?.color ?? "#2563eb",
           presence: contact?.presence,
+          photo: contact?.photo,
           unread: c.unread ?? 0,
           isCommunity: false,
         };
@@ -154,7 +156,7 @@ function StaggeredAvatar({
 }: {
   index: number;
   progress: SharedValue<number>;
-  row: { title: string; color: string; presence?: string; unread: number; isCommunity: boolean };
+  row: { title: string; color: string; presence?: string; photo?: string; unread: number; isCommunity: boolean };
   active: boolean;
   onPress: () => void;
 }) {
@@ -189,6 +191,7 @@ function StaggeredAvatar({
             size="lg"
             presence={row.presence}
             square={row.isCommunity}
+            photo={row.photo}
           />
         </View>
         {row.unread > 0 && !active && (

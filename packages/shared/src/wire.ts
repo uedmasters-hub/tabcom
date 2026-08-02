@@ -125,7 +125,8 @@ export interface WireMessage {
     | "video"
     | "file"
     | "contact"
-    | "location";
+    | "location"
+    | "note";
   text: string;
   url?: string;
   /** Data URL for voice/image messages — relayed and forgotten by the

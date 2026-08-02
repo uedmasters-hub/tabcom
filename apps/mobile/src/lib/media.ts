@@ -81,6 +81,41 @@ function tooBig(label: string, bytes: number, cap: number): boolean {
 
 /** Photo & Video Library. Images are compressed; videos are capped
  *  at 720p / MAX_VIDEO_SECONDS and re-checked against the byte cap. */
+/**
+ * Image picker for notes. Images only, squarer crop, and a tighter
+ * byte cap than chat media — a note image is decoration on a card,
+ * not a full-bleed photo send, so it should cost far less bandwidth.
+ */
+export async function pickNoteImage(): Promise<MediaResult | null> {
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) {
+    alert("Permission needed", "Allow photo library access to add an image.");
+    return null;
+  }
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ["images"],
+    quality: 0.45,
+    allowsEditing: true,
+    aspect: [4, 3],
+  });
+  if (result.canceled || !result.assets[0]) return null;
+
+  const asset = result.assets[0];
+  const bytes = asset.fileSize ?? (await sizeOf(asset.uri));
+  // Half the normal image ceiling — notes are lightweight by design.
+  if (tooBig("Note image", bytes, Math.floor(MAX_IMAGE_BYTES / 2))) return null;
+
+  const mime = asset.mimeType ?? "image/jpeg";
+  return {
+    kind: "image",
+    dataUrl: await toDataUrl(asset.uri, mime),
+    fileName: asset.fileName ?? undefined,
+    fileSize: bytes,
+    mimeType: mime,
+  };
+}
+
 export async function pickFromLibrary(): Promise<MediaResult | null> {
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) {

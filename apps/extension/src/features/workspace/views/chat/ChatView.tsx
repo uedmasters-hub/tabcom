@@ -1023,6 +1023,12 @@ export default function ChatView({
       : "accepted"
     : "accepted";
 
+  // Consent is pending whenever a live DM contact hasn't accepted yet.
+  // In that state ConsentPanel takes over the ENTIRE chat window — no
+  // half-height message list, no system pills behind it.
+  const consentPending =
+    !!contact && isLiveContact && !isCommunity && connection !== "accepted";
+
   const isTyping = contact ? typing.includes(contact.id) : false;
 
   useEffect(() => {
@@ -1329,20 +1335,16 @@ export default function ChatView({
 
       {isCommunity && tab === "board" && community ? (
         <BoardView community={community} />
+      ) : consentPending ? (
+        // Full takeover — the request IS the view, not a bar under a
+        // capped, empty message list.
+        <ConsentPanel contact={contact} status={connection} />
       ) : (
         <>
       {/* Messages */}
       <div
         className={cn(
-          "min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4",
-          // While consent is pending the illustrated ConsentPanel should
-          // keep the visual weight the mockups show — so CAP the message
-          // area rather than letting it size to content. shrink-0 here
-          // was the bug: it made this div unshrinkable, so the column
-          // overflowed and pushed the thread header (and the whole app
-          // shell) off-screen. max-h keeps the intended proportions
-          // while the area stays independently scrollable.
-          contact && isLiveContact && connection !== "accepted" && "max-h-[40%]"
+          "min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4"
         )}
       >
         {/* Zero-retention disclosure: chat history lives only on this
@@ -1589,10 +1591,9 @@ export default function ChatView({
       </>
       )}
 
-      {/* Composer — consent gate, then privacy gate (server enforces both) */}
-      {isCommunity && tab === "board" ? null : contact && isLiveContact && connection !== "accepted" ? (
-        <ConsentPanel contact={contact} status={connection} />
-      ) : gatePrivate ? (
+      {/* Composer — privacy gate (consent is handled above as a full
+          takeover, so it never reaches here). */}
+      {isCommunity && tab === "board" ? null : gatePrivate ? (
         <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-6 py-4">
           <ShieldOff size={18} className="shrink-0 text-slate-400" />
           <p className="text-xs leading-5 text-slate-500">
