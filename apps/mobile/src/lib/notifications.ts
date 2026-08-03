@@ -9,6 +9,13 @@
  * Native module — only functional in a development or release build,
  * never in Expo Go (SDK 53+ dropped remote push there). Every call is
  * guarded so the app still runs in Expo Go with notifications inert.
+ *
+ * Split of responsibility:
+ *  - App FOREGROUND → OS banners suppressed; socket + this bridge feed
+ *    the in-app bell / chat list / contacts. Open chats get no unread.
+ *  - App BACKGROUND / KILLED → OS shows the push; tapping deep-links
+ *    via attachNotificationRouting. Opening the app without tapping
+ *    still syncs via syncPresentedNotificationsIntoStore.
  */
 import { Platform } from "react-native";
 
@@ -193,6 +200,18 @@ export async function setBadgeCount(count: number): Promise<void> {
   }
 }
 
+/** Dismiss every presented notification and clear the app badge. */
+export async function clearAllNotifications(): Promise<void> {
+  const N = mod();
+  if (!N) return;
+  try {
+    await N.dismissAllNotificationsAsync?.();
+  } catch { /* best effort */ }
+  try {
+    await N.setBadgeCountAsync(0);
+  } catch { /* best effort */ }
+}
+
 export async function clearThreadNotifications(threadId: string): Promise<void> {
   const N = mod();
   if (!N) return;
@@ -202,6 +221,145 @@ export async function clearThreadNotifications(threadId: string): Promise<void> 
       if (n?.request?.content?.data?.threadId === threadId) {
         await N.dismissNotificationAsync(n.request.identifier);
       }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Local OS notice for missed calls after reconnect (best-effort). */
+export async function presentLocalCallNotice(opts: {
+  title: string;
+  body: string;
+  from: string;
+  video?: boolean;
+  name?: string;
+  color?: string;
+}): Promise<void> {
+  const N = mod();
+  if (!N) return;
+  try {
+    await N.scheduleNotificationAsync({
+      content: {
+        title: opts.title,
+        body: opts.body,
+        data: {
+          category: "calls",
+          type: "missed_call",
+          from: opts.from,
+          video: !!opts.video,
+          name: opts.name ?? opts.title,
+          color: opts.color ?? "#2563eb",
+          route: `/call/${opts.from}`,
+          threadId: `call:${opts.from}`,
+        },
+        sound: true,
+        ...(Platform.OS === "android" ? { channelId: "calls" } : {}),
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    if (__DEV__) console.warn("[tabcom-push] local call notice failed:", err);
+  }
+}
+
+  /** Feed a single push payload into the chat store (deduped). */
+function ingestPushData(data: Record<string, unknown>): void {
+  if (!data) return;
+  if (data.category === "typing") return;
+
+  // Missed-call push (callee was offline during ring / timeout)
+  if (data.type === "missed_call" && data.from) {
+    try {
+      const { useCallHistory } =
+        require("@/stores/call-history") as typeof import("@/stores/call-history");
+      useCallHistory.getState().record({
+        peerUsername: String(data.from),
+        peerName: String(data.name ?? data.fromName ?? data.from),
+        peerColor: String(data.color ?? data.fromColor ?? "#2563eb"),
+        direction: "incoming",
+        video: !!data.video,
+        outcome: "missed",
+        startedAt: Date.now(),
+        endedAt: Date.now(),
+        seen: false,
+      });
+    } catch { /* best-effort */ }
+    return;
+  }
+
+  if (data.category === "calls" && data.from) {
+    try {
+      const { getCallState } = require("@/lib/call-manager");
+      if (getCallState().phase !== "idle") return;
+      const { router } = require("expo-router");
+      const name = encodeURIComponent(String(data.name ?? data.fromName ?? data.from));
+      const col = encodeURIComponent(String(data.color ?? data.fromColor ?? "#2563eb"));
+      const video = data.video ? "true" : "false";
+      router.push(
+        `/call/${data.from}?peerName=${name}&peerColor=${col}&role=callee&video=${video}` as never
+      );
+    } catch (err) {
+      if (__DEV__) console.warn("[tabcom-push] call fallback failed:", err);
+    }
+    return;
+  }
+
+  if (
+    (data.category === "messages" || data.type === "dm") &&
+    data.from &&
+    data.messageId
+  ) {
+    const { useChatStore } = require("@/stores/chat");
+    const store = useChatStore.getState();
+    const contactId = `u-${data.from}`;
+    const conv = store.conversations.find((c: { contactId?: string }) => c.contactId === contactId);
+    if (conv) {
+      const existing = (store.messages[conv.id] ?? []).find(
+        (m: { id: string }) => m.id === data.messageId
+      );
+      if (existing) return;
+      // Open chat: merge silently, no unread (receiveDm checks activeConversationId).
+      // Still pulse a subtle incoming shimmer so the user sees the arrival.
+      store.receivePushDm({
+        from: String(data.from),
+        fromName: String(data.fromName ?? data.from),
+        fromColor: String(data.fromColor ?? "#2563eb"),
+        messageId: String(data.messageId),
+        messageKind: String(data.messageKind ?? "text"),
+        messageText: String(data.messageText ?? "New message"),
+      });
+      if (store.activeConversationId === conv.id) {
+        store.pulseIncomingRefresh(conv.id);
+        void clearThreadNotifications(String(data.threadId ?? `dm:${data.from}`));
+      }
+      return;
+    }
+
+    store.receivePushDm({
+      from: String(data.from),
+      fromName: String(data.fromName ?? data.from),
+      fromColor: String(data.fromColor ?? "#2563eb"),
+      messageId: String(data.messageId),
+      messageKind: String(data.messageKind ?? "text"),
+      messageText: String(data.messageText ?? "New message"),
+    });
+  }
+}
+
+/**
+ * Pull shade notifications into the in-app store when the user returns
+ * to the app without tapping a push. Without this, a backgrounded DM
+ * only lived in the OS tray until they tapped it.
+ */
+export async function syncPresentedNotificationsIntoStore(): Promise<void> {
+  const N = mod();
+  if (!N) return;
+  try {
+    const shown = await N.getPresentedNotificationsAsync();
+    for (const n of shown) {
+      const data = n?.request?.content?.data;
+      if (data) ingestPushData(data);
     }
   } catch {
     /* best effort */
@@ -222,67 +380,7 @@ export function attachForegroundPushBridge(): () => void {
 
   const sub = N.addNotificationReceivedListener((notification: any) => {
     const data = notification?.request?.content?.data;
-    if (!data) return;
-
-    // Typing is delivered exclusively over the live socket. A pushed
-    // typing signal is always stale by the time it arrives, so we never
-    // feed it into the store here — it is intentionally ignored.
-    if (data.category === "typing") return;
-
-    // CALLS — the one thing that must still reach the user while the app
-    // is open. Normally the socket delivers the offer and realtime.ts
-    // opens the full-screen call screen. If the socket was momentarily
-    // down the push is our only signal, so open it from here instead.
-    // getCallState() guards against double-navigating when the socket
-    // already handled it (phase would no longer be "idle").
-    if (data.category === "calls" && data.from) {
-      try {
-        const { getCallState } = require("@/lib/call-manager");
-        if (getCallState().phase !== "idle") return; // socket got there first
-        const { router } = require("expo-router");
-        const name = encodeURIComponent(String(data.fromName ?? data.from));
-        const col = encodeURIComponent(String(data.fromColor ?? "#2563eb"));
-        const video = data.video ? "true" : "false";
-        router.push(
-          `/call/${data.from}?peerName=${name}&peerColor=${col}&role=callee&video=${video}` as never
-        );
-      } catch (err) {
-        if (__DEV__) console.warn("[tabcom-push] call fallback failed:", err);
-      }
-      return;
-    }
-
-    // Lazy import to avoid circular deps (notifications ↔ stores)
-    const { useChatStore } = require("@/stores/chat");
-    const store = useChatStore.getState();
-
-    if (data.category === "messages" && data.from && data.messageId) {
-      // Deduplicate: if the socket already delivered this message,
-      // the store will have it. Skip to avoid double-render.
-      const contactId = `u-${data.from}`;
-      const conv = store.conversations.find(
-        (c: any) => c.contactId === contactId
-      );
-      if (conv) {
-        const existing = (store.messages[conv.id] ?? []).find(
-          (m: any) => m.id === data.messageId
-        );
-        if (existing) return; // already delivered via socket
-      }
-
-      // Socket didn't deliver — create a lightweight placeholder
-      // so the user sees the notification AND the conversation list
-      // updates. The full message body arrives when they open the
-      // app and the socket reconnects.
-      store.receivePushDm({
-        from: data.from,
-        fromName: data.fromName ?? data.from,
-        fromColor: data.fromColor ?? "#2563eb",
-        messageId: data.messageId,
-        messageKind: data.messageKind ?? "text",
-        messageText: data.messageText ?? "New message",
-      });
-    }
+    if (data) ingestPushData(data);
   });
 
   return () => {
@@ -305,12 +403,14 @@ export function attachNotificationRouting(
     .then((response: any) => {
       const data = response?.notification?.request?.content?.data;
       if (data?.route) navigate(String(data.route), data);
+      else if (data) navigate("", data);
     })
     .catch(() => {});
 
   const sub = N.addNotificationResponseReceivedListener((response: any) => {
     const data = response?.notification?.request?.content?.data;
     if (data?.route) navigate(String(data.route), data);
+    else if (data) navigate("", data);
   });
 
   return () => {

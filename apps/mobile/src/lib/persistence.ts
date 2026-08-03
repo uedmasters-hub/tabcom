@@ -30,6 +30,7 @@ import {
   updateMessageReactions,
   updateMessageReadAt,
   updateMessageStatus,
+  updateMessageMediaUri,
   messageExists,
   upsertConnection,
   upsertCommunity,
@@ -41,13 +42,16 @@ import {
   logActivity,
   getAllContacts,
   getConversations,
-  getMessages as dbGetMessages,
+  getAllMessages as dbGetAllMessages,
   getConnections,
   getAllCommunities,
   getNotes,
   getBoardItems,
   getAnnotations,
   getBoardComments,
+  getMediaByMessageId,
+  getMessagesMissingMedia,
+  getMessage,
   resetAll,
   type StoredMessage,
 } from "./local-storage";
@@ -72,21 +76,27 @@ async function ensureMediaDir(): Promise<void> {
 }
 
 /**
- * Saves a data URL (base64) to the local filesystem and returns the
- * file URI. For images/video/voice — keeps media out of SQLite.
+ * Saves a data URL (base64) to durable document storage and returns the
+ * file URI. Also writes messages.media_uri so reloads can find the blob.
  */
 export async function saveMediaFile(
   messageId: string,
   dataUrl: string,
   kind: string,
-  conversationId?: string
+  conversationId?: string,
+  opts?: { suffix?: string; mimeType?: string }
 ): Promise<string> {
   await ensureMediaDir();
-  const ext = kind === "voice" ? "opus" : kind === "video" ? "mp4" : "jpg";
-  const fileName = `${messageId}.${ext}`;
+  const suffix = opts?.suffix ? `-${opts.suffix}` : "";
+  const ext =
+    kind === "voice" ? "opus"
+    : kind === "video" ? "mp4"
+    : kind === "file" ? "bin"
+    : opts?.mimeType?.includes("png") ? "png"
+    : "jpg";
+  const fileName = `${messageId}${suffix}.${ext}`;
   const fileUri = `${MEDIA_DIR}${fileName}`;
 
-  // Strip data URL prefix to get raw base64
   const base64 = dataUrl.includes(",")
     ? dataUrl.split(",")[1]
     : dataUrl;
@@ -95,25 +105,75 @@ export async function saveMediaFile(
     encoding: FileSystem.EncodingType.Base64,
   });
 
-  // Register in media index
   const fileInfo = await FileSystem.getInfoAsync(fileUri);
   registerMedia({
-    id: `m-${messageId}`,
+    id: `m-${messageId}${suffix}`,
     messageId,
     conversationId,
-    kind,
+    kind: opts?.suffix === "thumb" ? "image" : kind,
     fileUri,
     fileName,
-    fileSize: fileInfo.exists ? (fileInfo as any).size : undefined,
-    mimeType: kind === "voice" ? "audio/opus"
-      : kind === "video" ? "video/mp4"
-      : "image/jpeg",
+    fileSize: fileInfo.exists ? (fileInfo as { size?: number }).size : undefined,
+    mimeType: opts?.mimeType
+      ?? (kind === "voice" ? "audio/opus"
+        : kind === "video" ? "video/mp4"
+        : "image/jpeg"),
   });
 
   return fileUri;
 }
 
-/** Loads a media file back as a data URL for display. */
+/**
+ * Persist media for a message: write blob(s) to disk, stamp SQLite URIs,
+ * and swap the in-memory dataUrl to the file URI so we don't keep huge
+ * base64 strings around.
+ */
+async function persistMessageMedia(
+  conversationId: string,
+  m: Message
+): Promise<void> {
+  if (!m.dataUrl?.startsWith("data:") && !m.thumbnailUrl?.startsWith("data:")) {
+    return;
+  }
+
+  let mediaUri = m.dataUrl?.startsWith("data:")
+    ? await saveMediaFile(m.id, m.dataUrl, m.kind, conversationId, {
+        mimeType: m.mimeType,
+      })
+    : m.dataUrl;
+
+  let thumbUri = m.thumbnailUrl?.startsWith("data:")
+    ? await saveMediaFile(m.id, m.thumbnailUrl, "image", conversationId, {
+        suffix: "thumb",
+        mimeType: "image/jpeg",
+      })
+    : m.thumbnailUrl;
+
+  if (mediaUri) {
+    updateMessageMediaUri(m.id, mediaUri, thumbUri ?? null);
+  }
+
+  // Point the live store at the durable URI (file:// works in <Image>).
+  useChatStore.setState((state) => {
+    const list = state.messages[conversationId];
+    if (!list) return state;
+    let changed = false;
+    const next = list.map((msg) => {
+      if (msg.id !== m.id) return msg;
+      if (msg.dataUrl === mediaUri && msg.thumbnailUrl === thumbUri) return msg;
+      changed = true;
+      return {
+        ...msg,
+        dataUrl: mediaUri ?? msg.dataUrl,
+        thumbnailUrl: thumbUri ?? msg.thumbnailUrl,
+      };
+    });
+    if (!changed) return state;
+    return { messages: { ...state.messages, [conversationId]: next } };
+  });
+}
+
+/** Loads a media file back as a data URL for display (voice/players). */
 export async function loadMediaFile(fileUri: string): Promise<string | null> {
   try {
     const info = await FileSystem.getInfoAsync(fileUri);
@@ -121,7 +181,6 @@ export async function loadMediaFile(fileUri: string): Promise<string | null> {
     const base64 = await FileSystem.readAsStringAsync(fileUri, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    // Infer mime from extension
     const ext = fileUri.split(".").pop()?.toLowerCase();
     const mime = ext === "opus" ? "audio/opus"
       : ext === "mp4" ? "video/mp4"
@@ -131,6 +190,52 @@ export async function loadMediaFile(fileUri: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+const MEDIA_EXTS = ["jpg", "jpeg", "png", "mp4", "opus", "bin", "m4a", "webp"];
+
+/**
+ * Repair messages whose media_uri was never stamped (bug in older builds
+ * that wrote the file but left the DB column null). Also re-link files
+ * found in the media directory by message id.
+ */
+export async function repairMediaLinks(): Promise<number> {
+  await ensureMediaDir();
+  let repaired = 0;
+
+  // Index files on disk: "msgId" or "msgId-thumb"
+  const names = await FileSystem.readDirectoryAsync(MEDIA_DIR).catch(() => [] as string[]);
+  const byStem = new Map<string, string>();
+  for (const name of names) {
+    const stem = name.replace(/\.[^.]+$/, "");
+    byStem.set(stem, `${MEDIA_DIR}${name}`);
+  }
+
+  const missing = getMessagesMissingMedia();
+  for (const row of missing) {
+    const fromRegistry = getMediaByMessageId(row.id);
+    let uri = fromRegistry?.file_uri;
+    if (!uri) {
+      for (const ext of MEDIA_EXTS) {
+        const candidate = `${MEDIA_DIR}${row.id}.${ext}`;
+        if (byStem.has(row.id) || names.includes(`${row.id}.${ext}`)) {
+          uri = byStem.get(row.id) ?? candidate;
+          break;
+        }
+      }
+      if (!uri && byStem.has(row.id)) uri = byStem.get(row.id);
+    }
+    const thumb = byStem.get(`${row.id}-thumb`) ?? null;
+    if (uri) {
+      updateMessageMediaUri(row.id, uri, thumb);
+      repaired += 1;
+    }
+  }
+
+  if (repaired > 0 && __DEV__) {
+    console.log(`[tabcom-persist] repaired ${repaired} media link(s)`);
+  }
+  return repaired;
 }
 
 // ── Hydration (SQLite → Zustand) ────────────────────────────────────
@@ -173,10 +278,10 @@ export function hydrateFromLocalStorage(): void {
     useChatStore.setState({ conversations });
   }
 
-  // ── Messages (latest 50 per conversation) ──
+  // ── Messages (entire local history — server stores nothing) ──
   const messages: Record<string, Message[]> = {};
   for (const conv of dbConvs) {
-    const dbMsgs = dbGetMessages(conv.id, 50);
+    const dbMsgs = dbGetAllMessages(conv.id);
     if (dbMsgs.length > 0) {
       messages[conv.id] = dbMsgs.reverse().map(storedToMessage);
     }
@@ -184,6 +289,30 @@ export function hydrateFromLocalStorage(): void {
   if (Object.keys(messages).length > 0) {
     useChatStore.setState({ messages });
   }
+
+  // Re-link any media files that were written but never stamped onto
+  // the message row (older builds). Async — UI already has text/meta.
+  void repairMediaLinks().then((n) => {
+    if (n <= 0) return;
+    // Re-hydrate media URIs into the live store after repair.
+    const state = useChatStore.getState();
+    const next: Record<string, Message[]> = { ...state.messages };
+    let changed = false;
+    for (const conv of getConversations()) {
+      const rows = dbGetAllMessages(conv.id);
+      const mapped = rows.reverse().map(storedToMessage);
+      const prev = next[conv.id];
+      if (
+        !prev ||
+        prev.length !== mapped.length ||
+        mapped.some((m, i) => m.dataUrl !== prev[i]?.dataUrl)
+      ) {
+        next[conv.id] = mapped;
+        changed = true;
+      }
+    }
+    if (changed) useChatStore.setState({ messages: next });
+  });
 
   // ── Connections ──
   const dbConns = getConnections();
@@ -261,13 +390,23 @@ export function hydrateFromLocalStorage(): void {
 }
 
 function storedToMessage(s: StoredMessage): Message {
+  // Prefer the durable file URI; fall back to the media registry when
+  // an older build left media_uri null after writing the file.
+  let mediaUri = s.media_uri ?? undefined;
+  let thumbUri = s.thumbnail_uri ?? undefined;
+  if (!mediaUri) {
+    const reg = getMediaByMessageId(s.id);
+    if (reg?.file_uri) mediaUri = reg.file_uri;
+  }
+
   return {
     id: s.id,
     authorId: s.author_id,
     kind: s.kind as any,
     text: s.text,
     url: s.url ?? undefined,
-    dataUrl: s.media_uri ?? undefined, // Will be loaded lazily
+    dataUrl: mediaUri,
+    thumbnailUrl: thumbUri,
     durationMs: s.duration_ms ?? undefined,
     fileName: s.file_name ?? undefined,
     fileSize: s.file_size ?? undefined,
@@ -286,6 +425,9 @@ function storedToMessage(s: StoredMessage): Message {
     authorColor: s.author_color ?? undefined,
     readAt: s.read_at ?? undefined,
     reactions: s.reactions ? JSON.parse(s.reactions) : undefined,
+    albumId: s.album_id ?? undefined,
+    albumIndex: s.album_index ?? undefined,
+    albumCount: s.album_count ?? undefined,
   };
 }
 
@@ -354,11 +496,28 @@ export function startPersistence(): () => void {
               if (m.readAt) updateMessageReadAt(m.id, m.readAt);
               if (m.status) updateMessageStatus(m.id, m.status);
               if (m.reactions) updateMessageReactions(m.id, JSON.stringify(m.reactions));
+              // Backfill: older builds inserted the row before the blob
+              // finished writing and never stamped media_uri.
+              if (
+                (m.dataUrl?.startsWith("data:") || m.thumbnailUrl?.startsWith("data:")) &&
+                !getMessage(m.id)?.media_uri
+              ) {
+                void persistMessageMedia(convId, m).catch((err) => {
+                  if (__DEV__) console.warn("[tabcom-persist] media backfill failed:", err);
+                });
+              }
             } else {
-              // New message — insert and save media
-              const mediaUri = m.dataUrl?.startsWith("data:")
-                ? undefined // Will be saved async below
-                : m.dataUrl;
+              // New message — insert and durably save media blobs.
+              // data: URLs are written to documentDirectory; the file
+              // URI is stamped onto the row so reloads never lose media.
+              const mediaUri =
+                m.dataUrl && !m.dataUrl.startsWith("data:")
+                  ? m.dataUrl
+                  : undefined;
+              const thumbnailUri =
+                m.thumbnailUrl && !m.thumbnailUrl.startsWith("data:")
+                  ? m.thumbnailUrl
+                  : undefined;
 
               insertMessage({
                 id: m.id,
@@ -368,7 +527,7 @@ export function startPersistence(): () => void {
                 text: m.text,
                 url: m.url,
                 mediaUri,
-                thumbnailUri: m.thumbnailUrl,
+                thumbnailUri,
                 durationMs: m.durationMs,
                 fileName: m.fileName,
                 fileSize: m.fileSize,
@@ -384,16 +543,14 @@ export function startPersistence(): () => void {
                 authorName: m.authorName,
                 authorColor: m.authorColor,
                 reactions: m.reactions ? JSON.stringify(m.reactions) : undefined,
+                albumId: m.albumId,
+                albumIndex: m.albumIndex,
+                albumCount: m.albumCount,
               });
 
-              // Save media file async (don't block the store).
-              // MUST have a catch — an unhandled rejection here is
-              // fatal in React Native, not just a console warning.
-              if (m.dataUrl?.startsWith("data:")) {
-                saveMediaFile(m.id, m.dataUrl, m.kind, convId).catch((err) => {
-                  if (__DEV__) console.warn("[tabcom-persist] media save failed:", err);
-                });
-              }
+              void persistMessageMedia(convId, m).catch((err) => {
+                if (__DEV__) console.warn("[tabcom-persist] media save failed:", err);
+              });
 
               // Log activity (no content — just that it happened)
               logActivity("message", m.authorId === "me" ? "sent" : "received", "message", m.id, {

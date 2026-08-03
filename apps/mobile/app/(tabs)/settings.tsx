@@ -75,6 +75,7 @@ export default function SettingsScreen() {
     setSigningOut(true);
     useChatStore.getState().resetChat();
     await signOut();
+    // Guest sign-out navigates via auth gate; registered returns to welcome.
   };
 
   const handleDeleteAccount = () => {

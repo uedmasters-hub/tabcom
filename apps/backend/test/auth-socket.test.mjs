@@ -5,7 +5,7 @@
  * client's "hello" payload claims otherwise. Own process/server
  * (needs a real database), run: pnpm test:auth
  */
-import "dotenv/config"; // load apps/backend/.env before anything else
+import "dotenv/config";
 import { spawn } from "node:child_process";
 import { io } from "socket.io-client";
 
@@ -13,6 +13,8 @@ const PORT = 8410;
 const URL = `http://localhost:${PORT}`;
 const DATABASE_URL =
   process.env.DATABASE_URL ?? "postgresql://postgres:devpass@localhost:5432/tabcom_dev";
+const MASTER_INVITE = "TAB-MASTER-TEST-CODE";
+const runId = Date.now().toString().slice(-8);
 
 const passed = [];
 const fail = (msg) => {
@@ -32,10 +34,9 @@ const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
     PORT: String(PORT),
     DATABASE_URL,
     TABCOM_EPHEMERAL: "1",
-    // Override whatever the developer's own .env has — this test's
-    // server runs on its own dynamic port, and magic links MUST point
-    // back at that exact port, not whatever the real dev server uses.
     PUBLIC_BASE_URL: `http://localhost:${PORT}`,
+    TABCOM_MASTER_INVITE: MASTER_INVITE,
+    RESEND_API_KEY: "",
   },
   stdio: "pipe",
 });
@@ -46,7 +47,21 @@ await new Promise((resolve) => {
   });
 });
 
-// ---- Real magic-link flow over real HTTP, against the real running server ----
+async function register(email, username, displayName) {
+  const res = await fetch(`${URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      username,
+      displayName,
+      avatarColor: "#2563EB",
+      inviteCode: MASTER_INVITE,
+    }),
+  });
+  return res.json();
+}
+
 async function requestLink(email) {
   const res = await fetch(`${URL}/auth/request-link`, {
     method: "POST",
@@ -61,15 +76,6 @@ async function poll(pollId) {
   return res.json();
 }
 
-async function claimUsername(sessionToken, username, displayName) {
-  const res = await fetch(`${URL}/auth/claim-username`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionToken, username, displayName, avatarColor: "#2563EB" }),
-  });
-  return { status: res.status, body: await res.json() };
-}
-
 // Capture the magic link the server logs (dev mode, no RESEND_API_KEY).
 let capturedLink = null;
 server.stdout.on("data", (chunk) => {
@@ -78,7 +84,13 @@ server.stdout.on("data", (chunk) => {
   if (m) capturedLink = m[1];
 });
 
-const req = await requestLink("socktest@example.com");
+const email = `socktest+${runId}@example.com`;
+const username = `sockuser${runId}`;
+const reg = await register(email, username, "Sock User");
+if (!reg.ok) fail("register failed: " + JSON.stringify(reg));
+pass("register creates a usable account before magic-link sign-in");
+
+const req = await requestLink(email);
 if (!req.ok) fail("request-link failed: " + JSON.stringify(req));
 await sleep(400);
 if (!capturedLink) fail("did not capture the dev-mode magic link from server logs");
@@ -89,12 +101,10 @@ pass("full HTTP flow: request-link -> verify, against the real running server");
 
 const polled = await poll(req.pollId);
 if (polled.status !== "verified" || !polled.sessionToken) fail("poll did not return a verified session");
+if (polled.user.username !== username) fail("session user missing registered username");
 pass("poll returns a real session token after verification");
 
 const sessionToken = polled.sessionToken;
-const claim = await claimUsername(sessionToken, "sockuser", "Sock User");
-if (!claim.body.ok) fail("claim-username failed: " + JSON.stringify(claim.body));
-pass("username claimed via the real HTTP endpoint");
 
 // ---- THE actual security test: connect with this session, try to lie in "hello" ----
 const authedSocket = io(URL, { auth: { sessionToken } });
@@ -110,24 +120,19 @@ authedSocket.emit("hello", {
 });
 await rosterSeen;
 
-// Ask a second, unauthenticated observer to see the public roster and
-// confirm which username actually showed up.
 const observer = io(URL);
 await new Promise((resolve) => observer.on("connect", resolve));
 const rosterPromise = new Promise((resolve) => observer.once("roster", resolve));
 observer.emit("hello", { username: "observer", name: "Observer", color: "#111", visibility: "public", presence: "online" });
 const roster = await rosterPromise;
 
-const entry = roster.find((u) => u.username === "sockuser" || u.username === "someone-else-entirely");
-if (!entry) fail("authenticated user never appeared in the roster at all");
-if (entry.username === "someone-else-entirely") {
-  fail("IMPERSONATION SUCCEEDED — authenticated socket claimed a different username than its account owns");
-}
-if (entry.username !== "sockuser") fail("unexpected username in roster: " + entry.username);
-pass("authenticated socket CANNOT impersonate another username — server enforces the real account identity");
+const names = roster.map((u) => u.username);
+if (!names.includes(username)) fail("authenticated username missing from roster: " + names.join(","));
+if (names.includes("someone-else-entirely")) fail("impersonation succeeded — lie appeared on roster");
+pass("authenticated socket cannot impersonate a different username");
 
-console.log(`\nALL AUTH SOCKET TESTS PASSED (${passed.length}/4)`);
-authedSocket.disconnect();
-observer.disconnect();
+console.log(`\nALL AUTH SOCKET TESTS PASSED (${passed.length}/${passed.length})`);
+authedSocket.close();
+observer.close();
 server.kill();
 process.exit(0);

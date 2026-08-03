@@ -1,19 +1,15 @@
 /**
- * Simulates the EXTENSION's own client code (lib/auth-client.ts) end
- * to end against a real running server + real database — not just
- * the server's own test of itself. Run: pnpm test:extension-auth
+ * Simulates the EXTENSION's auth client end-to-end against a real
+ * running server. Sign-in is for fully registered accounts only —
+ * unregistered emails are waitlisted, never auto-created.
+ * Run: pnpm test:extension-auth
  */
-import "dotenv/config"; // load apps/backend/.env before anything else
+import "dotenv/config";
 import { spawn } from "node:child_process";
 
 const PORT = 9366;
 const URL = `http://localhost:${PORT}`;
-
-// Unique per run — this suite runs against a real, persistent database
-// (not a disposable local one), so reusing the same email/username
-// every time would mean testing against an account that already has
-// state from a PRIOR run rather than the fresh-account scenario this
-// test claims to verify.
+const MASTER_INVITE = "TAB-MASTER-TEST-CODE";
 const runId = Date.now().toString().slice(-8);
 
 const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
@@ -22,9 +18,9 @@ const server = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
     PORT: String(PORT),
     TABCOM_EPHEMERAL: "1",
     DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://postgres:devpass@localhost:5432/tabcom_dev",
-    // Same reasoning as auth-socket.test.mjs — never let the real .env's
-    // PUBLIC_BASE_URL leak into this test's dynamically-ported server.
     PUBLIC_BASE_URL: `http://localhost:${PORT}`,
+    TABCOM_MASTER_INVITE: MASTER_INVITE,
+    RESEND_API_KEY: "",
   },
   stdio: "pipe",
 });
@@ -56,7 +52,6 @@ await new Promise((resolve) => {
   });
 });
 
-// ---- Exact re-implementation of lib/auth-client.ts's functions, calling the REAL running server ----
 async function requestMagicLink(email) {
   const res = await fetch(`${URL}/auth/request-link`, {
     method: "POST",
@@ -69,47 +64,75 @@ async function pollLoginRequest(pollId) {
   const res = await fetch(`${URL}/auth/poll?pollId=${encodeURIComponent(pollId)}`);
   return res.json();
 }
-async function claimUsername(sessionToken, username, displayName, avatarColor) {
-  const res = await fetch(`${URL}/auth/claim-username`, {
+async function register(email, username, displayName) {
+  const res = await fetch(`${URL}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionToken, username, displayName, avatarColor }),
+    body: JSON.stringify({
+      email,
+      username,
+      displayName,
+      avatarColor: "#2563EB",
+      inviteCode: MASTER_INVITE,
+    }),
   });
   return res.json();
 }
 
-// ---- Simulate exactly what SignInScreen.tsx does ----
-const req = await requestMagicLink(`extuser+${runId}@example.com`);
-if (!req.ok || !req.pollId) fail("request-link failed: " + JSON.stringify(req));
-pass("extension: request-link succeeds and returns a pollId");
+// ---- Unregistered email: no magic link, invite request recorded ----
+const unknown = await requestMagicLink(`nobody+${runId}@example.com`);
+if (unknown.ok || unknown.reason !== "not_registered") {
+  fail("unregistered email should return not_registered: " + JSON.stringify(unknown));
+}
+if (unknown.pollId) fail("unregistered response must not include pollId");
+pass("extension: unregistered email is rejected (not_registered) — no ghost account");
 
-// Simulate waitForLogin() polling before the link is clicked
+const checkRes = await fetch(
+  `${URL}/auth/check-email?email=${encodeURIComponent(`nobody+${runId}@example.com`)}`
+);
+const checkBody = await checkRes.json();
+if (!checkBody.ok || checkBody.eligible !== false || checkBody.reason !== "not_registered") {
+  fail("check-email should report ineligible: " + JSON.stringify(checkBody));
+}
+pass("extension: check-email preflight blocks unregistered addresses");
+
+// ---- Register, then magic-link sign-in ----
+const email = `extuser+${runId}@example.com`;
+const username = `extuser${runId}`;
+const reg = await register(email, username, "Ext User");
+if (!reg.ok) fail("register failed: " + JSON.stringify(reg));
+pass("extension: register creates a fully formed account");
+
+const req = await requestMagicLink(email);
+if (!req.ok || !req.pollId) fail("request-link failed: " + JSON.stringify(req));
+pass("extension: request-link succeeds for a registered account");
+
 const early = await pollLoginRequest(req.pollId);
 if (early.status !== "waiting") fail("expected 'waiting' before the link is clicked");
 pass("extension: poll correctly reports 'waiting' before verification");
 
-// Simulate the person clicking the link in their email client
 await new Promise((r) => setTimeout(r, 300));
 if (!capturedLink) fail("did not capture the dev-mode magic link");
 const verifyRes = await fetch(capturedLink);
 if (verifyRes.status !== 200) fail("verify link did not return 200");
 
-// Simulate waitForLogin()'s next poll picking up the session
 const verified = await pollLoginRequest(req.pollId);
 if (verified.status !== "verified" || !verified.sessionToken) {
   fail("poll did not return a verified session after the link was clicked");
 }
-if (verified.user.username !== null) fail("brand-new account should have no username yet");
-pass("extension: poll picks up the session immediately after the link is clicked, username is null (routes to Setup)");
+if (verified.user.username !== username) {
+  fail("verified session must carry the registered username, got: " + verified.user.username);
+}
+pass("extension: poll picks up a fully registered session after the link is clicked");
 
-// Simulate SetupScreen.tsx submitting the claim
-const claimed = await claimUsername(verified.sessionToken, `extuser${runId}`, "Ext User", "#2563EB");
-if (!claimed.ok) fail("claim-username failed: " + JSON.stringify(claimed));
-pass("extension: SetupScreen's claim-username call succeeds for a fresh username");
-
-// Simulate a second person signing in — a genuinely separate account
+// ---- Second registered person ----
 capturedLink = null;
-const req2 = await requestMagicLink(`seconduser+${runId}@example.com`);
+const email2 = `seconduser+${runId}@example.com`;
+const username2 = `second${runId}`;
+const reg2 = await register(email2, username2, "Second User");
+if (!reg2.ok) fail("second register failed: " + JSON.stringify(reg2));
+
+const req2 = await requestMagicLink(email2);
 if (!req2.ok) fail("second user's request-link failed");
 await new Promise((r) => setTimeout(r, 300));
 if (!capturedLink) fail("did not capture the second user's magic link");
@@ -120,6 +143,6 @@ if (verified2.status !== "verified") fail("second user's poll did not verify");
 if (verified2.user.id === verified.user.id) fail("second user resolved to the SAME account as the first — broken");
 pass("extension: a second person signing in gets a genuinely distinct account");
 
-console.log(`\nALL EXTENSION AUTH FLOW TESTS PASSED (${passed.length}/5)`);
+console.log(`\nALL EXTENSION AUTH FLOW TESTS PASSED (${passed.length}/${passed.length})`);
 server.kill();
 process.exit(0);

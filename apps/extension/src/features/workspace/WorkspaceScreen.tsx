@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { browser } from "wxt/browser";
 
 import AppShell from "../../components/layout/AppShell";
-import { fetchMe, endGuestSessionOnServer } from "../../lib/auth-client";
+import { fetchMe } from "../../lib/auth-client";
+import { endGuestSessionCompletely, GUEST_WARN_MS } from "../../lib/guest-session";
 import { loadSettingsFromServer } from "../../lib/settings-sync";
-import { disconnectAllContexts, REALTIME_URL, updatePresence } from "../../lib/realtime";
+import { REALTIME_URL, updatePresence } from "../../lib/realtime";
 import { initRealtimeFromStores } from "../../lib/realtime-wiring";
 import { useAppStore } from "../../stores/app.store";
 import { useChatStore } from "../../stores/chat.store";
@@ -116,9 +117,9 @@ export default function WorkspaceScreen() {
   const isGuestSessionExpired = useProfileStore(
     (state) => state.isGuestSessionExpired
   );
-  const endGuestSession = useProfileStore((state) => state.endGuestSession);
+  const guestExpiresAt = useProfileStore((state) => state.guestExpiresAt);
   const setScreen = useAppStore((state) => state.setScreen);
-  const resetChat = useChatStore((state) => state.resetChat);
+  const [, setGuestTick] = useState(0);
 
   // Guest sessions are time-boxed to 30 minutes (see profile.store's
   // GUEST_SESSION_DURATION_MS). Checked on an interval rather than a
@@ -132,20 +133,31 @@ export default function WorkspaceScreen() {
   useEffect(() => {
     if (!isGuest) return;
 
+    let ending = false;
     const checkExpiry = () => {
-      if (isGuestSessionExpired()) {
-        endGuestSession();
-        void endGuestSessionOnServer().catch(() => {});
-        resetChat();
-        disconnectAllContexts();
+      setGuestTick((n) => n + 1);
+      if (!isGuestSessionExpired() || ending) return;
+      ending = true;
+      void endGuestSessionCompletely().then(() => {
         setScreen("guest-expired");
-      }
+      });
     };
 
     checkExpiry(); // catch an expiry that already happened before mount
-    const interval = setInterval(checkExpiry, 15_000);
+    const interval = setInterval(checkExpiry, 1_000);
     return () => clearInterval(interval);
-  }, [isGuest, isGuestSessionExpired, endGuestSession, resetChat, setScreen]);
+  }, [isGuest, isGuestSessionExpired, setScreen]);
+
+  const guestMsLeft =
+    isGuest && guestExpiresAt ? Math.max(0, guestExpiresAt - Date.now()) : null;
+  const showGuestWarn =
+    guestMsLeft !== null && guestMsLeft > 0 && guestMsLeft <= GUEST_WARN_MS;
+  const guestCountdown =
+    guestMsLeft !== null
+      ? `${Math.floor(guestMsLeft / 60_000)}:${String(
+          Math.floor((guestMsLeft % 60_000) / 1000)
+        ).padStart(2, "0")}`
+      : null;
 
   // Pick up a verification that happened elsewhere (another tab, or
   // between extension launches) — the socket's own per-hello
@@ -268,6 +280,32 @@ export default function WorkspaceScreen() {
     <AppShell>
       <div className="flex h-full flex-col">
         {!inThread && <WorkspaceHeader title={titles[tab]} />}
+        {!inThread && showGuestWarn && guestCountdown && (
+          <div
+            role="alert"
+            className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-amber-900">
+                Guest session ending soon
+              </p>
+              <p className="text-[11px] leading-4 text-amber-800">
+                {guestCountdown} left — your data will be cleared when it expires
+              </p>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 rounded-lg bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-900"
+              onClick={() => {
+                void endGuestSessionCompletely().then(() => {
+                  setScreen("guest-expired");
+                });
+              }}
+            >
+              End
+            </button>
+          </div>
+        )}
         {!inThread && <NotificationPermissionBanner />}
 
         <div className="flex min-h-0 flex-1 flex-col">

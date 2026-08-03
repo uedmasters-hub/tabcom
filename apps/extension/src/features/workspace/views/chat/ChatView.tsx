@@ -4,6 +4,8 @@ import {
   Check,
   CheckCheck,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CornerUpLeft,
   ExternalLink,
   Link as LinkIcon,
@@ -41,6 +43,83 @@ const presenceColors = {
 const NO_MESSAGES: Message[] = [];
 
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "😢"];
+
+/** WhatsApp-style album grid for multi-select media. */
+function AlbumGrid({
+  items,
+  onOpen,
+}: {
+  items: Message[];
+  onOpen: (message: Message) => void;
+}) {
+  const count = items.length;
+  const cell = (m: Message, className: string, more?: number) => {
+    const src =
+      m.kind === "video" ? (m.dataUrl ?? undefined) : m.dataUrl;
+    return (
+      <button
+        key={m.id}
+        type="button"
+        onClick={() => onOpen(m)}
+        className={cn("relative overflow-hidden bg-slate-800", className)}
+      >
+        {src ? (
+          m.kind === "video" ? (
+            <video src={src} muted className="h-full w-full object-cover" />
+          ) : (
+            <img src={src} alt="" className="h-full w-full object-cover" />
+          )
+        ) : null}
+        {m.kind === "video" && (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <Play size={18} className="text-white" fill="white" />
+          </span>
+        )}
+        {more != null && more > 0 && (
+          <span className="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-2xl font-bold text-white">
+            +{more}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  if (count === 1) {
+    return <div className="w-[220px]">{cell(items[0]!, "h-52 w-full rounded-xl")}</div>;
+  }
+  if (count === 2) {
+    return (
+      <div className="flex w-[220px] gap-0.5 overflow-hidden rounded-xl">
+        {cell(items[0]!, "h-28 w-1/2")}
+        {cell(items[1]!, "h-28 w-1/2")}
+      </div>
+    );
+  }
+  if (count === 3) {
+    return (
+      <div className="flex w-[220px] flex-col gap-0.5 overflow-hidden rounded-xl">
+        <div className="flex gap-0.5">
+          {cell(items[0]!, "h-28 w-1/2")}
+          {cell(items[1]!, "h-28 w-1/2")}
+        </div>
+        {cell(items[2]!, "h-28 w-full")}
+      </div>
+    );
+  }
+  const overflow = count - 4;
+  return (
+    <div className="flex w-[220px] flex-col gap-0.5 overflow-hidden rounded-xl">
+      <div className="flex gap-0.5">
+        {cell(items[0]!, "h-28 w-1/2")}
+        {cell(items[1]!, "h-28 w-1/2")}
+      </div>
+      <div className="flex gap-0.5">
+        {cell(items[2]!, "h-28 w-1/2")}
+        {cell(items[3]!, "h-28 w-1/2", overflow > 0 ? overflow : undefined)}
+      </div>
+    </div>
+  );
+}
 
 function ReactionPills({
   reactions,
@@ -82,17 +161,26 @@ function ReactionPills({
 /** In-chat attachment preview: the DEFAULT viewing experience. Covers
  *  the conversation without leaving it — a richer full-tab viewer is
  *  one explicit tap away. Blob URL for the iframe is minted in THIS
- *  document so its lifetime matches the preview. */
+ *  document so its lifetime matches the preview.
+ *  Photo albums: swipe / arrow keys move between photos only. */
 function AttachmentLightbox({
   message,
+  albumPhotos: photos,
   onClose,
   onFullScreen,
+  onNavigate,
 }: {
   message: Message;
+  /** Photo-only siblings for swipe (may be just `[message]`). */
+  albumPhotos: Message[];
   onClose: () => void;
   onFullScreen: () => void;
+  onNavigate: (next: Message) => void;
 }) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const photoIndex = photos.findIndex((p) => p.id === message.id);
+  const canSwipe =
+    message.kind === "image" && photos.length > 1 && photoIndex >= 0;
 
   useEffect(() => {
     if (!message.dataUrl) return;
@@ -119,10 +207,17 @@ function AttachmentLightbox({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      if (!canSwipe) return;
+      if (event.key === "ArrowLeft" && photoIndex > 0) {
+        onNavigate(photos[photoIndex - 1]!);
+      }
+      if (event.key === "ArrowRight" && photoIndex < photos.length - 1) {
+        onNavigate(photos[photoIndex + 1]!);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, canSwipe, photoIndex, photos, onNavigate]);
 
   const browserViewable =
     message.kind === "file" &&
@@ -133,7 +228,9 @@ function AttachmentLightbox({
   const title =
     message.fileName ??
     (message.kind === "image"
-      ? "Photo"
+      ? canSwipe
+        ? `Photo ${photoIndex + 1} / ${photos.length}`
+        : "Photo"
       : message.kind === "video"
         ? "Video"
         : message.kind === "voice"
@@ -185,7 +282,27 @@ function AttachmentLightbox({
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center p-3">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center p-3">
+        {canSwipe && photoIndex > 0 && (
+          <button
+            type="button"
+            aria-label="Previous photo"
+            onClick={() => onNavigate(photos[photoIndex - 1]!)}
+            className="absolute left-2 z-10 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20"
+          >
+            <ChevronLeft size={18} />
+          </button>
+        )}
+        {canSwipe && photoIndex < photos.length - 1 && (
+          <button
+            type="button"
+            aria-label="Next photo"
+            onClick={() => onNavigate(photos[photoIndex + 1]!)}
+            className="absolute right-2 z-10 rounded-full bg-white/10 p-2 text-white transition hover:bg-white/20"
+          >
+            <ChevronRight size={18} />
+          </button>
+        )}
         {!message.dataUrl ? (
           <p className="px-6 text-center text-xs leading-5 text-slate-400">
             This attachment is no longer on this device — Tabcom never keeps a
@@ -239,6 +356,7 @@ function MessageBubble({
   onOpenReplySource,
   onRetry,
   onOpenAttachment,
+  albumMembers,
 }: {
   message: Message;
   showAuthor: boolean;
@@ -254,7 +372,8 @@ function MessageBubble({
   onReact: (emoji: string) => void;
   onOpenReplySource: () => void;
   onRetry: () => void;
-  onOpenAttachment: () => void;
+  onOpenAttachment: (message: Message) => void;
+  albumMembers?: Message[];
 }) {
   const isMine = message.authorId === ME;
   const [editDraft, setEditDraft] = useState(message.text);
@@ -371,10 +490,15 @@ function MessageBubble({
                 durationMs={message.durationMs}
                 isMine={isMine}
               />
+            ) : albumMembers && albumMembers.length > 1 ? (
+              <AlbumGrid
+                items={albumMembers}
+                onOpen={(m) => onOpenAttachment(m)}
+              />
             ) : message.kind === "image" && message.dataUrl ? (
               <button
                 type="button"
-                onClick={onOpenAttachment}
+                onClick={() => onOpenAttachment(message)}
                 title="Open full-screen"
                 className="-mx-2 -my-1 block"
               >
@@ -394,7 +518,7 @@ function MessageBubble({
                 />
                 <button
                   type="button"
-                  onClick={onOpenAttachment}
+                  onClick={() => onOpenAttachment(message)}
                   className={cn(
                     "mt-1 text-[11px] font-semibold underline underline-offset-2",
                     isMine ? "text-slate-300" : "text-slate-500"
@@ -406,7 +530,7 @@ function MessageBubble({
             ) : message.kind === "file" && message.dataUrl ? (
               <button
                 type="button"
-                onClick={onOpenAttachment}
+                onClick={() => onOpenAttachment(message)}
                 title="Open file"
                 className="flex items-center gap-2.5 text-left"
               >
@@ -689,7 +813,7 @@ function MessageBubble({
     </motion.div>
   );
 }
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { browser } from "wxt/browser";
 
 import { Avatar, CommunityAvatar } from "../../../../components/ui";
@@ -704,6 +828,12 @@ import {
   stagedToMedia,
   type StagedAttachment,
 } from "../../../../lib/attachments";
+import {
+  albumItems,
+  albumPhotos,
+  collapseAlbumLeads,
+  MAX_ALBUM_ITEMS,
+} from "../../../../lib/album";
 import { ME, useChatStore } from "../../../../stores/chat.store";
 import { useProfileStore } from "../../../../stores/profile.store";
 import { contactLabel } from "../../../../types/chat";
@@ -738,6 +868,7 @@ export default function ChatView({
   const closeConversation = useChatStore((state) => state.closeConversation);
   const sendText = useChatStore((state) => state.sendText);
   const sendMedia = useChatStore((state) => state.sendMedia);
+  const sendMediaBatch = useChatStore((state) => state.sendMediaBatch);
   const retryMessage = useChatStore((state) => state.retryMessage);
   const allContacts = useChatStore((state) => state.contacts);
   const editMessage = useChatStore((state) => state.editMessage);
@@ -752,8 +883,8 @@ export default function ChatView({
   /** Appear-offline gate: which action the user tried while hidden —
    *  drives the "switch to Online first" prompt. */
   const [offlineGate, setOfflineGate] = useState<"message" | "call" | null>(null);
-  /** Staged (previewed, not yet sent) attachment. */
-  const [pending, setPending] = useState<StagedAttachment | null>(null);
+  /** Staged (previewed, not yet sent) attachments — multi-select. */
+  const [pending, setPending] = useState<StagedAttachment[]>([]);
   const [attachError, setAttachError] = useState<{
     text: string;
     /** Deep-link into the unified permission center. */
@@ -925,24 +1056,33 @@ export default function ChatView({
 
   /** Stage any file (from picker, drag-drop, or paste) as a preview
    *  above the composer — nothing sends until the user confirms. */
-  const stageFile = (file: File | undefined | null) => {
-    if (!file) return;
+  const stageFiles = (files: FileList | File[] | null | undefined) => {
+    if (!files || files.length === 0) return;
+    const list = Array.from(files).slice(0, MAX_ALBUM_ITEMS);
     setAttachError(null);
     setAttachBusy(true);
-    void fileToStagedAttachment(file)
+    void Promise.all(list.map((file) => fileToStagedAttachment(file)))
       .then((staged) => setPending(staged))
       .catch((error: Error) => setAttachError({ text: error.message }))
       .finally(() => setAttachBusy(false));
   };
 
+  const stageFile = (file: File | undefined | null) => {
+    if (!file) return;
+    stageFiles([file]);
+  };
+
   const sendPending = () => {
-    if (!pending) return;
+    if (pending.length === 0) return;
     if (myPresence === "offline") {
       setOfflineGate("message");
       return;
     }
-    sendMedia(conversationId, stagedToMedia(pending));
-    setPending(null);
+    sendMediaBatch(
+      conversationId,
+      pending.map((p) => stagedToMedia(p))
+    );
+    setPending([]);
   };
 
   const shareLocation = () => {
@@ -1137,7 +1277,7 @@ export default function ChatView({
         if (!event.dataTransfer.files.length) return;
         event.preventDefault();
         setDragOver(false);
-        stageFile(event.dataTransfer.files[0]);
+        stageFiles(event.dataTransfer.files);
       }}
     >
       {dragOver && (
@@ -1151,11 +1291,17 @@ export default function ChatView({
       {previewMessage && (
         <AttachmentLightbox
           message={
-            // Re-resolve from the live thread so edits/deletes while
-            // previewing stay honest.
             messages.find((m) => m.id === previewMessage.id) ?? previewMessage
           }
+          albumPhotos={
+            previewMessage.albumId
+              ? albumPhotos(messages, previewMessage.albumId)
+              : previewMessage.kind === "image" && previewMessage.dataUrl
+                ? [previewMessage]
+                : []
+          }
           onClose={() => setPreviewMessage(null)}
+          onNavigate={(next) => setPreviewMessage(next)}
           onFullScreen={() => {
             openAttachmentViewer(conversationId, previewMessage);
             setPreviewMessage(null);
@@ -1355,13 +1501,16 @@ export default function ChatView({
           Messages are stored only on your devices — Tabcom servers keep
           no chat history.
         </p>
-        {messages.map((message) => (
+        {collapseAlbumLeads(messages).map((message) => (
           <MessageBubble
             key={message.id}
             message={message}
             showAuthor={isCommunity}
             animate={animations}
             myUsername={myUsername}
+            albumMembers={
+              message.albumId ? albumItems(messages, message.albumId) : undefined
+            }
             replyPreview={
               message.replyToId
                 ? messages.find((m) => m.id === message.replyToId)
@@ -1369,7 +1518,7 @@ export default function ChatView({
             }
             isEditing={editingMessageId === message.id}
             onRetry={() => retryMessage(conversationId, message.id)}
-            onOpenAttachment={() => setPreviewMessage(message)}
+            onOpenAttachment={(m) => setPreviewMessage(m)}
             onStartEdit={() => setEditingMessageId(message.id)}
             onSaveEdit={(text) => {
               if (text.trim() && text.trim() !== message.text) {
@@ -1475,31 +1624,44 @@ export default function ChatView({
         </div>
       )}
 
-      {pending && (
+      {pending.length > 0 && (
         <div className="mx-4 mb-2 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-          {pending.kind === "image" ? (
-            <img
-              src={pending.dataUrl}
-              alt={pending.fileName}
-              className="h-16 w-16 shrink-0 rounded-xl object-cover"
-            />
-          ) : pending.kind === "video" ? (
-            <video
-              src={pending.dataUrl}
-              muted
-              className="h-16 w-16 shrink-0 rounded-xl bg-slate-900 object-cover"
-            />
-          ) : (
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-slate-100">
-              <Paperclip size={20} className="text-slate-400" />
-            </div>
-          )}
+          <div className="flex shrink-0 gap-1">
+            {pending.slice(0, 4).map((p, i) =>
+              p.kind === "image" ? (
+                <img
+                  key={i}
+                  src={p.dataUrl}
+                  alt={p.fileName}
+                  className="h-14 w-14 rounded-lg object-cover"
+                />
+              ) : p.kind === "video" ? (
+                <video
+                  key={i}
+                  src={p.dataUrl}
+                  muted
+                  className="h-14 w-14 rounded-lg bg-slate-900 object-cover"
+                />
+              ) : (
+                <div
+                  key={i}
+                  className="flex h-14 w-14 items-center justify-center rounded-lg bg-slate-100"
+                >
+                  <Paperclip size={18} className="text-slate-400" />
+                </div>
+              )
+            )}
+          </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-semibold text-slate-900">
-              {pending.fileName}
+              {pending.length === 1
+                ? pending[0]!.fileName
+                : `${pending.length} items`}
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500">
-              {formatFileSize(pending.fileSize)}
+              {pending.length === 1
+                ? formatFileSize(pending[0]!.fileSize)
+                : "Will send as a group"}
               {" · sent directly to their device — never stored on a server"}
             </p>
           </div>
@@ -1513,7 +1675,7 @@ export default function ChatView({
           <button
             type="button"
             aria-label="Cancel attachment"
-            onClick={() => setPending(null)}
+            onClick={() => setPending([])}
             className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100"
           >
             <X size={14} />
@@ -1683,9 +1845,10 @@ export default function ChatView({
             ref={fileInputRef}
             type="file"
             accept="image/*,video/*"
+            multiple
             className="hidden"
             onChange={(event) => {
-              stageFile(event.target.files?.[0]);
+              stageFiles(event.target.files);
               event.target.value = "";
             }}
           />
@@ -1816,10 +1979,10 @@ export default function ChatView({
                 <input
                   ref={inputRef}
                   onPaste={(event) => {
-                    const file = event.clipboardData?.files?.[0];
-                    if (file) {
+                    const files = event.clipboardData?.files;
+                    if (files && files.length > 0) {
                       event.preventDefault();
-                      stageFile(file);
+                      stageFiles(files);
                     }
                   }}
                   value={draft}

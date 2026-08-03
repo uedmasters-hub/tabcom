@@ -37,6 +37,7 @@ export default function RequestInviteScreen() {
           email: email.trim().toLowerCase(),
           displayName: user?.displayName ?? "Guest",
           reason: reason.trim() || undefined,
+          source: "settings",
         }),
       });
       setSubmitted(true);

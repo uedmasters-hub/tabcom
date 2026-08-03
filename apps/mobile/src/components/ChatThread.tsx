@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Animated, {
   useSharedValue, useAnimatedStyle, withSpring, interpolate,
   Extrapolation, runOnJS,
@@ -8,11 +8,13 @@ import {
   Platform, ActivityIndicator, Keyboard, RefreshControl,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import type { Message } from "@tabcom/shared";
+import {
+  albumItems, albumPhotos, collapseAlbumLeads, type Message,
+} from "@tabcom/shared";
 import { useChatStore } from "@/stores/chat";
 import {
   AttachmentBar, ATTACH_SPRING, ATTACH_BTN, ATTACH_LEFT,
@@ -26,6 +28,9 @@ import { ConnectionRequestCard, PendingOutgoingCard, NotConnectedCard } from "./
 import { VoiceBubble } from "./VoiceBubble";
 import { ChatSwitcherSheet, type ChatSwitcherHandle } from "./ChatSwitcherSheet";
 import { ChatSkeleton } from "./ChatSkeleton";
+import { IncomingMessageSkeleton } from "./IncomingMessageSkeleton";
+import { AlbumGrid } from "./AlbumGrid";
+import { PhotoViewer } from "./PhotoViewer";
 import { useConnectionStatus } from "@/hooks/useConnections";
 import { isCallingAvailable } from "@/lib/call-manager";
 import { EmojiPicker } from "./EmojiPicker";
@@ -88,6 +93,10 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [busy, setBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [noteComposerOpen, setNoteComposerOpen] = useState(false);
+  const [photoViewer, setPhotoViewer] = useState<{
+    photos: Message[];
+    index: number;
+  } | null>(null);
   // Brief shimmer on switch. Swapping content instantly reads as a
   // glitch; a short skeleton makes the change legible.
   const [switching, setSwitching] = useState(false);
@@ -95,6 +104,9 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [recording, setRecording] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
+  const incomingRefresh = useChatStore(
+    (s) => s.incomingRefreshId === conversationId
+  );
   const recorder = useVoiceRecorder();
   const recStartedAt = useRef(0);
   const listRef = useRef<FlatList<Message>>(null);
@@ -175,8 +187,11 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   }));
 
   const insets = useSafeAreaInsets();
-  // Composer sat flush against the gesture bar; reserve real space.
-  const composerPad = Math.max(insets.bottom - 8, 4);
+  // Only reserve gesture-bar space when the keyboard is closed.
+  // KeyboardAvoidingView already lifts the composer; keeping safe-area
+  // padding while the keyboard is open creates the visible gap.
+  const keyboardVisible = useKeyboardState((s) => s.isVisible);
+  const composerPad = keyboardVisible ? 0 : Math.max(insets.bottom - 8, 4);
 
   // A selector must return a STABLE reference for unchanged state.
   // `s.messages[id] ?? []` built a brand-new array every call whenever
@@ -207,12 +222,22 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     !!threadContact;
   const gated = awaitingMe || awaitingThem || notConnected;
 
+  // Brief shimmer only when opening an EMPTY thread. Chats that already
+  // have history stay visible; incoming pushes use IncomingMessageSkeleton.
   useEffect(() => {
-    setSwitching(true);
-    const settle = setTimeout(() => setSwitching(false), 320);
+    const existing = useChatStore.getState().messages[conversationId] ?? [];
+    if (existing.length === 0) {
+      setSwitching(true);
+      const settle = setTimeout(() => setSwitching(false), 280);
+      return () => clearTimeout(settle);
+    }
+    setSwitching(false);
+  }, [conversationId]);
+
+  useEffect(() => {
     useChatStore.getState().openConversation(conversationId);
 
-    // Dismiss any shade notifications for this thread — reading in-app
+    // Dismiss shade notifications for this thread — reading in-app
     // should clear them, as in any mainstream messenger.
     const threadId = peer.username
       ? `dm:${peer.username}`
@@ -220,10 +245,16 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     void import("@/lib/notifications").then(({ clearThreadNotifications }) =>
       clearThreadNotifications(threadId)
     );
+    // Tell the server not to push while this thread is on screen.
+    void import("@/lib/realtime").then(({ setActiveThread }) =>
+      setActiveThread(threadId)
+    );
 
     return () => {
-      clearTimeout(settle);
       useChatStore.getState().closeConversation();
+      void import("@/lib/realtime").then(({ setActiveThread }) =>
+        setActiveThread(null)
+      );
     };
   }, [conversationId, peer.username]);
 
@@ -251,8 +282,8 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         const media = await captureWithCamera(action === "camera-video" ? "video" : "photo");
         if (media) store.sendMedia(conversationId, media);
       } else if (action === "library") {
-        const media = await pickFromLibrary();
-        if (media) store.sendMedia(conversationId, media);
+        const batch = await pickFromLibrary();
+        if (batch.length > 0) store.sendMediaBatch(conversationId, batch);
       } else if (action === "document") {
         const doc = await pickDocument();
         if (doc) store.sendMedia(conversationId, doc);
@@ -349,6 +380,27 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     alert("Message", undefined, [...options, { text: "Cancel", style: "cancel" }]);
   };
 
+  const openPhoto = (m: Message) => {
+    if (m.kind !== "image" || !m.dataUrl) return;
+    const photos = m.albumId
+      ? albumPhotos(messages, m.albumId)
+      : [m];
+    const index = Math.max(0, photos.findIndex((p) => p.id === m.id));
+    setPhotoViewer({ photos, index });
+  };
+
+  const displayMessages = useMemo(
+    () =>
+      collapseAlbumLeads(
+        gated
+          ? messages.filter(
+              (m) => !(m.kind === "system" && m.text?.includes("wants to connect"))
+            )
+          : messages
+      ),
+    [messages, gated]
+  );
+
   const Bubble = ({ m }: { m: Message }) => {
     const mine = m.authorId === ME;
     if (m.kind === "system") {
@@ -374,6 +426,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     ) : null;
 
     const time = new Date(m.sentAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const album = m.albumId ? albumItems(messages, m.albumId) : null;
 
     return (
       <View className={`px-4 mb-3 ${mine ? "items-end" : "items-start"}`}>
@@ -395,8 +448,16 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             <Text className={`italic text-[15px] px-4 py-3 ${mine ? "text-slate-400" : "text-slate-400"}`}>
               Message deleted
             </Text>
+          ) : album && album.length > 1 ? (
+            <AlbumGrid
+              items={album}
+              onOpenPhoto={openPhoto}
+              onOpenVideo={() => {}}
+            />
           ) : m.kind === "image" && m.dataUrl ? (
-            <Image source={{ uri: m.dataUrl }} style={{ width: 240, height: 240 }} resizeMode="cover" />
+            <Pressable onPress={() => openPhoto(m)}>
+              <Image source={{ uri: m.dataUrl }} style={{ width: 240, height: 240 }} resizeMode="cover" />
+            </Pressable>
           ) : m.kind === "video" && m.dataUrl ? (
             <View style={{ width: 240, height: 160 }} className="bg-slate-800">
               {m.thumbnailUrl ? (
@@ -586,16 +647,13 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         ) : (
         <FlatList
           ref={listRef}
-          data={
-            gated
-              ? messages.filter(
-                  (m) => !(m.kind === "system" && m.text?.includes("wants to connect"))
-                )
-              : messages
-          }
+          data={displayMessages}
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble m={item} />}
           contentContainerStyle={{ paddingVertical: 14 }}
+          ListFooterComponent={
+            incomingRefresh ? <IncomingMessageSkeleton /> : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -737,12 +795,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         </View>
         </ChatSwitcherSheet>
 
-        {/* Bottom floor: a plain opaque block sized to the safe-area
-            inset. Its only job is to cover the gesture-bar strip so the
-            darker conversation surface never shows beneath the composer.
-            Kept separate from the composer on purpose — it takes nothing
-            from it and changes no composer geometry. */}
-        <View className="bg-background" style={{ height: composerPad }} />
+        {/* Bottom floor: covers the gesture bar only when the keyboard
+            is closed. Zero height while typing so the composer sits
+            flush on the keyboard. */}
+        {composerPad > 0 ? (
+          <View className="bg-background" style={{ height: composerPad }} />
+        ) : null}
 
         {emojiOpen && (
           <EmojiPicker onSelect={(e) => setText((t) => t + e)} />
@@ -758,6 +816,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
         }}
       />
+
+      {photoViewer && (
+        <PhotoViewer
+          photos={photoViewer.photos}
+          initialIndex={photoViewer.index}
+          onClose={() => setPhotoViewer(null)}
+        />
+      )}
 
       <ContactPickerSheet
         visible={contactPickerOpen}

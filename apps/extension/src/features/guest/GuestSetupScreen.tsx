@@ -6,6 +6,7 @@ import ScreenFooter from "../../components/layout/ScreenFooter";
 import ScreenHeader from "../../components/layout/ScreenHeader";
 import { Avatar, Button, Input } from "../../components/ui";
 import { registerGuestSession } from "../../lib/auth-client";
+import { endGuestSessionCompletely } from "../../lib/guest-session";
 import { generateGuestUsername } from "../../lib/guest-username";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
@@ -37,6 +38,10 @@ export default function GuestSetupScreen() {
     setError(null);
 
     try {
+      // End any prior guest on the server + wipe local chat/inbox so
+      // this identity never inherits another guest's residue.
+      await endGuestSessionCompletely();
+
       const username = await generateGuestUsername();
       startGuestSession({ displayName: displayName.trim(), username });
       // Fire-and-forget — server-side session tracking (Phase 1 of

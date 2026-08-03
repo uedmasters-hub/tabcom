@@ -22,6 +22,7 @@ const INVITE_MIN_LEN = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 const DEBOUNCE = 450;
+const CTA_KEYBOARD_GAP = 8;
 
 type Step = "invite" | "identity";
 type InviteStatus = "idle" | "checking" | "valid" | "invalid" | "unreachable";
@@ -303,8 +304,14 @@ export default function RegisterScreen() {
           )}
         </ScrollView>
 
-        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
-          <View className="px-6 pb-8 pt-2 bg-background">
+        <KeyboardStickyView
+          offset={{
+            // SafeAreaView already pads the bottom; only add the 8px CTA gap.
+            closed: CTA_KEYBOARD_GAP,
+            opened: CTA_KEYBOARD_GAP,
+          }}
+        >
+          <View className="px-6 pt-2 bg-background">
             {step === "invite" ? (
               <Button onPress={goToIdentity} disabled={!canContinue}>Continue</Button>
             ) : (

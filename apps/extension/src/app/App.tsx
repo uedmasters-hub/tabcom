@@ -8,10 +8,9 @@ import { GuestExpiredScreen, GuestSetupScreen } from "../features/guest";
 import { DoneScreen, ProfileScreen, RegisterScreen, SetupScreen } from "../features/onboarding";
 
 import { useAppStore } from "../stores/app.store";
-import { useChatStore } from "../stores/chat.store";
 import { useProfileStore } from "../stores/profile.store";
-import { disconnectAllContexts } from "../lib/realtime";
-import { recognizeDevice, endGuestSessionOnServer } from "../lib/auth-client";
+import { recognizeDevice } from "../lib/auth-client";
+import { endGuestSessionCompletely } from "../lib/guest-session";
 
 export default function App() {
   const screen = useAppStore((state) => state.screen);
@@ -22,11 +21,9 @@ export default function App() {
   const isGuestSessionExpired = useProfileStore(
     (state) => state.isGuestSessionExpired
   );
-  const endGuestSession = useProfileStore((state) => state.endGuestSession);
   const restoreRecognizedGuest = useProfileStore(
     (state) => state.restoreRecognizedGuest
   );
-  const resetChat = useChatStore((state) => state.resetChat);
 
   // Returning users skip onboarding once storage has hydrated. The
   // socket's own session validation (server-side) is the real gate —
@@ -45,19 +42,10 @@ export default function App() {
 
     if (isComplete) {
       if (isGuestSessionExpired()) {
-        endGuestSession();
-        // Best-effort — see endGuestSessionOnServer's doc comment.
-        // Closes the up-to-60s window between local expiry and the
-        // server's own periodic sweep, during which device
-        // recognition could otherwise still resume this same guest.
-        void endGuestSessionOnServer().catch(() => {});
-        resetChat();
-        // disconnectAllContexts (not bare disconnectRealtime) — see its
-        // doc comment. This is what makes background's separate
-        // connection actually notice the session ended, instead of
-        // continuing to report this identity as online indefinitely.
-        disconnectAllContexts();
+        // Navigate first so the recognition path below cannot revive
+        // this guest while the server end-call is in flight.
         setScreen("guest-expired");
+        void endGuestSessionCompletely();
         return;
       }
       setScreen("workspace");
@@ -79,6 +67,14 @@ export default function App() {
     // to authenticate with, so there's no safe way to silently restore
     // a registered account whose local session token is genuinely
     // gone. That's a real re-auth, not a recognition problem.
+    //
+    // Skip recognition while the expired-guest screen is showing —
+    // otherwise a race with the server's end-guest call could revive
+    // the same guest (and its wiped data) seconds later.
+    if (screen === "guest-expired" || screen === "guest-setup") {
+      return;
+    }
+
     let cancelled = false;
     void recognizeDevice().then((result) => {
       if (cancelled || !result.ok || !result.session) return;
@@ -99,10 +95,9 @@ export default function App() {
     hasHydrated,
     isComplete,
     isGuestSessionExpired,
-    endGuestSession,
     restoreRecognizedGuest,
-    resetChat,
     setScreen,
+    screen,
   ]);
 
   // Avoid a welcome-screen flash while browser.storage loads.
@@ -120,14 +115,14 @@ export default function App() {
     case "register":
       return <RegisterScreen />;
 
+    case "setup":
+      return <SetupScreen />;
+
     case "profile":
       return <ProfileScreen />;
 
     case "done":
       return <DoneScreen />;
-
-    case "setup":
-      return <SetupScreen />;
 
     case "guest-setup":
       return <GuestSetupScreen />;

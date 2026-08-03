@@ -131,6 +131,8 @@ export default function ContactsScreen() {
   const renderContact = (contact: Contact, action: "remove-connection" | "remove-member" | "add-member") => {
     const dot = presenceColors[contact.presence];
     const isPendingInvite = pendingInviteUsernames.has(contact.username);
+    const unread =
+      conversations.find((c) => c.contactId === contact.id)?.unread ?? 0;
     return (
       <View key={contact.id} className="flex-row items-center px-5 py-3.5 border-b border-slate-100">
         <Pressable onPress={() => openChat(contact)} className="flex-row items-center flex-1">
@@ -144,13 +146,18 @@ export default function ContactsScreen() {
             />
           </View>
           <View className="flex-1">
-            <Text className="text-ink font-bold text-[17px]">
+            <Text className={`text-ink text-[17px] ${unread > 0 ? "font-extrabold" : "font-bold"}`}>
               {contact.alias ?? contact.name}
             </Text>
             <Text className="text-muted text-[14px]">
               @{contact.username} · {contact.presence}
             </Text>
           </View>
+          {unread > 0 && (
+            <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center mr-3">
+              <Text className="text-white text-xs font-bold">{unread}</Text>
+            </View>
+          )}
         </Pressable>
 
         {action === "remove-connection" && (

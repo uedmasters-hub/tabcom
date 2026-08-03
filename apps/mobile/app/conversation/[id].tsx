@@ -40,6 +40,16 @@ export default function ConversationScreen() {
     }
   }, [id, startConversation]);
 
+  // Notification tap while already inside a conversation screen —
+  // switch the open thread in place instead of stacking another route.
+  const pendingSwitch = useChatStore((s) => s.pendingSwitchConversationId);
+  useEffect(() => {
+    if (!pendingSwitch) return;
+    setActiveId(pendingSwitch);
+    useChatStore.getState().clearPendingSwitch();
+    useChatStore.getState().pulseIncomingRefresh(pendingSwitch);
+  }, [pendingSwitch]);
+
   // While a contact-id deep link is resolving into a real conversation,
   // don't flash "not found".
   const resolving =

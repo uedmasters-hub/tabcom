@@ -31,9 +31,21 @@ export function VoiceBubble({
     (async () => {
       if (!dataUrl) return;
       try {
+        // Already a durable on-disk URI from persistence — play directly.
+        if (!dataUrl.startsWith("data:")) {
+          if (!cancelled) setFileUri(dataUrl);
+          return;
+        }
         const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
         if (!base64) return;
-        const path = `${FileSystem.cacheDirectory}voice-${messageId}.m4a`;
+        // Prefer documentDirectory so voice notes survive updates the
+        // same way images do (cacheDirectory is wiped by the OS).
+        const dir = `${FileSystem.documentDirectory}tabcom-media/`;
+        const dirInfo = await FileSystem.getInfoAsync(dir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+        }
+        const path = `${dir}${messageId}.opus`;
         const info = await FileSystem.getInfoAsync(path);
         if (!info.exists) {
           await FileSystem.writeAsStringAsync(path, base64, {

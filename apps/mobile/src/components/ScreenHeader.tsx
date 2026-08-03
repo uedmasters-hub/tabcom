@@ -3,6 +3,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePendingCount } from "@/hooks/useConnections";
+import { useChatStore } from "@/stores/chat";
+import { GuestExpiryBanner } from "@/components/GuestExpiryBanner";
 import { color, space, radius, size, type } from "@/theme";
 import { ScreenTitle, Micro } from "@/theme";
 
@@ -18,6 +20,10 @@ interface Props {
 export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder }: Props) {
   const router = useRouter();
   const pending = usePendingCount();
+  const unread = useChatStore((s) =>
+    s.conversations.reduce((sum, c) => sum + (c.unread ?? 0), 0)
+  );
+  const bellCount = pending + unread;
 
   return (
     <SafeAreaView edges={["top"]} style={{ backgroundColor: color.background }}>
@@ -61,7 +67,7 @@ export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder
           }}
         >
           <Ionicons name="notifications-outline" size={size.icon} color={color.ink} />
-          {pending > 0 && (
+          {bellCount > 0 && (
             <View
               style={{
                 position: "absolute",
@@ -78,7 +84,7 @@ export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder
                 borderColor: color.white,
               }}
             >
-              <Micro>{String(pending)}</Micro>
+              <Micro>{String(bellCount > 99 ? "99+" : bellCount)}</Micro>
             </View>
           )}
         </Pressable>
@@ -116,6 +122,9 @@ export function ScreenHeader({ title, onAdd, search, onSearch, searchPlaceholder
           </View>
         </View>
       )}
+
+      {/* Final 5 minutes of a guest session — below the header chrome. */}
+      <GuestExpiryBanner />
     </SafeAreaView>
   );
 }

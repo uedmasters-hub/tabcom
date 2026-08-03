@@ -40,7 +40,47 @@ async function authFetch<T>(path: string, init?: RequestInit): Promise<T | { ok:
 export interface RequestLinkResult {
   ok: boolean;
   pollId?: string;
-  reason?: "rate_limited" | "invalid_email" | "unreachable";
+  reason?: "rate_limited" | "invalid_email" | "not_registered" | "unreachable" | "server_error";
+}
+
+export type CheckEmailResult =
+  | { ok: true; eligible: true }
+  | { ok: true; eligible: false; reason: "not_registered" }
+  | { ok: false; reason: "invalid_email" | "unreachable" | "server_error" };
+
+/** Legacy servers fall through unknown routes to `{ ok: true, service }` —
+ *  treat those as "preflight unavailable", never as not_registered. */
+export type CheckEmailInterpretation =
+  | CheckEmailResult
+  | { ok: true; eligible: "unknown" };
+
+export function interpretCheckEmail(raw: unknown): CheckEmailInterpretation {
+  if (!raw || typeof raw !== "object") {
+    return { ok: true, eligible: "unknown" };
+  }
+  const body = raw as Record<string, unknown>;
+  if (body.ok === false) {
+    const reason = body.reason;
+    if (reason === "invalid_email") {
+      return { ok: false, reason: "invalid_email" };
+    }
+    if (reason === "unreachable" || reason === "server_error") {
+      return { ok: false, reason };
+    }
+    // e.g. not_found on undeployed check-email — fall through to request-link
+    return { ok: true, eligible: "unknown" };
+  }
+  if (body.eligible === true) return { ok: true, eligible: true };
+  if (body.eligible === false) {
+    return { ok: true, eligible: false, reason: "not_registered" };
+  }
+  return { ok: true, eligible: "unknown" };
+}
+
+export function isMagicLinkGranted(
+  result: RequestLinkResult
+): result is { ok: true; pollId: string } {
+  return result.ok === true && typeof result.pollId === "string" && result.pollId.length > 0;
 }
 
 export async function requestMagicLink(email: string): Promise<RequestLinkResult> {
@@ -49,6 +89,29 @@ export async function requestMagicLink(email: string): Promise<RequestLinkResult
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email }),
   });
+}
+
+export async function checkEmail(email: string): Promise<CheckEmailInterpretation> {
+  const raw = await authFetch<unknown>(
+    `/auth/check-email?email=${encodeURIComponent(email.trim().toLowerCase())}`
+  );
+  if (raw && typeof raw === "object" && "reason" in raw && (raw as { reason?: string }).reason === "unreachable") {
+    return { ok: false, reason: "unreachable" };
+  }
+  return interpretCheckEmail(raw);
+}
+
+/** Waitlist only — never mints a magic-link pollId or sign-in email. */
+export async function submitInviteRequest(email: string): Promise<void> {
+  try {
+    await authFetch<unknown>("/invite-request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), source: "sign_in" }),
+    });
+  } catch {
+    /* best effort */
+  }
 }
 
 export interface AuthenticatedUser {

@@ -86,6 +86,7 @@ export default function NotificationsScreen() {
                 key={c.id}
                 onPress={() => {
                   useChatStore.getState().openConversation(c.id);
+                  useChatStore.getState().pulseIncomingRefresh(c.id);
                   router.push(
                     c.kind === "community" && c.communityId
                       ? (`/community/${c.communityId}` as any)

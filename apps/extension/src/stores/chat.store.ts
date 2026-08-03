@@ -177,7 +177,22 @@ interface ChatState {
       contactUsername?: string;
       contactName?: string;
       contactColor?: string;
+      albumId?: string;
+      albumIndex?: number;
+      albumCount?: number;
     }
+  ) => void;
+  /** Multi-select send — 2+ items share an albumId and render as a grid. */
+  sendMediaBatch: (
+    conversationId: string,
+    items: Array<{
+      kind: "image" | "video" | "file";
+      dataUrl: string;
+      fileName?: string;
+      fileSize?: number;
+      mimeType?: string;
+      durationMs?: number;
+    }>
   ) => void;
   /** Re-attempt delivery of a failed outgoing message. */
   retryMessage: (conversationId: string, messageId: string) => void;
@@ -457,6 +472,9 @@ export const useChatStore = create<ChatState>()(
         contactColor: wire.contactColor,
         sentAt: wire.sentAt,
         replyToId: wire.replyToId,
+        albumId: wire.albumId,
+        albumIndex: wire.albumIndex,
+        albumCount: wire.albumCount,
         ...extras,
       });
 
@@ -544,6 +562,9 @@ export const useChatStore = create<ChatState>()(
           contactColor: message.contactColor,
           sentAt: message.sentAt,
           replyToId: message.replyToId,
+          albumId: message.albumId,
+          albumIndex: message.albumIndex,
+          albumCount: message.albumCount,
         };
 
         // THE delivery state machine — every transition for outgoing
@@ -785,7 +806,9 @@ export const useChatStore = create<ChatState>()(
           // messages carry a human label there instead of an empty
           // string, and every preview surface works with no changes.
           const previewText =
-            media.kind === "voice"
+            media.albumId && media.albumCount && media.albumCount > 1
+              ? `${media.albumCount} media`
+              : media.kind === "voice"
               ? "🎤 Voice message"
               : media.kind === "image"
                 ? "📷 Photo"
@@ -812,12 +835,51 @@ export const useChatStore = create<ChatState>()(
             contactUsername: media.contactUsername,
             contactName: media.contactName,
             contactColor: media.contactColor,
+            albumId: media.albumId,
+            albumIndex: media.albumIndex,
+            albumCount: media.albumCount,
             sentAt: Date.now(),
             status: get().live ? "sending" : "failed",
           };
 
           set((state) => appendMessage(state, conversationId, message, false));
           if (get().live) deliver(conversationId, message);
+        },
+
+        sendMediaBatch: (conversationId, items) => {
+          if (items.length === 0) return;
+          const albumId = items.length > 1 ? uid() : undefined;
+          const stamp = Date.now();
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i]!;
+            const previewText = albumId
+              ? `${items.length} media`
+              : item.kind === "image"
+                ? "📷 Photo"
+                : item.kind === "video"
+                  ? "🎬 Video"
+                  : `📎 ${item.fileName ?? "File"}`;
+
+            const message: Message = {
+              id: uid(),
+              authorId: ME,
+              kind: item.kind,
+              text: previewText,
+              dataUrl: item.dataUrl,
+              durationMs: item.durationMs,
+              fileName: item.fileName,
+              fileSize: item.fileSize,
+              mimeType: item.mimeType,
+              albumId,
+              albumIndex: albumId ? i : undefined,
+              albumCount: albumId ? items.length : undefined,
+              sentAt: stamp + i,
+              status: get().live ? "sending" : "failed",
+            };
+
+            set((state) => appendMessage(state, conversationId, message, false));
+            if (get().live) deliver(conversationId, message);
+          }
         },
 
         retryMessage: (conversationId, messageId) => {

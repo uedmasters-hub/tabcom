@@ -5,6 +5,7 @@ import AppShell from "../../components/layout/AppShell";
 import ScreenHeader from "../../components/layout/ScreenHeader";
 import { Button, Illustration, Input, SectionLabel } from "../../components/ui";
 import { checkInvite, checkUsernameAvailable, registerAccount } from "../../lib/auth-client";
+import { wipeGuestLocalState } from "../../lib/guest-session";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
 
@@ -186,6 +187,11 @@ export default function RegisterScreen() {
     setSession(result.sessionToken, result.user.email);
     setVerified(result.user.verified);
     setIdentity({ displayName: displayName.trim(), username: username.trim().toLowerCase() });
+    // Guest → registered upgrade must not keep the disposable guest's
+    // chat residue under the new account identity.
+    if (isGuest) {
+      await wipeGuestLocalState();
+    }
     setScreen("profile");
   };
 

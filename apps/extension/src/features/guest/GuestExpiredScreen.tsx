@@ -6,14 +6,9 @@ import { Button, Illustration } from "../../components/ui";
 import { useAppStore } from "../../stores/app.store";
 
 /**
- * Shown when WorkspaceScreen's guest-expiry watcher detects the
- * 30-minute session has ended. Local device data (contacts, messages,
- * board items) is untouched — only the ephemeral guest identity is
- * cleared — so this is a re-entry point, not a data-loss warning.
- *
- * Mirrors WelcomeScreen's three options (same destinations) rather
- * than a narrower "start over or sign in" pair, so ending up here via
- * expiry never offers less than starting fresh would have.
+ * Shown when the guest 30-minute session ends. All guest-local data
+ * (contacts, messages, communities) has already been wiped — the next
+ * guest starts from a clean slate.
  */
 export default function GuestExpiredScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
@@ -30,12 +25,12 @@ export default function GuestExpiredScreen() {
 
           <div className="mt-6 w-full max-w-xs rounded-2xl border border-slate-200 bg-slate-50 px-5 py-5">
             <h1 className="text-lg font-bold tracking-tight">
-              Session timeout
+              Guest session ended
             </h1>
             <p className="mt-2 text-xs leading-5 text-slate-500">
-              Guest sessions last 30 minutes and this one's ended. Your
-              device data is untouched — jump back in below, or sign in for
-              an account that doesn't expire.
+              Guest sessions last 30 minutes. Your guest data on this device
+              has been cleared — the next session starts fresh. Jump back in
+              below, or sign in for an account that doesn&apos;t expire.
             </p>
           </div>
         </section>

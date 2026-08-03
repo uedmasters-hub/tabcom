@@ -129,7 +129,12 @@ export default function TabsLayout() {
         <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
           {TABS.map((tab, i) => {
             const focused = state.index === i;
-            const badge = tab.name === "index" && pending > 0 ? pending : undefined;
+            const badge =
+              tab.name === "index" && unread > 0
+                ? unread
+                : tab.name === "contacts" && pending > 0
+                  ? pending
+                  : undefined;
 
             return (
               <TabButton

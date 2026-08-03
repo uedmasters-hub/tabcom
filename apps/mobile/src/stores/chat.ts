@@ -127,6 +127,7 @@ function wireToMessage(
     text: wire.text,
     url: wire.url,
     dataUrl: wire.dataUrl,
+    thumbnailUrl: wire.thumbnailUrl,
     durationMs: wire.durationMs,
     fileName: wire.fileName,
     fileSize: wire.fileSize,
@@ -138,6 +139,9 @@ function wireToMessage(
     contactColor: wire.contactColor,
     sentAt: wire.sentAt,
     replyToId: wire.replyToId,
+    albumId: wire.albumId,
+    albumIndex: wire.albumIndex,
+    albumCount: wire.albumCount,
     ...extras,
   };
 }
@@ -158,6 +162,10 @@ interface ChatState {
   muted: string[];
   rosterUsernames: string[];
   activeConversationId: string | null;
+  /** In-place switch request from a notification tap while a thread is open. */
+  pendingSwitchConversationId: string | null;
+  /** Conversation showing a subtle incoming-message shimmer. */
+  incomingRefreshId: string | null;
   typing: string[];
   connected: boolean;
 
@@ -165,6 +173,10 @@ interface ChatState {
   setConnected: (v: boolean) => void;
   openConversation: (id: string) => void;
   closeConversation: () => void;
+  requestSwitchConversation: (id: string) => void;
+  clearPendingSwitch: () => void;
+  pulseIncomingRefresh: (conversationId: string) => void;
+  clearIncomingRefresh: () => void;
   startConversation: (contactId: string) => string;
   openCommunityConversation: (communityId: string) => string;
 
@@ -197,7 +209,24 @@ interface ChatState {
       contactUsername?: string;
       contactName?: string;
       contactColor?: string;
+      albumId?: string;
+      albumIndex?: number;
+      albumCount?: number;
     }
+  ) => void;
+  /** Send one or more library picks. 2+ media share an albumId and
+   *  render as a WhatsApp-style grid; singles stay as before. */
+  sendMediaBatch: (
+    conversationId: string,
+    items: Array<{
+      kind: MessageKind;
+      dataUrl?: string;
+      thumbnailUrl?: string;
+      fileName?: string;
+      fileSize?: number;
+      mimeType?: string;
+      durationMs?: number;
+    }>
   ) => void;
   sendNote: (conversationId: string, text: string, imageDataUrl?: string) => void;
   editMessage: (conversationId: string, messageId: string, text: string) => void;
@@ -375,11 +404,13 @@ export const useChatStore = create<ChatState>()((set, get) => {
 
     const wire: WireMessage = {
       id: message.id, kind: message.kind, text: message.text,
-      url: message.url, dataUrl: message.dataUrl, durationMs: message.durationMs,
+      url: message.url, dataUrl: message.dataUrl, thumbnailUrl: message.thumbnailUrl,
+      durationMs: message.durationMs,
       fileName: message.fileName, fileSize: message.fileSize, mimeType: message.mimeType,
       latitude: message.latitude, longitude: message.longitude,
       contactUsername: message.contactUsername, contactName: message.contactName,
       contactColor: message.contactColor, sentAt: message.sentAt, replyToId: message.replyToId,
+      albumId: message.albumId, albumIndex: message.albumIndex, albumCount: message.albumCount,
     };
 
     const onAck = (evidence: "delivered" | "rejected" | "unknown") => {
@@ -412,6 +443,8 @@ export const useChatStore = create<ChatState>()((set, get) => {
     muted: [],
     rosterUsernames: [],
     activeConversationId: null,
+    pendingSwitchConversationId: null,
+    incomingRefreshId: null,
     typing: [],
     connected: false,
 
@@ -426,6 +459,21 @@ export const useChatStore = create<ChatState>()((set, get) => {
       })),
 
     closeConversation: () => set({ activeConversationId: null }),
+
+    requestSwitchConversation: (id) =>
+      set({ pendingSwitchConversationId: id }),
+
+    clearPendingSwitch: () => set({ pendingSwitchConversationId: null }),
+
+    pulseIncomingRefresh: (conversationId) => {
+      set({ incomingRefreshId: conversationId });
+      setTimeout(() => {
+        const cur = get().incomingRefreshId;
+        if (cur === conversationId) set({ incomingRefreshId: null });
+      }, 900);
+    },
+
+    clearIncomingRefresh: () => set({ incomingRefreshId: null }),
 
     startConversation: (contactId) => {
       const c = ensureConversation({ contactId });
@@ -542,11 +590,48 @@ export const useChatStore = create<ChatState>()((set, get) => {
         contactUsername: payload.contactUsername,
         contactName: payload.contactName,
         contactColor: payload.contactColor,
+        albumId: payload.albumId,
+        albumIndex: payload.albumIndex,
+        albumCount: payload.albumCount,
         sentAt: Date.now(),
         status: get().connected ? "sending" : "failed",
       };
       set((state) => appendMessage(state, conversationId, message, false));
       deliver(conversationId, message);
+    },
+
+    sendMediaBatch: (conversationId, items) => {
+      if (items.length === 0) return;
+      const albumId = items.length > 1 ? uid() : undefined;
+      const stamp = Date.now();
+      items.forEach((item, i) => {
+        const message: Message = {
+          id: uid(),
+          authorId: ME,
+          kind: item.kind,
+          text: albumId
+            ? `${items.length} media`
+            : item.kind === "image"
+              ? "📷 Photo"
+              : item.kind === "video"
+                ? "🎬 Video"
+                : "",
+          dataUrl: item.dataUrl,
+          thumbnailUrl: item.thumbnailUrl,
+          fileName: item.fileName,
+          fileSize: item.fileSize,
+          mimeType: item.mimeType,
+          durationMs: item.durationMs,
+          albumId,
+          albumIndex: albumId ? i : undefined,
+          albumCount: albumId ? items.length : undefined,
+          // Offset stamps so chronological order matches pick order.
+          sentAt: stamp + i,
+          status: get().connected ? "sending" : "failed",
+        };
+        set((state) => appendMessage(state, conversationId, message, false));
+        deliver(conversationId, message);
+      });
     },
 
     /**
@@ -670,6 +755,10 @@ export const useChatStore = create<ChatState>()((set, get) => {
           typing: state.typing.filter((id) => id !== contactId),
         };
       });
+      // Subtle shimmer when a message lands in the open thread.
+      if (get().activeConversationId === c.id) {
+        get().pulseIncomingRefresh(c.id);
+      }
 
       // Notes also pin to the wall. Best-effort: a failure here costs
       // the card, not the message — it's already in the thread.
@@ -1012,7 +1101,8 @@ export const useChatStore = create<ChatState>()((set, get) => {
       set({
         contacts: [], conversations: [], messages: {}, connections: {},
         communities: {}, communityInvites: {}, muted: [], rosterUsernames: [],
-        activeConversationId: null, typing: [],
+        activeConversationId: null, pendingSwitchConversationId: null,
+        incomingRefreshId: null, typing: [],
       }),
   };
 });

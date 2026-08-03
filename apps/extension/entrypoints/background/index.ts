@@ -182,6 +182,7 @@ function registerCallPortListener() {
     if (port.name !== "tabcom-call") return;
 
     callPort = port;
+    let localHangupSignaled = false;
     for (const queued of pendingCallSignals) {
       port.postMessage({ type: "signal", payload: queued });
     }
@@ -189,6 +190,17 @@ function registerCallPortListener() {
 
     port.onMessage.addListener((message: { type: string; to?: string; signal?: unknown }) => {
       if (message.type === "signal" && message.to && message.signal) {
+        const kind = (message.signal as { kind?: string }).kind;
+        if (
+          kind === "end" ||
+          kind === "cancel" ||
+          kind === "timeout" ||
+          kind === "reject" ||
+          kind === "quick_reply" ||
+          kind === "busy"
+        ) {
+          localHangupSignaled = true;
+        }
         void ensureWriteConnection().then((connected) => {
           if (connected) {
             sendCallSignal(message.to!, message.signal as Parameters<typeof sendCallSignal>[1]);
@@ -199,13 +211,17 @@ function registerCallPortListener() {
 
     // Window closed (hang up, or just closed): tell the peer the call is
     // over — a vanished window must never leave the other side ringing.
+    // Skip if the window already sent a terminal signal so mobile doesn't
+    // get a confusing double hangup (cancel then end).
     port.onDisconnect.addListener(() => {
       if (callPort === port) {
         const peer = callSession?.peer;
         callPort = null;
         callSession = null;
         pendingCallSignals = [];
-        if (peer && writeConnected) sendCallSignal(peer, { kind: "end" });
+        if (peer && writeConnected && !localHangupSignaled) {
+          sendCallSignal(peer, { kind: "end" });
+        }
         endCallBusy();
       }
     });

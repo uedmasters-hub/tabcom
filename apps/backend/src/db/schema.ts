@@ -18,8 +18,12 @@ import {
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: text("email").notNull().unique(),
-  /** Null until the person picks one during setup — enforced unique
-   *  here for the first time in this project's history. */
+  /**
+   * Required for a fully registered account. Null only transiently is
+   * no longer allowed on the auth path — magic-link sign-in refuses
+   * incomplete rows, and `purgeIncompleteUsers` removes orphans.
+   * Unique when set.
+   */
   username: text("username").unique(),
   displayName: text("display_name"),
   avatarColor: text("avatar_color"),
@@ -29,6 +33,27 @@ export const users = pgTable("users", {
    *  trust it before it's confirmed. */
   emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Waitlist / early-access requests from people who tried to sign in
+ * (or used Settings → Request invite) without an existing account.
+ * Never creates a users row — just records interest and triggers a
+ * confirmation email.
+ */
+export const inviteRequests = pgTable("invite_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: text("email").notNull().unique(),
+  displayName: text("display_name"),
+  reason: text("reason"),
+  /** Where the request came from: "sign_in" | "settings" | "api". */
+  source: text("source").notNull().default("sign_in"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

@@ -116,11 +116,11 @@ export async function pickNoteImage(): Promise<MediaResult | null> {
   };
 }
 
-export async function pickFromLibrary(): Promise<MediaResult | null> {
+export async function pickFromLibrary(): Promise<MediaResult[]> {
   const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) {
     alert("Permission needed", "Allow photo library access to attach media.");
-    return null;
+    return [];
   }
 
   const result = await ImagePicker.launchImageLibraryAsync({
@@ -129,26 +129,31 @@ export async function pickFromLibrary(): Promise<MediaResult | null> {
     videoMaxDuration: MAX_VIDEO_SECONDS,
     videoQuality: ImagePicker.UIImagePickerControllerQualityType.IFrame1280x720,
     allowsEditing: false,
+    allowsMultipleSelection: true,
+    selectionLimit: 10,
   });
-  if (result.canceled || !result.assets[0]) return null;
+  if (result.canceled || result.assets.length === 0) return [];
 
-  const asset = result.assets[0];
-  const isVideo = asset.type === "video";
-  const bytes = asset.fileSize ?? (await sizeOf(asset.uri));
+  const out: MediaResult[] = [];
+  for (const asset of result.assets.slice(0, 10)) {
+    const isVideo = asset.type === "video";
+    const bytes = asset.fileSize ?? (await sizeOf(asset.uri));
 
-  if (isVideo && tooBig("Video", bytes, MAX_VIDEO_BYTES)) return null;
-  if (!isVideo && tooBig("Image", bytes, MAX_IMAGE_BYTES)) return null;
+    if (isVideo && tooBig("Video", bytes, MAX_VIDEO_BYTES)) continue;
+    if (!isVideo && tooBig("Image", bytes, MAX_IMAGE_BYTES)) continue;
 
-  const mime = asset.mimeType ?? (isVideo ? "video/mp4" : "image/jpeg");
-  return {
-    kind: isVideo ? "video" : "image",
-    dataUrl: await toDataUrl(asset.uri, mime),
-    fileName: asset.fileName ?? undefined,
-    fileSize: bytes,
-    mimeType: mime,
-    durationMs: asset.duration ?? undefined,
-    thumbnailUrl: isVideo ? await videoPoster(asset.uri) : undefined,
-  };
+    const mime = asset.mimeType ?? (isVideo ? "video/mp4" : "image/jpeg");
+    out.push({
+      kind: isVideo ? "video" : "image",
+      dataUrl: await toDataUrl(asset.uri, mime),
+      fileName: asset.fileName ?? undefined,
+      fileSize: bytes,
+      mimeType: mime,
+      durationMs: asset.duration ?? undefined,
+      thumbnailUrl: isVideo ? await videoPoster(asset.uri) : undefined,
+    });
+  }
+  return out;
 }
 
 /** Same constraints as the library path, but straight from the camera. */

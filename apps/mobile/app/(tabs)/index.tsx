@@ -15,6 +15,7 @@ import type { Conversation, Message } from "@tabcom/shared";
 import { SwipeableRow } from "@/components/SwipeableRow";
 import { toast } from "@/lib/toast";
 import { NoteWall } from "@/components/NoteWall";
+import { RecentCalls } from "@/components/RecentCalls";
 import { NoteSandbox } from "@/components/NoteSandbox";
 import type { NoteCard } from "@/stores/notes";
 import { ChatListSkeleton } from "@/components/ChatListSkeleton";
@@ -145,14 +146,18 @@ export default function ChatScreen() {
       />
       <View className="flex-1">
       {filtered.length === 0 ? (
-        <View className="flex-1 items-center justify-center px-10">
-          <Ionicons name="chatbubbles-outline" size={56} color="#cbd5e1" />
-          <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
-            {query ? "No matches" : "No conversations yet"}
-          </Text>
-          <Text className="text-muted text-[14px] text-center leading-6">
-            {query ? "Try a different search." : "Add someone in Contacts and start chatting once they accept."}
-          </Text>
+        <View className="flex-1">
+          <NoteWall onOpen={setOpenNote} />
+          <RecentCalls />
+          <View className="flex-1 items-center justify-center px-10">
+            <Ionicons name="chatbubbles-outline" size={56} color="#cbd5e1" />
+            <Text className="text-ink text-[20px] font-bold mt-4 mb-2">
+              {query ? "No matches" : "No conversations yet"}
+            </Text>
+            <Text className="text-muted text-[14px] text-center leading-6">
+              {query ? "Try a different search." : "Add someone in Contacts and start chatting once they accept."}
+            </Text>
+          </View>
         </View>
       ) : (
         <FlatList
@@ -173,6 +178,7 @@ export default function ChatScreen() {
           ListHeaderComponent={
             <>
             <NoteWall onOpen={setOpenNote} />
+            <RecentCalls />
             {pending.length > 0 ? (
               <View className="px-5 pt-1 pb-3">
                 {pending.map((c) => (

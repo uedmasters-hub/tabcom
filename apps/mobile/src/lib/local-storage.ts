@@ -13,15 +13,16 @@
  *   - Transactional — no half-written state on crash
  *   - expo-sqlite is built into SDK 57, zero native config
  *
- *  WHAT IS NOT STORED:
+ *  WHAT IS NOT STORED IN SQLITE:
  *   - Session tokens (stays in SecureStore — encrypted keychain)
- *   - Media blobs (stay in expo-file-system cache — too large for DB)
+ *   - Media binary blobs (files live in documentDirectory; SQLite
+ *     keeps durable file:// URIs that survive app updates)
  *   - Ephemeral state (typing indicators, online presence)
  *
  *  PRIVACY CONTRACT:
  *   - All data lives ONLY on this device, NEVER uploaded anywhere
  *   - resetAll() wipes everything — called on sign-out
- *   - Media files are referenced by URI, not embedded
+ *   - Media files are referenced by URI, not embedded in the DB
  *   - No analytics, no telemetry, no crash-report payloads from here
  */
 
@@ -44,7 +45,7 @@ function db(): SQLite.SQLiteDatabase {
 
 // ── Schema ──────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -241,6 +242,30 @@ const MIGRATIONS: Record<number, string[]> = {
     // Soft pastel fill for each wall card. Nullable so hydration can
     // stamp a stable per-id pastel onto rows that predate this column.
     `ALTER TABLE notes ADD COLUMN bg_color TEXT`,
+  ],
+  4: [
+    `ALTER TABLE messages ADD COLUMN album_id TEXT`,
+    `ALTER TABLE messages ADD COLUMN album_index INTEGER`,
+    `ALTER TABLE messages ADD COLUMN album_count INTEGER`,
+    `CREATE INDEX IF NOT EXISTS idx_msg_album ON messages(album_id)`,
+  ],
+  5: [
+    `CREATE TABLE IF NOT EXISTS call_history (
+      id              TEXT PRIMARY KEY,
+      peer_username   TEXT NOT NULL,
+      peer_name       TEXT NOT NULL DEFAULT '',
+      peer_color      TEXT NOT NULL DEFAULT '#2563eb',
+      direction       TEXT NOT NULL CHECK(direction IN ('outgoing','incoming')),
+      video           INTEGER NOT NULL DEFAULT 0,
+      outcome         TEXT NOT NULL,
+      started_at      INTEGER NOT NULL,
+      ended_at        INTEGER,
+      duration_ms     INTEGER,
+      quick_reply     TEXT,
+      seen            INTEGER NOT NULL DEFAULT 0
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_calls_started ON call_history(started_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_calls_peer ON call_history(peer_username)`,
   ],
 };
 
@@ -454,6 +479,9 @@ export interface StoredMessage {
   author_color: string | null;
   read_at: number | null;
   reactions: string | null;
+  album_id: string | null;
+  album_index: number | null;
+  album_count: number | null;
 }
 
 export function insertMessage(m: {
@@ -480,6 +508,9 @@ export function insertMessage(m: {
   authorName?: string;
   authorColor?: string;
   reactions?: string;
+  albumId?: string;
+  albumIndex?: number;
+  albumCount?: number;
 }): void {
   db().runSync(
     `INSERT OR IGNORE INTO messages (
@@ -489,8 +520,9 @@ export function insertMessage(m: {
       latitude, longitude,
       contact_username, contact_name, contact_color,
       sent_at, status, reply_to_id,
-      author_name, author_color, reactions, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      author_name, author_color, reactions,
+      album_id, album_index, album_count, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     m.id, m.conversationId, m.authorId, m.kind, m.text,
     m.url ?? null, m.mediaUri ?? null, m.thumbnailUri ?? null,
     m.durationMs ?? null, m.fileName ?? null, m.fileSize ?? null,
@@ -498,6 +530,7 @@ export function insertMessage(m: {
     m.contactUsername ?? null, m.contactName ?? null, m.contactColor ?? null,
     m.sentAt, m.status ?? null, m.replyToId ?? null,
     m.authorName ?? null, m.authorColor ?? null, m.reactions ?? null,
+    m.albumId ?? null, m.albumIndex ?? null, m.albumCount ?? null,
     Date.now()
   );
 }
@@ -558,6 +591,57 @@ export function updateMessageReadAt(id: string, readAt: number): void {
 export function updateMessageReactions(id: string, reactions: string): void {
   db().runSync(
     "UPDATE messages SET reactions = ? WHERE id = ?", reactions, id
+  );
+}
+
+/** Point a message at durable on-disk media after the blob is written. */
+export function updateMessageMediaUri(
+  id: string,
+  mediaUri: string,
+  thumbnailUri?: string | null
+): void {
+  if (thumbnailUri) {
+    db().runSync(
+      "UPDATE messages SET media_uri = ?, thumbnail_uri = ? WHERE id = ?",
+      mediaUri,
+      thumbnailUri,
+      id
+    );
+  } else {
+    db().runSync(
+      "UPDATE messages SET media_uri = ? WHERE id = ?",
+      mediaUri,
+      id
+    );
+  }
+}
+
+export function getMediaByMessageId(messageId: string) {
+  return db().getFirstSync<{
+    id: string;
+    message_id: string | null;
+    kind: string;
+    file_uri: string;
+    file_name: string | null;
+  }>("SELECT * FROM media WHERE message_id = ? LIMIT 1", messageId);
+}
+
+/** Every non-deleted message in a conversation (newest first). */
+export function getAllMessages(conversationId: string): StoredMessage[] {
+  return db().getAllSync<StoredMessage>(
+    `SELECT * FROM messages
+     WHERE conversation_id = ? AND deleted_at IS NULL
+     ORDER BY sent_at DESC`,
+    conversationId
+  );
+}
+
+export function getMessagesMissingMedia(): StoredMessage[] {
+  return db().getAllSync<StoredMessage>(
+    `SELECT * FROM messages
+     WHERE deleted_at IS NULL
+       AND kind IN ('image','video','voice','file','note')
+       AND (media_uri IS NULL OR media_uri = '')`
   );
 }
 
@@ -801,7 +885,7 @@ export function registerMedia(m: {
   height?: number;
 }): void {
   db().runSync(
-    `INSERT OR IGNORE INTO media (id, message_id, conversation_id, kind, file_uri, file_name, file_size, mime_type, duration_ms, width, height, created_at)
+    `INSERT OR REPLACE INTO media (id, message_id, conversation_id, kind, file_uri, file_name, file_size, mime_type, duration_ms, width, height, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     m.id, m.messageId ?? null, m.conversationId ?? null,
     m.kind, m.fileUri, m.fileName ?? null, m.fileSize ?? null,
@@ -1001,11 +1085,93 @@ export function updateNoteImageUri(id: string, uri: string): void {
 // ── Nuclear reset ───────────────────────────────────────────────────
 
 /** Wipe EVERYTHING — called on sign-out. */
+// ── Call history ────────────────────────────────────────────────────
+
+export type CallOutcome =
+  | "answered"
+  | "missed"
+  | "declined"
+  | "busy"
+  | "cancelled"
+  | "failed"
+  | "timed_out"
+  | "offline";
+
+export interface StoredCall {
+  id: string;
+  peer_username: string;
+  peer_name: string;
+  peer_color: string;
+  direction: "outgoing" | "incoming";
+  video: number;
+  outcome: CallOutcome;
+  started_at: number;
+  ended_at: number | null;
+  duration_ms: number | null;
+  quick_reply: string | null;
+  seen: number;
+}
+
+export function insertCall(c: {
+  id: string;
+  peerUsername: string;
+  peerName: string;
+  peerColor: string;
+  direction: "outgoing" | "incoming";
+  video: boolean;
+  outcome: CallOutcome;
+  startedAt: number;
+  endedAt?: number;
+  durationMs?: number;
+  quickReply?: string;
+  seen?: boolean;
+}): void {
+  db().runSync(
+    `INSERT OR REPLACE INTO call_history (
+      id, peer_username, peer_name, peer_color, direction, video,
+      outcome, started_at, ended_at, duration_ms, quick_reply, seen
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    c.id,
+    c.peerUsername,
+    c.peerName,
+    c.peerColor,
+    c.direction,
+    c.video ? 1 : 0,
+    c.outcome,
+    c.startedAt,
+    c.endedAt ?? null,
+    c.durationMs ?? null,
+    c.quickReply ?? null,
+    c.seen === false ? 0 : 1
+  );
+}
+
+export function getRecentCalls(limit = 30): StoredCall[] {
+  return db().getAllSync<StoredCall>(
+    `SELECT * FROM call_history ORDER BY started_at DESC LIMIT ?`,
+    limit
+  );
+}
+
+export function markMissedCallsSeen(): void {
+  db().runSync(
+    `UPDATE call_history SET seen = 1 WHERE outcome = 'missed' AND seen = 0`
+  );
+}
+
+export function getUnseenMissedCount(): number {
+  const row = db().getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) as c FROM call_history WHERE outcome = 'missed' AND seen = 0`
+  );
+  return row?.c ?? 0;
+}
+
 export function resetAll(): void {
   const d = db();
   d.execSync("BEGIN TRANSACTION");
   try {
     d.execSync("DELETE FROM notes");
+    d.execSync("DELETE FROM call_history");
     d.execSync("DELETE FROM activity_log");
     d.execSync("DELETE FROM board_comments");
     d.execSync("DELETE FROM board_annotations");

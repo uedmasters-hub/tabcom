@@ -17,7 +17,9 @@
     },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "node": "22.19.0",
       "env": {
         "EAS_NO_VCS": "1",
@@ -26,6 +28,9 @@
     },
     "production": {
       "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
       "node": "22.19.0",
       "env": {
         "npm_config_node_linker": "hoisted"

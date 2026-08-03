@@ -28,7 +28,55 @@ export interface AuthenticatedUser {
 export interface RequestLinkResult {
   ok: boolean;
   pollId?: string;
-  reason?: "rate_limited" | "invalid_email" | "unreachable";
+  reason?: "rate_limited" | "invalid_email" | "not_registered" | "unreachable" | "server_error";
+}
+
+export type CheckEmailResult =
+  | { ok: true; eligible: true }
+  | { ok: true; eligible: false; reason: "not_registered" }
+  | { ok: false; reason: "invalid_email" | "unreachable" | "server_error" };
+
+/** True only when the server granted a magic-link poll — never treat a
+ *  failure payload (or a malformed success) as permission to show the
+ *  "check your email" verification UI. */
+export function isMagicLinkGranted(
+  result: RequestLinkResult
+): result is { ok: true; pollId: string } {
+  return result.ok === true && typeof result.pollId === "string" && result.pollId.length > 0;
+}
+
+/**
+ * Normalize check-email responses. Production used to fall through
+ * unmatched routes to `{ ok: true, service: "tabcom-realtime" }` —
+ * which made every address look "not registered" while request-link
+ * still minted magic links. Only trust an explicit boolean `eligible`.
+ * Anything else → skip preflight (`unknown`) and use request-link.
+ */
+export type CheckEmailInterpretation =
+  | CheckEmailResult
+  | { ok: true; eligible: "unknown" };
+
+export function interpretCheckEmail(raw: unknown): CheckEmailInterpretation {
+  if (!raw || typeof raw !== "object") {
+    return { ok: true, eligible: "unknown" };
+  }
+  const body = raw as Record<string, unknown>;
+  if (body.ok === false) {
+    const reason = body.reason;
+    if (reason === "invalid_email") {
+      return { ok: false, reason: "invalid_email" };
+    }
+    if (reason === "unreachable" || reason === "server_error") {
+      return { ok: false, reason };
+    }
+    // e.g. not_found on undeployed check-email — fall through to request-link
+    return { ok: true, eligible: "unknown" };
+  }
+  if (body.eligible === true) return { ok: true, eligible: true };
+  if (body.eligible === false) {
+    return { ok: true, eligible: false, reason: "not_registered" };
+  }
+  return { ok: true, eligible: "unknown" };
 }
 
 export type PollResult =
@@ -112,6 +160,29 @@ export function createAuthClient(env: AuthEnv) {
   return {
     requestMagicLink(email: string): Promise<RequestLinkResult> {
       return authFetch<RequestLinkResult>("/auth/request-link", json({ email }));
+    },
+
+    async checkEmail(email: string): Promise<CheckEmailInterpretation> {
+      const raw = await authFetch<unknown>(
+        `/auth/check-email?email=${encodeURIComponent(email.trim().toLowerCase())}`
+      );
+      if (raw && typeof raw === "object" && "reason" in raw && (raw as { reason?: string }).reason === "unreachable") {
+        return { ok: false, reason: "unreachable" };
+      }
+      return interpretCheckEmail(raw);
+    },
+
+    /** Silent waitlist join — does NOT mint a magic link. Used when
+     *  sign-in preflight says the address isn't registered. */
+    async submitInviteRequest(email: string): Promise<void> {
+      try {
+        await authFetch<unknown>(
+          "/invite-request",
+          json({ email: email.trim().toLowerCase(), source: "sign_in" })
+        );
+      } catch {
+        /* best effort */
+      }
     },
 
     async pollLoginRequest(pollId: string): Promise<PollResult> {

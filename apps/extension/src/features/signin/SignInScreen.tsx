@@ -5,11 +5,21 @@ import AppShell from "../../components/layout/AppShell";
 import ScreenFooter from "../../components/layout/ScreenFooter";
 import ScreenHeader from "../../components/layout/ScreenHeader";
 import { Button, Input, SectionLabel } from "../../components/ui";
-import { requestMagicLink, waitForLogin } from "../../lib/auth-client";
+import {
+  checkEmail,
+  isMagicLinkGranted,
+  requestMagicLink,
+  submitInviteRequest,
+  waitForLogin,
+} from "../../lib/auth-client";
+import { wipeGuestLocalState } from "../../lib/guest-session";
 import { useAppStore } from "../../stores/app.store";
 import { useProfileStore } from "../../stores/profile.store";
 
-type Stage = "email" | "sent" | "error";
+type Stage = "email" | "sent" | "not_registered" | "error";
+
+const NOT_REGISTERED_MESSAGE =
+  "We couldn't find an active account associated with this email address. Invitations are not yet available for your account. We'll notify you once invitations are ready. In the meantime, you can continue using Tabcom as a Guest.";
 
 const BENEFITS = [
   { icon: Lock, text: "Your username is yours — nobody else can claim it" },
@@ -21,6 +31,9 @@ const BENEFITS = [
  * Real passwordless sign-in: request a magic link, wait for the
  * person to click it in their email, pick up the resulting session
  * via polling. No password ever exists to store or leak.
+ *
+ * The "check your email" stage is unreachable unless the backend
+ * confirms the address belongs to a fully registered account.
  */
 export default function SignInScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
@@ -29,11 +42,19 @@ export default function SignInScreen() {
   const setVerified = useProfileStore((state) => state.setVerified);
   const setIdentity = useProfileStore((state) => state.setIdentity);
   const completeProfile = useProfileStore((state) => state.completeProfile);
+  const isGuest = useProfileStore((state) => state.isGuest);
 
   const [email, setEmail] = useState("");
   const [stage, setStage] = useState<Stage>("email");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const markNotRegistered = (address: string) => {
+    setStage("not_registered");
+    // Waitlist only — never call request-link here (that was minting
+    // magic-link emails while this UI said "no account found").
+    void submitInviteRequest(address);
+  };
 
   const submit = async () => {
     const trimmed = email.trim().toLowerCase();
@@ -42,16 +63,40 @@ export default function SignInScreen() {
     setError(null);
 
     try {
-      const result = await requestMagicLink(trimmed);
-      if (!result.ok || !result.pollId) {
+      const eligibility = await checkEmail(trimmed);
+      if (!eligibility.ok) {
         setError(
-          result.reason === "rate_limited"
-            ? "You already requested a link — check your email, or wait a minute to try again."
-            : result.reason === "unreachable"
-              ? "Couldn't reach Tabcom's server. Make sure it's running, then try again."
-              : "That doesn't look like a valid email address."
+          eligibility.reason === "invalid_email"
+            ? "That doesn't look like a valid email address."
+            : "Couldn't reach Tabcom's server. Make sure it's running, then try again."
         );
         setStage("error");
+        setSubmitting(false);
+        return;
+      }
+
+      // Only trust an explicit false. Legacy catch-all `{ ok: true }`
+      // without `eligible` must fall through to request-link.
+      if (eligibility.eligible === false) {
+        markNotRegistered(trimmed);
+        setSubmitting(false);
+        return;
+      }
+
+      const result = await requestMagicLink(trimmed);
+      if (!isMagicLinkGranted(result)) {
+        if (result.reason === "not_registered") {
+          markNotRegistered(trimmed);
+        } else {
+          setError(
+            result.reason === "rate_limited"
+              ? "You already requested a link — check your email, or wait a minute to try again."
+              : result.reason === "unreachable"
+                ? "Couldn't reach Tabcom's server. Make sure it's running, then try again."
+                : "That doesn't look like a valid email address."
+          );
+          setStage("error");
+        }
         setSubmitting(false);
         return;
       }
@@ -66,19 +111,26 @@ export default function SignInScreen() {
         return;
       }
 
-      setSession(outcome.sessionToken, outcome.user.email);
-      setVerified(true); // clicking the magic link IS the verification
+      // Signing in must not inherit disposable guest chat residue.
+      if (isGuest) {
+        await wipeGuestLocalState();
+      }
 
-      if (outcome.user.username) {
-        // Returning account, already has a profile — go straight in.
+      setSession(outcome.sessionToken, outcome.user.email);
+      setVerified(true);
+
+      if (outcome.user.username && outcome.user.displayName) {
         setIdentity({
-          displayName: outcome.user.displayName ?? outcome.user.username,
+          displayName: outcome.user.displayName,
           username: outcome.user.username,
         });
         completeProfile();
         setScreen("workspace");
       } else {
-        setScreen("setup");
+        setError(
+          "This account is incomplete. Please register with an invite code, or continue as a Guest."
+        );
+        setStage("error");
       }
     } catch {
       setError("Couldn't reach the server. Check your connection and try again.");
@@ -96,7 +148,11 @@ export default function SignInScreen() {
           <SectionLabel>Sign in</SectionLabel>
 
           <h1 className="mt-3 text-3xl font-bold tracking-tight">
-            {stage === "sent" ? "Check your email" : "Continue to Tabcom"}
+            {stage === "sent"
+              ? "Check your email"
+              : stage === "not_registered"
+                ? "No account found"
+                : "Continue to Tabcom"}
           </h1>
 
           {stage === "sent" ? (
@@ -125,10 +181,15 @@ export default function SignInScreen() {
                 Use a different email
               </button>
             </div>
+          ) : stage === "not_registered" ? (
+            <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+              {NOT_REGISTERED_MESSAGE}
+            </div>
           ) : (
             <>
               <p className="mt-4 text-sm leading-7 text-slate-500">
                 No password to remember — we'll email you a link to sign in.
+                You must already have a Tabcom account.
               </p>
 
               <div className="mt-10">
@@ -139,7 +200,11 @@ export default function SignInScreen() {
                   autoFocus
                   autoComplete="email"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    if (error) setError(null);
+                    if (stage === "error") setStage("email");
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") void submit();
                   }}
@@ -161,14 +226,39 @@ export default function SignInScreen() {
 
         {stage !== "sent" && (
           <ScreenFooter>
-            <Button
-              fullWidth
-              disabled={submitting || !email.trim()}
-              onClick={() => void submit()}
-              rightIcon={<ArrowRight size={18} />}
-            >
-              {submitting ? "Sending…" : "Send sign-in link"}
-            </Button>
+            {stage === "not_registered" ? (
+              <div className="flex flex-col gap-2">
+                <Button fullWidth onClick={() => setScreen("guest-setup")}>
+                  Continue as Guest
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setScreen("register")}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                >
+                  I have an invite code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setStage("email");
+                  }}
+                  className="text-xs font-medium text-slate-400 hover:text-slate-600"
+                >
+                  Try a different email
+                </button>
+              </div>
+            ) : (
+              <Button
+                fullWidth
+                disabled={submitting || !email.trim()}
+                onClick={() => void submit()}
+                rightIcon={<ArrowRight size={18} />}
+              >
+                {submitting ? "Sending…" : "Send sign-in link"}
+              </Button>
+            )}
           </ScreenFooter>
         )}
       </div>

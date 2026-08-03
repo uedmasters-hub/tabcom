@@ -23,7 +23,12 @@ import type { CallSignal, IncomingCallSignal } from "../../src/lib/realtime";
  *
  * Closing this window IS hanging up: the background detects the port
  * disconnect and signals "end" to the peer, so a vanished window can
- * never leave the other side hanging.
+ * never leave the other side hanging. Prefer an explicit cancel/end
+ * from this window first so mobile sees the right terminal kind.
+ *
+ * Signal kinds must stay aligned with packages/shared + mobile
+ * call-manager (ringing / cancel / timeout / quick_reply / hold /
+ * resume / renegotiate).
  */
 
 const params = new URLSearchParams(location.search);
@@ -37,14 +42,28 @@ const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+/** Match mobile call-manager RING_TIMEOUT_MS. */
+const RING_TIMEOUT_MS = 45_000;
+const RECONNECT_GIVE_UP_MS = 12_000;
+
+const QUICK_REPLIES = [
+  "I'm busy",
+  "I'll call you later",
+  "In a meeting",
+  "Can't talk now",
+] as const;
+
 type CallPhase =
-  | "ringing" // callee: deciding; caller: waiting for answer
+  | "ringing"
   | "connecting"
   | "connected"
   | "reconnecting"
+  | "on-hold"
   | "ended"
   | "declined"
   | "busy"
+  | "cancelled"
+  | "timed-out"
   | "failed"
   | "mic-blocked";
 
@@ -52,6 +71,9 @@ function CallApp() {
   const [phase, setPhase] = useState<CallPhase>("ringing");
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(!WANT_VIDEO);
+  const [onHold, setOnHold] = useState(false);
+  const [showQuickReplies, setShowQuickReplies] = useState(false);
+  const [statusDetail, setStatusDetail] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [, tick] = useState(0);
 
@@ -59,11 +81,18 @@ function CallApp() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const pendingOfferRef = useRef<IncomingCallSignal | null>(null);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const phaseRef = useRef<CallPhase>("ringing");
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Call duration ticker.
+  const setPhaseTracked = (next: CallPhase) => {
+    phaseRef.current = next;
+    setPhase(next);
+  };
+
   useEffect(() => {
     if (startedAt == null) return;
     const interval = setInterval(() => tick((n) => n + 1), 1000);
@@ -81,12 +110,32 @@ function CallApp() {
 
     if (ROLE === "caller") {
       void startAsCaller();
+    } else {
+      // Tell the caller our UI is up — mobile shows "Ringing…".
+      signal({ kind: "ringing", video: WANT_VIDEO });
     }
-    // Callee: waits — the buffered offer arrives through the port the
-    // moment it connects (background replays pendingCallSignals), and
-    // we hold it in pendingOfferRef until the person taps Accept.
+
+    const ringTimer = setTimeout(() => {
+      const current = phaseRef.current;
+      if (current !== "ringing") return;
+      if (ROLE === "caller") {
+        hangupSignal({ kind: "timeout", video: WANT_VIDEO });
+        cleanupMedia();
+        setPhaseTracked("timed-out");
+        setStatusDetail("No answer");
+        setTimeout(() => window.close(), 1500);
+      } else {
+        hangupSignal({ kind: "timeout", video: WANT_VIDEO });
+        cleanupMedia();
+        setPhaseTracked("timed-out");
+        setStatusDetail("Missed call");
+        setTimeout(() => window.close(), 1500);
+      }
+    }, RING_TIMEOUT_MS);
 
     return () => {
+      clearTimeout(ringTimer);
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       cleanupMedia();
       port.disconnect();
     };
@@ -97,17 +146,30 @@ function CallApp() {
     portRef.current?.postMessage({ type: "signal", to: PEER, signal: payload });
   };
 
+  /** Terminal hangups — background skips its disconnect "end" once
+   *  these have been sent, so the peer doesn't get a double hangup. */
+  const hangupSignal = (payload: CallSignal) => {
+    signal(payload);
+  };
+
   const cleanupMedia = () => {
     pcRef.current?.close();
     pcRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
+    pendingIceRef.current = [];
   };
 
   const endCall = (finalPhase: CallPhase = "ended") => {
-    signal({ kind: "end" });
+    const current = phaseRef.current;
+    if (ROLE === "caller" && (current === "ringing" || current === "connecting")) {
+      hangupSignal({ kind: "cancel", video: WANT_VIDEO });
+      setPhaseTracked("cancelled");
+    } else {
+      hangupSignal({ kind: "end" });
+      setPhaseTracked(finalPhase);
+    }
     cleanupMedia();
-    setPhase(finalPhase);
     setTimeout(() => window.close(), 900);
   };
 
@@ -124,19 +186,39 @@ function CallApp() {
       return stream;
     } catch (error) {
       const name = error instanceof DOMException ? error.name : "";
-      setPhase(name === "NotAllowedError" ? "mic-blocked" : "failed");
+      setPhaseTracked(name === "NotAllowedError" ? "mic-blocked" : "failed");
       return null;
     }
   }
 
   const openMicPermissionHelper = () => {
-    // Same fix as ChatView's voice-note recorder: a full, stable tab
-    // where getUserMedia's prompt can actually render, since this call
-    // window (still a small popup-type window) hits the identical
-    // limitation. Same extension origin, so granting access there
-    // covers this window too.
     void browser.tabs.create({ url: browser.runtime.getURL("/permissions.html" as never) });
   };
+
+  async function flushPendingIce(pc: RTCPeerConnection) {
+    const queued = pendingIceRef.current.splice(0);
+    for (const candidate of queued) {
+      try {
+        await pc.addIceCandidate(candidate);
+      } catch {
+        /* race with remote description — safe to drop */
+      }
+    }
+  }
+
+  async function attemptIceRestart() {
+    const pc = pcRef.current;
+    if (!pc || ROLE !== "caller") return;
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      signal({ kind: "renegotiate", video: WANT_VIDEO, sdp: offer.sdp });
+    } catch {
+      setPhaseTracked("failed");
+      setStatusDetail("Connection failed");
+      cleanupMedia();
+    }
+  }
 
   function buildPeerConnection(stream: MediaStream): RTCPeerConnection {
     const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -158,15 +240,34 @@ function CallApp() {
     pc.onconnectionstatechange = () => {
       switch (pc.connectionState) {
         case "connected":
-          setPhase("connected");
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          setOnHold(false);
+          setPhaseTracked("connected");
+          setStatusDetail(null);
           setStartedAt((current) => current ?? Date.now());
           break;
         case "disconnected":
-          setPhase("reconnecting"); // ICE often self-heals; give it a beat
+          setPhaseTracked("reconnecting");
+          setStatusDetail("Reconnecting…");
+          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = setTimeout(() => {
+            if (phaseRef.current !== "reconnecting") return;
+            void attemptIceRestart();
+          }, 3_000);
           break;
         case "failed":
-          setPhase("failed");
-          cleanupMedia();
+          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = setTimeout(() => {
+            if (pcRef.current?.connectionState === "connected") return;
+            setPhaseTracked("failed");
+            setStatusDetail("Connection timed out");
+            cleanupMedia();
+          }, RECONNECT_GIVE_UP_MS);
+          void attemptIceRestart();
+          setPhaseTracked("reconnecting");
           break;
         case "closed":
           break;
@@ -183,68 +284,154 @@ function CallApp() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     signal({ kind: "offer", video: WANT_VIDEO, sdp: offer.sdp });
-    // stays "ringing" until an answer / reject / busy arrives
   }
 
   async function acceptIncoming() {
     const pending = pendingOfferRef.current;
     if (!pending?.signal.sdp) return;
-    setPhase("connecting");
+    setPhaseTracked("connecting");
+    setShowQuickReplies(false);
 
     const stream = await acquireMedia();
     if (!stream) return;
     const pc = buildPeerConnection(stream);
     await pc.setRemoteDescription({ type: "offer", sdp: pending.signal.sdp });
+    await flushPendingIce(pc);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     signal({ kind: "answer", sdp: answer.sdp });
   }
 
+  const decline = (quickReply?: string) => {
+    if (quickReply) {
+      hangupSignal({ kind: "quick_reply", video: WANT_VIDEO, text: quickReply });
+    } else {
+      hangupSignal({ kind: "reject" });
+    }
+    cleanupMedia();
+    setPhaseTracked("declined");
+    if (quickReply) setStatusDetail(`“${quickReply}”`);
+    setTimeout(() => window.close(), 400);
+  };
+
+  const toggleHold = () => {
+    if (phaseRef.current !== "connected" && phaseRef.current !== "on-hold") return;
+    const next = !onHold;
+    setOnHold(next);
+    if (next) {
+      localStreamRef.current?.getTracks().forEach((track) => {
+        track.enabled = false;
+      });
+    } else {
+      localStreamRef.current?.getAudioTracks().forEach((t) => (t.enabled = !muted));
+      localStreamRef.current?.getVideoTracks().forEach((t) => (t.enabled = !cameraOff));
+    }
+    signal({ kind: next ? "hold" : "resume", video: WANT_VIDEO });
+    setPhaseTracked(next ? "on-hold" : "connected");
+    setStatusDetail(next ? "On hold" : null);
+  };
+
   async function handleSignal({ signal: incoming }: IncomingCallSignal) {
     switch (incoming.kind) {
       case "offer":
-        pendingOfferRef.current = { from: { username: PEER, name: PEER_NAME, color: PEER_COLOR }, signal: incoming };
+        pendingOfferRef.current = {
+          from: { username: PEER, name: PEER_NAME, color: PEER_COLOR },
+          signal: incoming,
+        };
+        break;
+      case "ringing":
+        if (ROLE === "caller" && phaseRef.current === "ringing") {
+          setStatusDetail("Ringing…");
+        }
         break;
       case "answer":
         if (pcRef.current && incoming.sdp) {
-          setPhase("connecting");
+          setPhaseTracked("connecting");
           await pcRef.current.setRemoteDescription({ type: "answer", sdp: incoming.sdp });
+          await flushPendingIce(pcRef.current);
         }
         break;
       case "ice":
-        if (pcRef.current && incoming.candidate) {
+        if (incoming.candidate) {
+          const candidate = incoming.candidate as RTCIceCandidateInit;
+          if (pcRef.current?.remoteDescription) {
+            try {
+              await pcRef.current.addIceCandidate(candidate);
+            } catch {
+              /* safe to drop */
+            }
+          } else {
+            pendingIceRef.current.push(candidate);
+          }
+        }
+        break;
+      case "renegotiate":
+        if (pcRef.current && incoming.sdp) {
           try {
-            await pcRef.current.addIceCandidate(incoming.candidate as RTCIceCandidateInit);
+            await pcRef.current.setRemoteDescription({ type: "offer", sdp: incoming.sdp });
+            const answer = await pcRef.current.createAnswer();
+            await pcRef.current.setLocalDescription(answer);
+            signal({ kind: "answer", sdp: answer.sdp });
           } catch {
-            // Candidates can race the remote description; safe to drop.
+            /* renegotiation failed — connection watcher will surface it */
           }
         }
         break;
       case "reject":
         cleanupMedia();
-        setPhase("declined");
+        setPhaseTracked("declined");
         setTimeout(() => window.close(), 1500);
+        break;
+      case "quick_reply":
+        cleanupMedia();
+        setPhaseTracked("declined");
+        setStatusDetail(incoming.text ? `“${incoming.text}”` : null);
+        setTimeout(() => window.close(), 1800);
         break;
       case "busy":
         cleanupMedia();
-        setPhase("busy");
+        setPhaseTracked("busy");
         setTimeout(() => window.close(), 1500);
+        break;
+      case "cancel":
+        cleanupMedia();
+        setPhaseTracked("cancelled");
+        setStatusDetail("Call cancelled");
+        setTimeout(() => window.close(), 1200);
+        break;
+      case "timeout":
+        cleanupMedia();
+        setPhaseTracked("timed-out");
+        setStatusDetail(ROLE === "caller" ? "No answer" : "Missed call");
+        setTimeout(() => window.close(), 1500);
+        break;
+      case "hold":
+        setOnHold(true);
+        setPhaseTracked("on-hold");
+        setStatusDetail(`${PEER_NAME} put the call on hold`);
+        break;
+      case "resume":
+        setOnHold(false);
+        setPhaseTracked("connected");
+        setStatusDetail(null);
         break;
       case "end":
         cleanupMedia();
-        setPhase("ended");
+        setPhaseTracked("ended");
         setTimeout(() => window.close(), 900);
         break;
     }
   }
 
   const toggleMute = () => {
+    if (onHold) return;
     const next = !muted;
     setMuted(next);
     localStreamRef.current?.getAudioTracks().forEach((track) => (track.enabled = !next));
   };
 
   const toggleCamera = () => {
+    if (onHold) return;
     const next = !cameraOff;
     setCameraOff(next);
     localStreamRef.current?.getVideoTracks().forEach((track) => (track.enabled = !next));
@@ -255,23 +442,25 @@ function CallApp() {
   const ss = String(duration % 60).padStart(2, "0");
 
   const statusLabel: Record<CallPhase, string> = {
-    ringing: ROLE === "caller" ? "Calling…" : "Incoming call",
+    ringing: ROLE === "caller" ? (statusDetail ?? "Calling…") : "Incoming call",
     connecting: "Connecting…",
     connected: `${mm}:${ss}`,
-    reconnecting: "Reconnecting…",
+    reconnecting: statusDetail ?? "Reconnecting…",
+    "on-hold": statusDetail ?? "On hold",
     ended: "Call ended",
-    declined: "Declined",
+    declined: statusDetail ? `Declined — ${statusDetail}` : "Declined",
     busy: "Busy",
-    failed: "Couldn't connect — check mic/camera permissions",
+    cancelled: statusDetail ?? "Call cancelled",
+    "timed-out": statusDetail ?? (ROLE === "caller" ? "No answer" : "Missed call"),
+    failed: statusDetail ?? "Couldn't connect — check mic/camera permissions",
     "mic-blocked": `Couldn't access your ${WANT_VIDEO ? "camera" : "microphone"}`,
   };
 
-  const inCall = phase === "connected" || phase === "reconnecting";
+  const inCall = phase === "connected" || phase === "reconnecting" || phase === "on-hold";
   const incomingUndecided = ROLE === "callee" && phase === "ringing";
 
   return (
     <div className="flex h-screen flex-col bg-slate-950 text-white">
-      {/* Remote media */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
         {WANT_VIDEO ? (
           <video
@@ -331,17 +520,42 @@ function CallApp() {
         )}
       </div>
 
-      {/* Controls */}
+      {showQuickReplies && incomingUndecided && (
+        <div className="space-y-2 border-t border-slate-800 px-4 py-3">
+          {QUICK_REPLIES.map((msg) => (
+            <button
+              key={msg}
+              type="button"
+              onClick={() => decline(msg)}
+              className="w-full rounded-xl bg-white/10 px-3 py-2 text-left text-xs font-medium transition hover:bg-white/20"
+            >
+              {msg}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setShowQuickReplies(false)}
+            className="w-full py-1 text-center text-[11px] text-slate-400"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-center gap-3 border-t border-slate-800 px-4 py-4">
         {incomingUndecided ? (
           <>
             <button
               type="button"
-              onClick={() => {
-                signal({ kind: "reject" });
-                setPhase("declined");
-                setTimeout(() => window.close(), 400);
-              }}
+              onClick={() => setShowQuickReplies((v) => !v)}
+              aria-label="Message and decline"
+              className="rounded-full bg-white/10 px-3 py-2 text-[11px] font-semibold transition hover:bg-white/20"
+            >
+              Message
+            </button>
+            <button
+              type="button"
+              onClick={() => decline()}
               aria-label="Decline"
               className="flex h-12 w-12 items-center justify-center rounded-full bg-red-600 transition hover:bg-red-500"
             >
@@ -385,6 +599,19 @@ function CallApp() {
                 {cameraOff ? <VideoOff size={18} /> : <Video size={18} />}
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={toggleHold}
+              disabled={phase !== "connected" && phase !== "on-hold"}
+              aria-label={onHold ? "Resume" : "Hold"}
+              className={cn(
+                "rounded-full px-3 py-2 text-[11px] font-semibold transition disabled:opacity-40",
+                onHold ? "bg-amber-400 text-slate-900" : "bg-white/10 hover:bg-white/20"
+              )}
+            >
+              {onHold ? "Resume" : "Hold"}
+            </button>
 
             <button
               type="button"

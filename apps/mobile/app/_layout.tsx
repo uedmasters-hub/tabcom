@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import * as SplashScreen from "expo-splash-screen";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { View, ActivityIndicator } from "react-native";
@@ -12,6 +13,11 @@ import "../global.css";
 import { hydrateFromLocalStorage, startPersistence } from "@/lib/persistence";
 import { AlertHost } from "@/lib/alert";
 import { ToastHost } from "@/lib/toast";
+import { useGuestExpiryWatcher } from "@/hooks/useGuestExpiryWatcher";
+
+// Keep the native splash up until auth + onboarding flags resolve.
+// Auth hydrates from cache first so a slow backend cannot freeze the logo.
+void SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
   const { hydrated, sessionToken, guest, hydrate } = useAuth();
@@ -43,6 +49,9 @@ export default function RootLayout() {
     if (!hydrated) return;
     try {
       hydrateFromLocalStorage();
+      void import("@/stores/call-history").then(({ useCallHistory }) => {
+        useCallHistory.getState().hydrate();
+      });
     } catch (err) {
       if (__DEV__) console.warn("[tabcom] hydration error:", err);
     }
@@ -59,23 +68,21 @@ export default function RootLayout() {
   // Notification taps deep-link straight to the relevant screen. The
   // server puts the destination in `route`, so routing stays server-
   // driven rather than duplicated per notification type here.
+  // segmentsRef avoids re-attaching listeners on every navigation.
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
   useEffect(() => {
     let unsub = () => {};
     void import("@/lib/notifications").then(({ attachNotificationRouting }) => {
       unsub = attachNotificationRouting((route, data) => {
-        if (data?.type === "call" && data?.from) {
-          const name = encodeURIComponent(String(data.name ?? data.from));
-          const color = encodeURIComponent(String(data.color ?? "#2563eb"));
-          router.push(
-            `/call/${data.from}?peerName=${name}&peerColor=${color}&role=callee&video=${!!data.video}` as any
-          );
-          return;
-        }
-        router.push(route as any);
+        const onConversationScreen = segmentsRef.current[0] === ("conversation" as any);
+        void import("@/lib/notification-nav").then(({ openFromNotification }) => {
+          openFromNotification(router, route, data, { onConversationScreen });
+        });
       });
     });
     return () => unsub();
-  }, []);
+  }, [router]);
 
   // Foreground push bridge — routes incoming push notifications (typing,
   // DM) into the chat store so indicators + messages appear even when
@@ -86,6 +93,10 @@ export default function RootLayout() {
     void import("@/lib/notifications").then(({ attachForegroundPushBridge }) => {
       unsub = attachForegroundPushBridge();
     });
+    // Sync any shade notifications that arrived while we were away.
+    void import("@/lib/notifications").then(({ syncPresentedNotificationsIntoStore }) =>
+      syncPresentedNotificationsIntoStore()
+    );
     return () => unsub();
   }, [signedIn]);
 
@@ -94,6 +105,9 @@ export default function RootLayout() {
     if (signedIn) connect();
     else disconnect();
   }, [hydrated, signedIn]);
+
+  // Guest 30-minute hard stop — wipe + route when the clock hits zero.
+  useGuestExpiryWatcher();
 
   // Onboarding is shown once, before the welcome screen, and only to
   // signed-out users. Subscribed from the store rather than read into
@@ -117,6 +131,27 @@ export default function RootLayout() {
       router.replace("/(auth)/welcome" as any);
     }
   }, [hydrated, signedIn, segments, seenOnboarding]);
+
+  // Drop the native splash once the gate can render a real screen.
+  useEffect(() => {
+    if (hydrated && seenOnboarding !== null) {
+      void SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [hydrated, seenOnboarding]);
+
+  // Safety net: never leave the logo frozen if SecureStore hangs.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void SplashScreen.hideAsync().catch(() => {});
+      if (!useAuth.getState().hydrated) {
+        useAuth.setState({ hydrated: true, sessionToken: null, user: null, guest: null });
+      }
+      if (useOnboarding.getState().seen === null) {
+        useOnboarding.setState({ seen: false });
+      }
+    }, 5_000);
+    return () => clearTimeout(t);
+  }, []);
 
   if (!hydrated || seenOnboarding === null) {
     return (

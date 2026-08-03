@@ -88,6 +88,14 @@ export interface Message {
   /** DM read receipts only for this pass — when the OTHER person read
    *  this message (only ever set on messages authored by "me"). */
   readAt?: number;
+  /**
+   * WhatsApp-style album: multiple image/video messages from one pick
+   * share an albumId and render as a single grid. Swipe navigation in
+   * the viewer is photo-only (kind === "image").
+   */
+  albumId?: string;
+  albumIndex?: number;
+  albumCount?: number;
 }
 
 export interface CommunityMember {

@@ -11,12 +11,15 @@ import { Server } from "socket.io";
 
 import {
   claimUsername,
+  checkEmailEligibleForSignIn,
   checkUsernameAvailable,
   deleteAccount,
   findActiveSessionForDevice,
   getUserSettings,
   isUsernameRegistered,
   pollLoginRequest,
+  purgeIncompleteUsers,
+  recordInviteRequest,
   registerAccount,
   registerGuestSession,
   endGuestSessionNow,
@@ -168,11 +171,58 @@ const httpServer = createServer((req, res) => {
     void readJsonBody(req)
       .then(async (body) => {
         const result = await requestMagicLink(String(body.email ?? ""), PUBLIC_BASE_URL);
+        // not_registered is an expected product outcome (waitlist), not a
+        // client error — return 200 so clients can branch on reason.
+        // Never include a pollId on failure (defense in depth for clients
+        // that only check for pollId presence).
+        const payload =
+          result.ok
+            ? result
+            : { ok: false as const, reason: result.reason, pollId: undefined };
+        const status = result.ok || result.reason === "not_registered" ? 200 : 400;
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] request-link failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/auth/check-email") {
+    const email = url.searchParams.get("email") ?? "";
+    void checkEmailEligibleForSignIn(email)
+      .then((result) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      })
+      .catch((error) => {
+        console.error("[tabcom:auth] check-email failed:", error);
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, reason: "server_error" }));
+      });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/invite-request") {
+    void readJsonBody(req)
+      .then(async (body) => {
+        const result = await recordInviteRequest({
+          email: String(body.email ?? ""),
+          displayName: body.displayName != null ? String(body.displayName) : null,
+          reason: body.reason != null ? String(body.reason) : null,
+          source: body.source != null ? String(body.source) : "settings",
+          // Auto waitlist from sign-in must not email; the deliberate
+          // Settings form keeps the confirmation.
+          sendConfirmation: String(body.source ?? "settings") !== "sign_in",
+        });
         res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
       })
       .catch((error) => {
-        console.error("[tabcom:auth] request-link failed:", error);
+        console.error("[tabcom:auth] invite-request failed:", error);
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: false, reason: "server_error" }));
       });
@@ -207,17 +257,30 @@ const httpServer = createServer((req, res) => {
     void verifyMagicLink(token)
       .then((result) => {
         res.writeHead(200, htmlHeaders);
+        if (result.ok) {
+          res.end(
+            authPage(
+              "You're signed in",
+              "You can close this tab and continue using Tabcom."
+            )
+          );
+          return;
+        }
+        if (result.reason === "not_registered") {
+          res.end(
+            authPage(
+              "No account for this email",
+              "Tabcom is invite-only. Request an invite from the app, or continue as a Guest while you wait."
+            )
+          );
+          return;
+        }
         res.end(
-          result.ok
-            ? authPage(
-                "Email verified",
-                "Your email address was successfully verified. You can close this tab and continue using Tabcom."
-              )
-            : authPage(
-                "Oops! This link has expired",
-                "Verification links expire after 15 minutes or become invalid after they're used once.",
-                "Request a new link from Tabcom to continue."
-              )
+          authPage(
+            "Oops! This link has expired",
+            "Sign-in links expire after 15 minutes or become invalid after they're used once.",
+            "Request a new link from Tabcom to continue."
+          )
         );
       })
       .catch((error) => {
@@ -617,8 +680,10 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok: true, service: "tabcom-realtime" }));
+  // Unmatched HTTP routes — never return `{ ok: true }` (clients used
+  // to treat that as a successful check-email and show "no account").
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: false, reason: "not_found" }));
 });
 
 // Voice notes and shared photos both ride this same relay as base64
@@ -1293,11 +1358,34 @@ function notify(username: string, event: string, payload: unknown): void {
   }
 }
 
+/** Per-user active DM/community thread + whether the app is
+ *  foregrounded. Used to suppress push while the user is looking at
+ *  that exact chat — background/killed still get a push. */
+const activeThreadByUser = new Map<string, string | null>();
+const appForegroundByUser = new Map<string, boolean>();
+
+function shouldSuppressPush(username: string, threadId: string): boolean {
+  if (appForegroundByUser.get(username) !== true) return false;
+  return activeThreadByUser.get(username) === threadId;
+}
+
 io.on("connection", (socket) => {
   // ---- Push token registration (mobile re-registers on every connect) ----
   socket.on("register_push_token", ({ token }: { token: string }) => {
     const me = users.get(socket.id);
     if (me?.username) registerPushToken(me.username, token);
+  });
+
+  socket.on("set_active_thread", ({ threadId }: { threadId?: string | null }) => {
+    const me = users.get(socket.id);
+    if (!me?.username) return;
+    activeThreadByUser.set(me.username, threadId ?? null);
+  });
+
+  socket.on("app_visibility", ({ foreground }: { foreground?: boolean }) => {
+    const me = users.get(socket.id);
+    if (!me?.username) return;
+    appForegroundByUser.set(me.username, !!foreground);
   });
 
   // Authentication is additive, not required — this keeps every
@@ -3022,26 +3110,29 @@ async function ensureUniqueGuestUsername(
       }
 
       const targets = publicSocketIdsFor(to);
+      const threadId = `dm:${from.username}`;
 
-      // Always push — guarantees delivery even when the socket is
-      // technically connected but Android has dozed the JS thread.
-      // The client deduplicates via message id.
-      sendPushToUser(to, {
-        title: from.name || from.username,
-        body: describeMessageKind(message.kind, message.text),
-        category: "messages",
-        route: `/conversation/u-${from.username}`,
-        threadId: `dm:${from.username}`,
-        data: {
-          type: "dm",
-          from: from.username,
-          fromName: from.name || from.username,
-          fromColor: from.color,
-          messageId: message.id,
-          messageKind: message.kind,
-          messageText: (message.text ?? "").slice(0, 160),
-        },
-      });
+      // Always push unless the recipient is actively looking at this
+      // exact chat in the foreground — then the socket (or local store)
+      // already has it and a shade notification is noise.
+      if (!shouldSuppressPush(to, threadId)) {
+        sendPushToUser(to, {
+          title: from.name || from.username,
+          body: describeMessageKind(message.kind, message.text),
+          category: "messages",
+          route: `/conversation/u-${from.username}`,
+          threadId,
+          data: {
+            type: "dm",
+            from: from.username,
+            fromName: from.name || from.username,
+            fromColor: from.color,
+            messageId: message.id,
+            messageKind: message.kind,
+            messageText: (message.text ?? "").slice(0, 160),
+          },
+        });
+      }
 
       if (targets.length === 0) {
         // No live socket — push is the only delivery path.
@@ -3106,8 +3197,25 @@ async function ensureUniqueGuestUsername(
               color: from.color,
             },
           });
+          socket.emit("call_error", { to, reason: "recipient_unavailable" });
+        } else if (signal.kind === "timeout" || signal.kind === "cancel") {
+          // Caller hung up / ring timed out while callee was offline —
+          // surface a missed-call notification when they come back.
+          sendPushToUser(to, {
+            title: from.name || from.username,
+            body: signal.video ? "Missed video call" : "Missed voice call",
+            category: "calls",
+            route: `/call/${from.username}`,
+            threadId: `call:${from.username}`,
+            data: {
+              type: "missed_call",
+              from: from.username,
+              video: !!signal.video,
+              name: from.name || from.username,
+              color: from.color,
+            },
+          });
         }
-        socket.emit("call_error", { to, reason: "recipient_unavailable" });
         return;
       }
 
@@ -3346,7 +3454,15 @@ async function ensureUniqueGuestUsername(
     const user = users.get(socket.id);
     users.delete(socket.id);
     guestInstanceIds.delete(socket.id);
-    if (user) broadcastRoster();
+    if (user) {
+      // Only clear viewing state when THIS was the last live socket for
+      // the user — another device may still be looking at a chat.
+      if (allSocketIdsFor(user.username).length === 0) {
+        activeThreadByUser.delete(user.username);
+        appForegroundByUser.delete(user.username);
+      }
+      broadcastRoster();
+    }
   });
 });
 
@@ -3364,6 +3480,17 @@ function lanAddresses(): string[] {
 
 httpServer.listen(PORT, () => {
   console.log(`[tabcom] realtime server listening on http://localhost:${PORT}`);
+  // One-time-safe sweep of ghost accounts left by the old magic-link
+  // path (email-only rows with null username/display name). Idempotent.
+  void purgeIncompleteUsers()
+    .then(({ deleted }) => {
+      if (deleted > 0) {
+        console.log(`[tabcom:auth] cleaned up ${deleted} incomplete user record(s)`);
+      }
+    })
+    .catch((err) => {
+      console.error("[tabcom:auth] incomplete-user cleanup failed:", err);
+    });
   // The line above is only reachable from THIS machine — "localhost"
   // never means anything else to any other device. This one is what
   // another device on the same network (or a .local hostname pointing

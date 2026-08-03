@@ -149,6 +149,7 @@ export function initRealtime(
 
     // Announce device kind after hello so the server knows this is mobile
     socket?.emit("device_kind", { kind: "mobile" });
+    socket?.emit("app_visibility", { foreground: true });
   });
 
   socket.on("disconnect", () => handlers.onConnectionChange(false));
@@ -300,6 +301,13 @@ function startAppStateWatcher(): void {
     lastState = next;
 
     if (next === "active" && wasBackground && socket && currentMe) {
+      setAppVisibility(true);
+      // Pull any shade notifications into the in-app store so bell /
+      // chat list update even when the user didn't tap a push.
+      void import("@/lib/notifications").then(({ syncPresentedNotificationsIntoStore }) =>
+        syncPresentedNotificationsIntoStore()
+      );
+
       // Android kills the JS thread or dozes the socket while
       // backgrounded. On return: disconnect the stale transport
       // entirely, then reconnect fresh — this is faster than
@@ -337,6 +345,7 @@ function startAppStateWatcher(): void {
     }
 
     if (next === "background" && socket?.connected) {
+      setAppVisibility(false);
       // Keep the socket alive — Socket.IO's ping/pong keeps the
       // connection warm on most Android devices for several minutes.
       // Don't flip to away: the user's chosen presence should persist
@@ -581,6 +590,19 @@ export function hidePresenceFrom(username: string, hidden: boolean): void {
 
 export function updateVisibility(visibility: Visibility): void {
   socket?.emit("visibility", visibility);
+}
+
+/** Tell the server which thread is on screen so it can skip push for it
+ *  while the app is foregrounded. `null` clears. */
+export function setActiveThread(threadId: string | null): void {
+  socket?.emit("set_active_thread", { threadId });
+}
+
+/** Foreground ↔ background so the server only suppresses push while the
+ *  user is actually looking at the app (not when it's backgrounded with
+ *  a chat still "open" in the nav stack). */
+export function setAppVisibility(foreground: boolean): void {
+  socket?.emit("app_visibility", { foreground });
 }
 
 // ── History ─────────────────────────────────────────────────────────

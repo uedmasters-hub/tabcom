@@ -166,16 +166,36 @@ export interface WireMessage {
   contactColor?: string;
   sentAt: number;
   replyToId?: string;
+  albumId?: string;
+  albumIndex?: number;
+  albumCount?: number;
 }
 
 /** One leg of WebRTC call negotiation, relayed (never stored) through
- *  the server between accepted contacts. Media itself is P2P. */
+ *  the server between accepted contacts. Media itself is P2P.
+ *  Keep in sync with packages/shared CallSignal — mobile and extension
+ *  must speak the same kinds for cross-client calls. */
 export interface CallSignal {
-  kind: "offer" | "answer" | "ice" | "end" | "reject" | "busy";
+  kind:
+    | "offer"
+    | "answer"
+    | "ice"
+    | "end"
+    | "reject"
+    | "busy"
+    | "ringing"
+    | "cancel"
+    | "timeout"
+    | "quick_reply"
+    | "hold"
+    | "resume"
+    | "renegotiate";
   /** Caller sets this on the offer: video call vs voice-only. */
   video?: boolean;
   sdp?: string;
   candidate?: unknown;
+  /** quick_reply body, or human-readable reason. */
+  text?: string;
 }
 
 export interface IncomingCallSignal {

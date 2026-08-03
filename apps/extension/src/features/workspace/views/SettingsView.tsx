@@ -10,8 +10,9 @@ import {
   SectionLabel,
 } from "../../../components/ui";
 import { cn } from "../../../lib/cn";
-import { deleteAccount, endGuestSessionOnServer, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
+import { deleteAccount, fetchInvites, logout, sendVerificationEmail, type InviteSummary } from "../../../lib/auth-client";
 import { getCursorsEnabled, setCursorsEnabled } from "../../../lib/cursor-settings";
+import { endGuestSessionCompletely } from "../../../lib/guest-session";
 import { syncSettingsToServer } from "../../../lib/settings-sync";
 import { FLOATING_PILL_ENABLED } from "../../../lib/feature-flags";
 import { clearMyHistory, disconnectAllContexts, reannounce, REALTIME_URL, updateVisibility } from "../../../lib/realtime";
@@ -118,7 +119,6 @@ export default function SettingsView() {
   const isGuest = useProfileStore((state) => state.isGuest);
   const guestExpiresAt = useProfileStore((state) => state.guestExpiresAt);
   const resetProfile = useProfileStore((state) => state.resetProfile);
-  const resetChat = useChatStore((state) => state.resetChat);
   const clearAllHistoryLocal = useChatStore((state) => state.clearAllHistory);
 
   const [cursorsEnabled, setCursorsEnabledState] = useState(true);
@@ -221,13 +221,9 @@ export default function SettingsView() {
       // registerGuestSession) that device recognition will happily
       // resume on the very next popup open if it's left alone — this
       // is what was previously making guest sign-out look like it did
-      // nothing. Best-effort, same as the registered-account logout
-      // call below: proceed with the local reset regardless of
-      // whether this succeeds.
-      await endGuestSessionOnServer().catch(() => {});
-      disconnectAllContexts();
+      // nothing. Full wipe: server end + sockets + chat + pending inbox.
+      await endGuestSessionCompletely();
       resetProfile();
-      resetChat();
       setScreen("welcome");
       return;
     }

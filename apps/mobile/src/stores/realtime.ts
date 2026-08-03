@@ -47,6 +47,15 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       onConnectionChange: (connected) => {
         set({ connected });
         useChatStore.getState().setConnected(connected);
+        void import("@/lib/call-manager").then((cm) => {
+          if (connected) cm.onNetworkRestored();
+          else cm.onNetworkLost();
+        });
+        if (connected) {
+          void import("@/stores/call-history").then(({ useCallHistory }) => {
+            useCallHistory.getState().notifyUnseenMissed();
+          });
+        }
       },
       onRoster: (users) => useChatStore.getState().applyRoster(users),
 
@@ -96,14 +105,9 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
           }
         });
       },
-      onCallError: (to, reason) => {
-        import("@/lib/toast").then(({ toast }) => {
-          toast(
-            reason === "not_connected"
-              ? "You need to be connected to call this person"
-              : "Call failed",
-            "error"
-          );
+      onCallError: (_to, reason) => {
+        import("@/lib/call-manager").then(({ handleCallError }) => {
+          handleCallError(reason);
         });
       },
     };

@@ -331,6 +331,26 @@ export default function ProfileScreen() {
             editable={isRegistered}
             onPress={isRegistered ? () => alert("Coming soon", "Address editing will be added soon.") : undefined}
           />
+
+          <InfoRow
+            icon="bluetooth-outline"
+            label="Discover Nearby"
+            value={
+              isRegistered
+                ? "Find people next to you over Bluetooth & Wi‑Fi"
+                : "Registered accounts only"
+            }
+            editable={isRegistered}
+            onPress={
+              isRegistered
+                ? () => router.push("/settings/discover-nearby" as any)
+                : () =>
+                    alert(
+                      "Invite required",
+                      "Sign in with an invite to use Discover Nearby."
+                    )
+            }
+          />
         </View>
 
         {/* ── Guest CTA ── */}

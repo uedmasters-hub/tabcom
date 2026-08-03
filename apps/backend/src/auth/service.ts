@@ -1,8 +1,8 @@
-import { and, desc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
 
 import { db, schema } from "../db/client";
 import { checkInvite, consumeInvite, ensureInviteAllowance } from "./invites";
-import { sendMagicLinkEmail } from "./mailer";
+import { sendInviteRequestConfirmationEmail, sendMagicLinkEmail } from "./mailer";
 import { generateToken, hashToken } from "./tokens";
 
 const LOGIN_REQUEST_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -10,13 +10,22 @@ const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // one request per email per minute
 const HANDOFF_TTL_MS = 5 * 60 * 1000; // how long a verified session waits to be polled
 
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  username: string | null;
+  displayName: string | null;
+  avatarColor: string | null;
+  verified: boolean;
+}
+
 /** In-memory handoff from "link was clicked" to "extension's next poll
  *  picks it up" — the raw bearer token is generated at verify time and
  *  lives here just long enough to be collected once. It is never
  *  written to the database in any form, hashed or otherwise. */
 const pendingHandoff = new Map<
   string,
-  { rawSessionToken: string; user: { id: string; email: string; username: string | null; displayName: string | null; avatarColor: string | null; verified: boolean }; expiresAt: number }
+  { rawSessionToken: string; user: AuthenticatedUser; expiresAt: number }
 >();
 
 function cleanupHandoffs() {
@@ -28,17 +37,129 @@ function cleanupHandoffs() {
 
 const recentRequestByEmail = new Map<string, number>();
 
+const EMAIL_RULE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** A fully registered account has durable identity fields — never
+ *  null/empty username or display name. Ghost rows fail this check. */
+export function isFullyRegisteredUser(user: {
+  id?: string | null;
+  username?: string | null;
+  displayName?: string | null;
+}): boolean {
+  return (
+    !!user.id &&
+    !!user.username?.trim() &&
+    !!user.displayName?.trim()
+  );
+}
+
 export type RequestLinkResult =
   | { ok: true; pollId: string }
-  | { ok: false; reason: "rate_limited" | "invalid_email" };
+  | { ok: false; reason: "rate_limited" | "invalid_email" | "not_registered" };
 
+/**
+ * Record an early-access request and send the confirmation email.
+ * Idempotent on email — re-submits refresh updatedAt / optional fields
+ * without creating duplicates.
+ */
+export async function recordInviteRequest(input: {
+  email: string;
+  displayName?: string | null;
+  reason?: string | null;
+  source?: string;
+  /** When false, skip the confirmation email (sign-in auto-waitlist).
+   *  Explicit Settings → Request invite keeps the confirmation. */
+  sendConfirmation?: boolean;
+}): Promise<{ ok: true; created: boolean } | { ok: false; reason: "invalid_email" }> {
+  const email = input.email.trim().toLowerCase();
+  if (!EMAIL_RULE.test(email)) {
+    return { ok: false, reason: "invalid_email" };
+  }
+
+  const [existing] = await db
+    .select({ id: schema.inviteRequests.id })
+    .from(schema.inviteRequests)
+    .where(eq(schema.inviteRequests.email, email))
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(schema.inviteRequests)
+      .set({
+        displayName: input.displayName?.trim() || null,
+        reason: input.reason?.trim() || null,
+        source: input.source ?? "sign_in",
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inviteRequests.id, existing.id));
+    // Don't spam confirmation on every re-submit — only notify once
+    // for brand-new waitlist entries.
+    return { ok: true, created: false };
+  }
+
+  await db.insert(schema.inviteRequests).values({
+    email,
+    displayName: input.displayName?.trim() || null,
+    reason: input.reason?.trim() || null,
+    source: input.source ?? "sign_in",
+  });
+
+  // Sign-in's blocked path must not fire an email — users already saw
+  // "no account found". Confirmation is for the deliberate request form.
+  if (input.sendConfirmation !== false) {
+    try {
+      await sendInviteRequestConfirmationEmail(email);
+    } catch (err) {
+      console.error("[tabcom:auth] invite-request confirmation email failed:", err);
+    }
+  }
+
+  return { ok: true, created: true };
+}
+
+/**
+ * Sign-in is for EXISTING, fully registered accounts only.
+ * Unregistered emails never get a magic link, never create a users
+ * row, and are diverted into the invite-request waitlist instead.
+ */
 export async function requestMagicLink(
   rawEmail: string,
   publicBaseUrl: string
 ): Promise<RequestLinkResult> {
   const email = rawEmail.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!EMAIL_RULE.test(email)) {
     return { ok: false, reason: "invalid_email" };
+  }
+
+  // Eligibility FIRST — never rate-limit (or mint tokens for) an
+  // address that isn't allowed to sign in. Unregistered emails must
+  // always get a deterministic not_registered response.
+  const [existingUser] = await db
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.email, email))
+    .limit(1);
+
+  if (
+    !existingUser ||
+    !isFullyRegisteredUser(existingUser) ||
+    !EMAIL_RULE.test(existingUser.email ?? "")
+  ) {
+    // Waitlist is best-effort — a storage failure must NOT change the
+    // auth decision or accidentally fall through into link minting.
+    try {
+      await recordInviteRequest({
+        email,
+        source: "sign_in",
+        sendConfirmation: false,
+      });
+    } catch (err) {
+      console.error("[tabcom:auth] invite-request record failed:", err);
+    }
+    console.info(
+      `[tabcom:auth] sign-in blocked for unregistered/incomplete email=${email}`
+    );
+    return { ok: false, reason: "not_registered" };
   }
 
   const lastRequest = recentRequestByEmail.get(email);
@@ -64,15 +185,52 @@ export async function requestMagicLink(
   return { ok: true, pollId };
 }
 
+/**
+ * Read-only eligibility check — used by clients as a preflight so the
+ * "check your email" UI can never appear for an ineligible address,
+ * even if a later request-link call is mishandled.
+ */
+export async function checkEmailEligibleForSignIn(
+  rawEmail: string
+): Promise<
+  | { ok: true; eligible: true }
+  | { ok: true; eligible: false; reason: "not_registered" }
+  | { ok: false; reason: "invalid_email" }
+> {
+  const email = rawEmail.trim().toLowerCase();
+  if (!EMAIL_RULE.test(email)) {
+    return { ok: false, reason: "invalid_email" };
+  }
+
+  const [existingUser] = await db
+    .select({
+      id: schema.users.id,
+      email: schema.users.email,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.email, email))
+    .limit(1);
+
+  if (
+    !existingUser ||
+    !isFullyRegisteredUser(existingUser) ||
+    !EMAIL_RULE.test(existingUser.email ?? "")
+  ) {
+    return { ok: true, eligible: false, reason: "not_registered" };
+  }
+
+  return { ok: true, eligible: true };
+}
+
 export type VerifyResult =
   | { ok: true; email: string }
-  | { ok: false; reason: "invalid_or_expired" };
+  | { ok: false; reason: "invalid_or_expired" | "not_registered" };
 
-/** Called when the person clicks the link in their email. Finds (or
- *  creates) the user, issues a real session, and hands it off for the
- *  extension's poll to collect — nothing about the session itself is
- *  ever returned to this HTTP response, which is just a web page the
- *  person sees in their browser, not the extension. */
+/** Called when the person clicks the link in their email. Authenticates
+ *  an EXISTING fully registered user only — never creates a users row.
+ *  Issues a session and hands it off for the client's poll to collect. */
 export async function verifyMagicLink(rawToken: string): Promise<VerifyResult> {
   cleanupHandoffs();
 
@@ -96,22 +254,21 @@ export async function verifyMagicLink(rawToken: string): Promise<VerifyResult> {
     .set({ consumedAt: new Date() })
     .where(eq(schema.loginRequests.id, request.id));
 
-  const [existingUser] = await db
+  const [user] = await db
     .select()
     .from(schema.users)
     .where(eq(schema.users.email, request.email))
     .limit(1);
 
-  const user =
-    existingUser ??
-    (
-      await db.insert(schema.users).values({ email: request.email }).returning()
-    )[0]!;
+  // Defense in depth: even if a login_request somehow exists for an
+  // unregistered/incomplete email, never mint a session or create a row.
+  if (!user || !isFullyRegisteredUser(user)) {
+    console.warn(
+      `[tabcom:auth] verify rejected incomplete/missing user for email=${request.email}`
+    );
+    return { ok: false, reason: "not_registered" };
+  }
 
-  // Clicking the link IS the proof of email control — mark verified
-  // regardless of whether this account already existed (lean
-  // onboarding's "verify later") or is being created fresh here (the
-  // original direct sign-in path). Idempotent if already verified.
   if (!user.emailVerifiedAt) {
     await db
       .update(schema.users)
@@ -132,8 +289,8 @@ export async function verifyMagicLink(rawToken: string): Promise<VerifyResult> {
     user: {
       id: user.id,
       email: user.email,
-      username: user.username,
-      displayName: user.displayName,
+      username: user.username!,
+      displayName: user.displayName!,
       avatarColor: user.avatarColor,
       verified: true,
     },
@@ -207,15 +364,6 @@ export async function pollLoginRequest(
     return { status: "expired" };
   }
   return { status: "waiting" };
-}
-
-export interface AuthenticatedUser {
-  id: string;
-  email: string;
-  username: string | null;
-  displayName: string | null;
-  avatarColor: string | null;
-  verified: boolean;
 }
 
 const USERNAME_RULE = /^[a-z0-9_]{3,20}$/;
@@ -361,7 +509,7 @@ export async function registerAccount(
   browserInfo?: string
 ): Promise<RegisterResult> {
   const email = rawEmail.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!EMAIL_RULE.test(email)) {
     return { ok: false, reason: "invalid_email" };
   }
 
@@ -369,6 +517,13 @@ export async function registerAccount(
   if (!USERNAME_RULE.test(username) || RESERVED_USERNAMES.has(username)) {
     return { ok: false, reason: "invalid_username" };
   }
+
+  const name = displayName.trim();
+  if (!name || name.length > 80) {
+    return { ok: false, reason: "invalid_username" };
+  }
+
+  const color = (avatarColor || "").trim() || "#2563EB";
 
   // Look up the email's existing account FIRST — re-registering with
   // your own already-claimed username must be idempotent, not
@@ -379,9 +534,14 @@ export async function registerAccount(
     .where(eq(schema.users.email, email))
     .limit(1);
 
-  // Invite gate — new accounts only. Fail BEFORE creating anything so
-  // a rejected registration leaves no trace.
-  if (!existingByEmail) {
+  const alreadyComplete = !!existingByEmail && isFullyRegisteredUser(existingByEmail);
+
+  // Invite gate — new accounts AND incomplete/ghost rows only.
+  // A fully registered account re-entering skips the gate (their seat
+  // was already claimed). Ghost rows must NOT skip it — that was the
+  // loophole that let magic-link orphans become real accounts without
+  // an invite.
+  if (!alreadyComplete) {
     const gate = await checkInvite(rawInviteCode);
     if (!gate.ok) return { ok: false, reason: "invalid_invite" };
   }
@@ -395,16 +555,32 @@ export async function registerAccount(
     return { ok: false, reason: "username_taken" };
   }
 
-  const user =
-    existingByEmail ??
-    (
-      await db
-        .insert(schema.users)
-        .values({ email, username, displayName, avatarColor })
-        .returning()
-    )[0]!;
+  let user = existingByEmail;
+  if (!user) {
+    const inserted = await db
+      .insert(schema.users)
+      .values({ email, username, displayName: name, avatarColor: color })
+      .returning();
+    user = inserted[0]!;
+  } else if (!alreadyComplete) {
+    // Heal a leftover incomplete row instead of leaving it orphaned.
+    const [updated] = await db
+      .update(schema.users)
+      .set({ username, displayName: name, avatarColor: color })
+      .where(eq(schema.users.id, user.id))
+      .returning();
+    user = updated ?? user;
+  }
 
-  if (!existingByEmail) {
+  if (!isFullyRegisteredUser(user)) {
+    console.error("[tabcom:auth] register refused to persist incomplete user", {
+      email,
+      userId: user?.id,
+    });
+    return { ok: false, reason: "invalid_username" };
+  }
+
+  if (!alreadyComplete) {
     // Atomic claim — the pre-check above can race, this can't. If the
     // code was snatched between the two, the account row is harmless
     // (registerAccount is idempotent by email) and the person can
@@ -419,10 +595,10 @@ export async function registerAccount(
   // already has codes.
   await ensureInviteAllowance(user.id);
 
-  if (existingByEmail && existingByEmail.username !== username) {
+  if (alreadyComplete && existingByEmail && existingByEmail.username !== username) {
     await db
       .update(schema.users)
-      .set({ username, displayName, avatarColor })
+      .set({ username, displayName: name, avatarColor: color })
       .where(eq(schema.users.id, user.id));
   }
 
@@ -451,8 +627,8 @@ export async function registerAccount(
       id: user.id,
       email: user.email,
       username,
-      displayName,
-      avatarColor,
+      displayName: name,
+      avatarColor: color,
       verified: !!existingByEmail?.emailVerifiedAt,
     },
   };
@@ -468,9 +644,18 @@ export async function registerAccount(
 export async function sendVerificationEmail(
   sessionToken: string,
   publicBaseUrl: string
-): Promise<{ ok: true } | { ok: false; reason: "invalid_session" | "rate_limited" }> {
+): Promise<
+  | { ok: true }
+  | { ok: false; reason: "invalid_session" | "rate_limited" | "not_registered" }
+> {
   const user = await validateSession(sessionToken);
   if (!user) return { ok: false, reason: "invalid_session" };
+
+  // Defense in depth — validateSession already rejects incomplete
+  // rows, but never mint a verification link without a full identity.
+  if (!isFullyRegisteredUser(user) || !EMAIL_RULE.test(user.email ?? "")) {
+    return { ok: false, reason: "not_registered" };
+  }
 
   const lastRequest = recentRequestByEmail.get(user.email);
   if (lastRequest && Date.now() - lastRequest < RATE_LIMIT_WINDOW_MS) {
@@ -517,6 +702,15 @@ export async function validateSession(
 
   if (!row || row.revoked || row.expiresAt < new Date()) return null;
 
+  // Never authenticate incomplete / ghost accounts — mandatory identity
+  // fields must be present or the session is treated as invalid.
+  if (!row.userId || !row.username?.trim() || !row.displayName?.trim()) {
+    console.warn(
+      `[tabcom:auth] rejecting session for incomplete user id=${row.userId ?? "null"} email=${row.email}`
+    );
+    return null;
+  }
+
   void db
     .update(schema.sessions)
     .set({ lastSeenAt: new Date() })
@@ -528,7 +722,7 @@ export async function validateSession(
     // none), but this specific query INNER JOINs on it matching a real
     // users.id — a guest session (userId: null) can never satisfy that
     // join, so any row reaching this point is guaranteed to have one.
-    id: row.userId!,
+    id: row.userId,
     email: row.email,
     username: row.username,
     displayName: row.displayName,
@@ -567,6 +761,11 @@ export async function claimUsername(
     return { ok: false, reason: "invalid_username" };
   }
 
+  const name = displayName.trim();
+  if (!name || name.length > 80) {
+    return { ok: false, reason: "invalid_username" };
+  }
+
   const [existing] = await db
     .select({ id: schema.users.id })
     .from(schema.users)
@@ -579,7 +778,7 @@ export async function claimUsername(
 
   await db
     .update(schema.users)
-    .set({ username, displayName, avatarColor })
+    .set({ username, displayName: name, avatarColor: avatarColor || "#2563EB" })
     .where(eq(schema.users.id, userId));
 
   return { ok: true };
@@ -941,6 +1140,61 @@ export async function getUserSettings(
     .limit(1);
 
   return { ok: true, settings: row?.data ?? null };
+}
+
+/**
+ * One-time (safe to re-run) cleanup of ghost / orphaned user rows —
+ * accounts that were created by the old magic-link path with only an
+ * email and never completed registration (null/empty username or
+ * display name). Cascades wipe their sessions, invites, and settings
+ * via FK onDelete. Valid fully-registered users are untouched.
+ */
+export async function purgeIncompleteUsers(): Promise<{ deleted: number }> {
+  const ghosts = await db
+    .select({
+      id: schema.users.id,
+      email: schema.users.email,
+      username: schema.users.username,
+      displayName: schema.users.displayName,
+    })
+    .from(schema.users)
+    .where(
+      or(
+        isNull(schema.users.username),
+        eq(schema.users.username, ""),
+        isNull(schema.users.displayName),
+        eq(schema.users.displayName, "")
+      )
+    );
+
+  if (ghosts.length === 0) {
+    return { deleted: 0 };
+  }
+
+  const ids = ghosts.map((g) => g.id);
+
+  // Explicitly revoke sessions first so any in-flight auth fails closed
+  // even before the cascade delete lands.
+  await db
+    .update(schema.sessions)
+    .set({ revoked: true, status: "revoked" })
+    .where(inArray(schema.sessions.userId, ids));
+
+  // Drop outstanding login requests for these emails so a stale link
+  // can't be clicked after cleanup.
+  const emails = ghosts.map((g) => g.email);
+  await db
+    .delete(schema.loginRequests)
+    .where(inArray(schema.loginRequests.email, emails));
+
+  await db.delete(schema.users).where(inArray(schema.users.id, ids));
+
+  console.info(
+    `[tabcom:auth] purged ${ids.length} incomplete user(s):`,
+    ghosts.map((g) => g.email).join(", ")
+  );
+
+  return { deleted: ids.length };
 }
 
 export async function saveUserSettings(

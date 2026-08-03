@@ -146,16 +146,35 @@ export interface WireMessage {
   contactColor?: string;
   sentAt: number;
   replyToId?: string;
+  /** Shared across messages from one multi-select send (see Message). */
+  albumId?: string;
+  albumIndex?: number;
+  albumCount?: number;
 }
 
 /** One leg of WebRTC call negotiation, relayed (never stored) through
  *  the server between accepted contacts. Media itself is P2P. */
 export interface CallSignal {
-  kind: "offer" | "answer" | "ice" | "end" | "reject" | "busy";
+  kind:
+    | "offer"
+    | "answer"
+    | "ice"
+    | "end"
+    | "reject"
+    | "busy"
+    | "ringing"       // callee UI is up — caller can show "Ringing"
+    | "cancel"        // caller hung up before answer
+    | "timeout"       // ring timed out
+    | "quick_reply"   // decline with a canned/custom message
+    | "hold"
+    | "resume"
+    | "renegotiate";  // ICE restart / media renegotiation
   /** Caller sets this on the offer: video call vs voice-only. */
   video?: boolean;
   sdp?: string;
   candidate?: unknown;
+  /** quick_reply body, or human-readable reason. */
+  text?: string;
 }
 
 export interface IncomingCallSignal {

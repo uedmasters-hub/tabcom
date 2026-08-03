@@ -22,16 +22,40 @@
         "POST_NOTIFICATIONS",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_ADVERTISE",
+        "BLUETOOTH_CONNECT",
+        "NEARBY_WIFI_DEVICES",
+        "ACCESS_WIFI_STATE",
+        "CHANGE_WIFI_STATE"
       ]
     },
     "ios": {
       "bundleIdentifier": "dev.tabcom.app",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Tabcom uses Bluetooth to discover and connect to nearby Tabcom devices when you enable Discover Nearby.",
+        "NSBluetoothPeripheralUsageDescription": "Tabcom uses Bluetooth to discover and connect to nearby Tabcom devices when you enable Discover Nearby.",
+        "NSLocalNetworkUsageDescription": "Tabcom uses the local network to upgrade nearby connections to a faster Wi‑Fi link when Discover Nearby is enabled.",
+        "NSBonjourServices": ["_tabcom._tcp"]
+      }
     },
     "plugins": [
       "expo-router",
       "expo-sqlite",
+      [
+        "expo-nearby-connections",
+        {
+          "bonjourServicesName": "tabcom",
+          "localNetworkUsagePermissionText": "Tabcom uses the local network to discover and connect to nearby Tabcom devices when Discover Nearby is enabled.",
+          "bluetoothUsagePermissionText": "Tabcom uses Bluetooth to discover and connect to nearby Tabcom devices when you enable Discover Nearby."
+        }
+      ],
       [
         "expo-image-picker",
         {
@@ -40,16 +64,9 @@
         }
       ],
       [
-        "expo-camera",
-        {
-          "cameraPermission": "Tabcom needs camera access to capture photos and videos.",
-          "microphonePermission": "Tabcom needs microphone access to record video with sound and make calls."
-        }
-      ],
-      [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Tabcom uses your location only when you choose to share it in a chat."
+          "locationAlwaysAndWhenInUsePermission": "Tabcom uses your location only when you choose to share it in a chat, and for Nearby Discovery when you enable it."
         }
       ],
       [
@@ -83,7 +100,8 @@
       "router": {},
       "eas": {
         "projectId": "f8ae74c2-0ab2-4cc5-9a21-2819f45d97e7"
-      }
+      },
+      "tabcomInstallUrl": "https://drive.google.com/drive/folders/tabcom-test-build"
     },
     "web": {
       "bundler": "metro",
