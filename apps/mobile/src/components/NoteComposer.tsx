@@ -8,10 +8,11 @@
 
 import { useState } from "react";
 import {
-  Modal, View, Text, Pressable, TextInput, Image,
-  StyleSheet, Platform, ActivityIndicator,
+  View, Text, Pressable, TextInput, Image,
+  StyleSheet, ActivityIndicator, ScrollView,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { pickNoteImage } from "@/lib/media";
@@ -30,6 +31,23 @@ interface Props {
 
 export function NoteComposer({ visible, onClose, onSend, peerName }: Props) {
   const insets = useSafeAreaInsets();
+  // Tracks the real keyboard height on the UI thread. This only works
+  // because the overlay now lives INSIDE the app's KeyboardProvider
+  // tree — the old native <Modal> rendered in a separate window the
+  // provider could not measure, so the keyboard covered the sheet.
+  // keyboardHeight is negative when open (reanimated convention), so
+  // translating by it lifts the sheet to sit right above the keyboard.
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
+  const bottomInset = insets.bottom;
+  const sheetShift = useAnimatedStyle(() => {
+    const kb = keyboardHeight.value;
+    const keyboardOpen = kb < 0;
+    return {
+      transform: [{ translateY: kb }],
+      // Safe-area bottom is inside the keyboard frame when open.
+      paddingBottom: keyboardOpen ? space.lg : bottomInset + space.lg,
+    };
+  });
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | undefined>();
   const [picking, setPicking] = useState(false);
@@ -71,22 +89,15 @@ export function NoteComposer({ visible, onClose, onSend, peerName }: Props) {
   const canSend = !!text.trim() || !!image;
   const remaining = MAX_NOTE_CHARS - text.length;
 
+  if (!visible) return null;
+
   return (
-    <Modal
-      visible={visible}
-      transparent
-      statusBarTranslucent
-      animationType="slide"
-      onRequestClose={close}
-    >
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
       <View style={styles.overlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={close} />
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ justifyContent: "flex-end" }}
-        >
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + space.lg }]}>
+        <Animated.View style={sheetShift}>
+          <View style={styles.sheet}>
             {/* Header */}
             <View style={styles.header}>
               <Pressable onPress={close} hitSlop={10}>
@@ -109,72 +120,80 @@ export function NoteComposer({ visible, onClose, onSend, peerName }: Props) {
               </Pressable>
             </View>
 
-            {/* Image preview */}
-            {image ? (
-              <View style={styles.preview}>
-                <Image source={{ uri: image }} style={styles.previewImg} />
+            <ScrollView
+              style={styles.body}
+              contentContainerStyle={styles.bodyContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+            >
+              {/* Image preview */}
+              {image ? (
+                <View style={styles.preview}>
+                  <Image source={{ uri: image }} style={styles.previewImg} />
+                  <Pressable
+                    onPress={() => setImage(undefined)}
+                    style={styles.previewRemove}
+                    hitSlop={8}
+                  >
+                    <Ionicons name="close" size={16} color={color.white} />
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {/* Text */}
+              <TextInput
+                value={text}
+                onChangeText={(t) => t.length <= MAX_NOTE_CHARS && setText(t)}
+                placeholder="What's on your mind?"
+                placeholderTextColor={color.muted}
+                style={[styles.input, image ? styles.inputSmall : null]}
+                multiline
+                autoFocus
+                textAlignVertical="top"
+              />
+
+              {/* Footer */}
+              <View style={styles.footer}>
                 <Pressable
-                  onPress={() => setImage(undefined)}
-                  style={styles.previewRemove}
-                  hitSlop={8}
+                  onPress={attach}
+                  disabled={picking}
+                  style={styles.attachBtn}
                 >
-                  <Ionicons name="close" size={16} color={color.white} />
+                  {picking ? (
+                    <ActivityIndicator size="small" color={color.primary} />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name={image ? "image" : "image-outline"}
+                        size={19}
+                        color={color.primary}
+                      />
+                      <Text style={styles.attachText}>
+                        {image ? "Change image" : "Add image"}
+                      </Text>
+                    </>
+                  )}
                 </Pressable>
+
+                <Text
+                  style={[
+                    styles.counter,
+                    remaining < 30 && { color: color.danger },
+                  ]}
+                >
+                  {remaining}
+                </Text>
               </View>
-            ) : null}
 
-            {/* Text */}
-            <TextInput
-              value={text}
-              onChangeText={(t) => t.length <= MAX_NOTE_CHARS && setText(t)}
-              placeholder="What's on your mind?"
-              placeholderTextColor={color.muted}
-              style={[styles.input, image ? styles.inputSmall : null]}
-              multiline
-              autoFocus
-              textAlignVertical="top"
-            />
-
-            {/* Footer */}
-            <View style={styles.footer}>
-              <Pressable
-                onPress={attach}
-                disabled={picking}
-                style={styles.attachBtn}
-              >
-                {picking ? (
-                  <ActivityIndicator size="small" color={color.primary} />
-                ) : (
-                  <>
-                    <Ionicons
-                      name={image ? "image" : "image-outline"}
-                      size={19}
-                      color={color.primary}
-                    />
-                    <Text style={styles.attachText}>
-                      {image ? "Change image" : "Add image"}
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-
-              <Text
-                style={[
-                  styles.counter,
-                  remaining < 30 && { color: color.danger },
-                ]}
-              >
-                {remaining}
+              <Text style={styles.hint}>
+                Notes stay on their chat list until read or deleted.
               </Text>
-            </View>
-
-            <Text style={styles.hint}>
-              Notes stay on their chat list until read or deleted.
-            </Text>
+            </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </Animated.View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
@@ -192,7 +211,15 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radius.xxl,
     paddingTop: space.lg,
     paddingHorizontal: space.xl,
+    maxHeight: "92%",
     ...elevation.medium,
+  },
+  body: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  bodyContent: {
+    flexGrow: 1,
   },
   header: {
     flexDirection: "row",

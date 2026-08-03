@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import {
   Text, View, Pressable, ActivityIndicator,
-  KeyboardAvoidingView, Platform,
 } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -54,11 +54,8 @@ export default function SignInScreen() {
         <Text className="text-ink text-[16px] font-medium">Back</Text>
       </Pressable>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        className="flex-1"
-      >
-        {phase === "email" && (
+      {phase === "email" && (
+        <>
           <View className="flex-1 px-6 pt-4">
             <Text className="text-ink text-[30px] font-extrabold tracking-tight mb-2">
               Sign in
@@ -83,14 +80,19 @@ export default function SignInScreen() {
               }
               hint={error ?? undefined}
             />
-
-            <Button onPress={submit} disabled={busy || !email.trim()} loading={busy}>
-              Email me a link
-            </Button>
           </View>
-        )}
 
-        {phase === "waiting" && (
+          <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+            <View className="px-6 pb-8 pt-2">
+              <Button onPress={submit} disabled={busy || !email.trim()} loading={busy}>
+                Email me a link
+              </Button>
+            </View>
+          </KeyboardStickyView>
+        </>
+      )}
+
+      {phase === "waiting" && (
           <View className="flex-1 items-center justify-center px-6 -mt-16">
             <ActivityIndicator color="#2563eb" size="large" />
             <Text className="text-ink text-[22px] font-extrabold mt-6 mb-2">
@@ -108,7 +110,7 @@ export default function SignInScreen() {
           </View>
         )}
 
-        {phase === "expired" && (
+      {phase === "expired" && (
           <View className="flex-1 items-center justify-center px-6 -mt-16">
             <Text className="text-ink text-[22px] font-extrabold mb-2">
               Link expired
@@ -121,7 +123,6 @@ export default function SignInScreen() {
             </Button>
           </View>
         )}
-      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

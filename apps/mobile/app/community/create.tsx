@@ -4,7 +4,7 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView, KeyboardStickyView } from "react-native-keyboard-controller";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
   Easing, FadeIn, FadeOut, LinearTransition,
@@ -373,6 +373,7 @@ export default function CreateCommunityScreen() {
 
         {/* Bottom action — DONE while naming, CREATE once expanded.
             Matures with validity instead of hard-toggling (§10). */}
+        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
         <View className="px-5 pb-10 pt-1 bg-background">
           {naming ? (
             <Pressable
@@ -410,6 +411,7 @@ export default function CreateCommunityScreen() {
             </Animated.View>
           )}
         </View>
+        </KeyboardStickyView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
