@@ -90,34 +90,28 @@ export async function configureNotifications(): Promise<void> {
 
   // Foreground presentation: show banners for everything except typing,
   // which would be noise while the user is already in the app.
+  // FOREGROUND POLICY — this handler runs ONLY while the app is open.
+  // Anything suppressed here still appears normally when the app is
+  // backgrounded or killed, because the OS renders those itself without
+  // consulting this callback.
+  //
+  // While the app is open we show NO OS notification at all:
+  //   • Messages  -> delivered live by the socket into the conversation.
+  //     A banner here was actively harmful: tapping it deep-linked to a
+  //     different thread and yanked the user out of the chat they were
+  //     already reading.
+  //   • Requests / activity / communities / tabs -> the socket feeds
+  //     these into the store, so they surface on the in-app bell.
+  //   • Typing -> socket-only, never a notification.
+  //   • Calls  -> take over the whole screen (fullScreenModal) instead
+  //     of appearing as a banner; see the call fallback in the bridge.
   N.setNotificationHandler({
-    handleNotification: async (notification: any) => {
-      const data = notification?.request?.content?.data;
-      const category = data?.category;
-      const isTyping = category === "typing";
-
-      // Typing is a live, socket-only signal — it must NEVER surface as a
-      // notification. The server no longer pushes it, but older/stale
-      // servers might; suppress it entirely here so a pushed "is typing…"
-      // can never land in the tray, play a sound, or bump the badge.
-      if (isTyping) {
-        return {
-          shouldShowBanner: false,
-          shouldShowList: false,
-          shouldPlaySound: false,
-          shouldSetBadge: false,
-        };
-      }
-
-      // Everything else (messages, calls, requests, communities, tabs)
-      // shows a banner with sound.
-      return {
-        shouldShowBanner: true,
-        shouldShowList: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-      };
-    },
+    handleNotification: async () => ({
+      shouldShowBanner: false,
+      shouldShowList: false,
+      shouldPlaySound: false,
+      shouldSetBadge: false,
+    }),
   });
 
   if (Platform.OS === "android") {
@@ -234,6 +228,29 @@ export function attachForegroundPushBridge(): () => void {
     // typing signal is always stale by the time it arrives, so we never
     // feed it into the store here — it is intentionally ignored.
     if (data.category === "typing") return;
+
+    // CALLS — the one thing that must still reach the user while the app
+    // is open. Normally the socket delivers the offer and realtime.ts
+    // opens the full-screen call screen. If the socket was momentarily
+    // down the push is our only signal, so open it from here instead.
+    // getCallState() guards against double-navigating when the socket
+    // already handled it (phase would no longer be "idle").
+    if (data.category === "calls" && data.from) {
+      try {
+        const { getCallState } = require("@/lib/call-manager");
+        if (getCallState().phase !== "idle") return; // socket got there first
+        const { router } = require("expo-router");
+        const name = encodeURIComponent(String(data.fromName ?? data.from));
+        const col = encodeURIComponent(String(data.fromColor ?? "#2563eb"));
+        const video = data.video ? "true" : "false";
+        router.push(
+          `/call/${data.from}?peerName=${name}&peerColor=${col}&role=callee&video=${video}` as never
+        );
+      } catch (err) {
+        if (__DEV__) console.warn("[tabcom-push] call fallback failed:", err);
+      }
+      return;
+    }
 
     // Lazy import to avoid circular deps (notifications ↔ stores)
     const { useChatStore } = require("@/stores/chat");
