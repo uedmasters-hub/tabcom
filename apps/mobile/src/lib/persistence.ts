@@ -224,6 +224,7 @@ export function hydrateFromLocalStorage(): void {
               fromUsername: n.from_username,
               fromName: n.from_name,
               fromColor: n.from_color,
+              bgColor: n.bg_color || "",
               text: n.text,
               imageUri: n.image_uri ?? undefined,
               sentAt: n.sent_at,

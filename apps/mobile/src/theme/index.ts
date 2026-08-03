@@ -1,6 +1,7 @@
 export {
   color, type, space, radius, size,
   elevation, motion, presenceColor, avatarSize,
+  notePastels,
   type TypeRole,
 } from "./tokens";
 

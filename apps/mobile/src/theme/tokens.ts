@@ -56,6 +56,21 @@ export const color = {
   white: "#ffffff",
 } as const;
 
+/**
+ * Soft pastel fills for note cards / sandbox. Low contrast on white
+ * chrome so they read as tint, not as a loud accent.
+ */
+export const notePastels = [
+  "#EEF4FF", // mist blue
+  "#F3EEFF", // lilac
+  "#EEFBF3", // mint
+  "#FFF5EB", // peach
+  "#FFF0F3", // rose
+  "#F0FAFF", // sky
+  "#F7F3E9", // cream
+  "#F0F4F8", // slate mist
+] as const;
+
 /* ═══════════════════ TYPOGRAPHY ═══════════════════ */
 
 /**

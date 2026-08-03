@@ -44,7 +44,7 @@ function db(): SQLite.SQLiteDatabase {
 
 // ── Schema ──────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -236,6 +236,11 @@ const MIGRATIONS: Record<number, string[]> = {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_notes_sent ON notes(sent_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_notes_conv ON notes(conversation_id)`,
+  ],
+  3: [
+    // Soft pastel fill for each wall card. Nullable so hydration can
+    // stamp a stable per-id pastel onto rows that predate this column.
+    `ALTER TABLE notes ADD COLUMN bg_color TEXT`,
   ],
 };
 
@@ -941,6 +946,7 @@ export interface StoredNote {
   sent_at: number;
   read_at: number | null;
   outgoing: number;
+  bg_color: string | null;
 }
 
 export function upsertNote(n: {
@@ -950,6 +956,7 @@ export function upsertNote(n: {
   fromUsername: string;
   fromName: string;
   fromColor: string;
+  bgColor: string;
   text: string;
   imageUri?: string;
   sentAt: number;
@@ -959,14 +966,15 @@ export function upsertNote(n: {
   db().runSync(
     `INSERT INTO notes (
        id, conversation_id, contact_id, from_username, from_name,
-       from_color, text, image_uri, sent_at, read_at, outgoing
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       from_color, bg_color, text, image_uri, sent_at, read_at, outgoing
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        read_at   = excluded.read_at,
        image_uri = COALESCE(excluded.image_uri, notes.image_uri),
-       text      = excluded.text`,
+       text      = excluded.text,
+       bg_color  = COALESCE(notes.bg_color, excluded.bg_color)`,
     n.id, n.conversationId, n.contactId, n.fromUsername, n.fromName,
-    n.fromColor, n.text, n.imageUri ?? null, n.sentAt,
+    n.fromColor, n.bgColor, n.text, n.imageUri ?? null, n.sentAt,
     n.readAt ?? null, n.outgoing ? 1 : 0
   );
 }

@@ -11,10 +11,10 @@
  * codebase already uses for react-native-webrtc).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, Pressable, Image, ScrollView, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useNotesStore, type NoteCard } from "@/stores/notes";
+import { useNotesStore, isNoteExpired, type NoteCard } from "@/stores/notes";
 import { color, radius, space, elevation } from "@/theme";
 import { formatListTime } from "@/lib/format-time";
 
@@ -29,15 +29,27 @@ interface Props {
 
 export function NoteWall({ onOpen }: Props) {
   const allNotes = useNotesStore((s) => s.notes);
+  const purgeExpired = useNotesStore((s) => s.purgeExpired);
   const [menuFor, setMenuFor] = useState<string | null>(null);
 
-  // The wall only ever shows incoming notes, each once. Filtering here
-  // as well as in the store keeps a stray outgoing/duplicate from ever
-  // rendering (and from tripping a duplicate React key) between a bad
-  // write and the next hydrate.
+  // Wall cards are 24h — purge on mount and whenever the list changes
+  // so a stale card never sits past its TTL after a long session.
+  useEffect(() => {
+    purgeExpired();
+  }, [allNotes.length, purgeExpired]);
+
+  // The wall only ever shows incoming, non-expired notes, each once.
+  // Filtering here as well as in the store keeps a stray outgoing /
+  // duplicate / expired card from ever rendering (and from tripping
+  // a duplicate React key) between a bad write and the next hydrate.
+  const now = Date.now();
   const seen = new Set<string>();
   const notes = allNotes.filter(
-    (n) => !n.outgoing && !seen.has(n.id) && seen.add(n.id)
+    (n) =>
+      !n.outgoing &&
+      !isNoteExpired(n, now) &&
+      !seen.has(n.id) &&
+      seen.add(n.id)
   );
 
   if (notes.length === 0) return null;
@@ -93,7 +105,10 @@ function NoteCardView({
 
   return (
     <View style={styles.cardWrap}>
-      <Pressable onPress={onOpen} style={styles.card}>
+      <Pressable
+        onPress={onOpen}
+        style={[styles.card, { backgroundColor: note.bgColor }]}
+      >
         {/* Header */}
         <View style={styles.cardHeader}>
           <View style={[styles.dot, { backgroundColor: note.fromColor }]}>
@@ -154,7 +169,13 @@ function NoteCardView({
         {/* Privacy veil — text is already masked above, this is just
             the tap affordance. Fully opaque so nothing shows through. */}
         {hidden && (
-          <View style={[StyleSheet.absoluteFill, styles.veilFallback]}>
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              styles.veilFallback,
+              { backgroundColor: note.bgColor },
+            ]}
+          >
             <View style={styles.veilCentre}>
               <Ionicons name="eye-outline" size={22} color={color.ink} />
               <Text style={styles.veilLabel}>Tap to read</Text>
@@ -216,7 +237,6 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_W,
     height: CARD_H,
-    backgroundColor: color.surface,
     borderRadius: radius.xl,
     padding: space.lg,
     overflow: "hidden",
@@ -293,7 +313,6 @@ const styles = StyleSheet.create({
   },
   /** No native blur needed — text is masked, so an opaque scrim. */
   veilFallback: {
-    backgroundColor: color.surface,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -304,7 +323,7 @@ const styles = StyleSheet.create({
   maskLine: {
     height: 13,
     borderRadius: 7,
-    backgroundColor: color.border,
+    backgroundColor: "rgba(15,23,42,0.08)",
   },
   menuScrim: {
     position: "absolute",

@@ -8,16 +8,16 @@
  * the note and its reply both live in the chat.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   View, Text, Pressable, Image, TextInput,
-  ScrollView, StyleSheet,
+  ScrollView, StyleSheet, Dimensions,
 } from "react-native";
 import Animated, {
   useAnimatedStyle,
+  useSharedValue,
 } from "react-native-reanimated";
 import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useNotesStore, type NoteCard } from "@/stores/notes";
 import { useChatStore } from "@/stores/chat";
@@ -33,17 +33,27 @@ interface Props {
 }
 
 export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
-  const insets = useSafeAreaInsets();
   // Tracks the real keyboard height on the UI thread. Works because
   // this overlay lives INSIDE the app's KeyboardProvider tree — a
   // native <Modal> renders in a separate window the provider can't
   // measure, which is why the keyboard used to overflow the sheet.
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
-  const bottomInset = insets.bottom;
+  // Distance from the overlay's bottom to the window bottom (tab bar).
+  // Keyboard height is measured from the window edge, so lifting by
+  // the full height overshoots and leaves a gap — we subtract this.
+  const floorGap = useSharedValue(0);
+  const overlayRef = useRef<View>(null);
   const markRead = useNotesStore((s) => s.markRead);
   const dismiss = useNotesStore((s) => s.dismiss);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+
+  const measureFloor = () => {
+    overlayRef.current?.measureInWindow((_x, y, _w, h) => {
+      const windowH = Dimensions.get("window").height;
+      floorGap.value = Math.max(0, Math.round(windowH - (y + h)));
+    });
+  };
 
   // Opening IS reading — that's the whole interaction.
   useEffect(() => {
@@ -55,9 +65,18 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
     setReply("");
   }, [note?.id]);
 
-  // Push the sheet up by exactly the keyboard height. keyboardHeight
-  // is negative when open (reanimated convention), so translateY by it
-  // lifts the sheet to sit right above the keyboard.
+  // Re-measure when the sandbox opens — tab bar height can change
+  // with safe-area / orientation.
+  useEffect(() => {
+    if (note) {
+      const t = requestAnimationFrame(measureFloor);
+      return () => cancelAnimationFrame(t);
+    }
+  }, [note?.id]);
+
+  // Push the sheet up by keyboard height minus the floor already
+  // below this overlay (the tab bar). keyboardHeight is negative
+  // when open (reanimated convention).
   //
   // This hook (useAnimatedStyle calls useRef internally) MUST run on
   // every render, so it has to sit ABOVE the `!note` early return.
@@ -66,10 +85,16 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
   // never `note`, so running it when note is null is harmless.
   const sheetShift = useAnimatedStyle(() => {
     const kb = keyboardHeight.value;
-    const keyboardOpen = kb < 0;
+    const gap = floorGap.value;
+    if (kb >= -0.5) {
+      return {
+        transform: [{ translateY: 0 }],
+      };
+    }
+    // kb is negative; adding gap reduces the lift so the sheet
+    // sits flush on the keyboard instead of floating above it.
     return {
-      transform: [{ translateY: kb }],
-      paddingBottom: keyboardOpen ? 0 : bottomInset,
+      transform: [{ translateY: Math.min(0, kb + gap) }],
     };
   });
 
@@ -94,12 +119,17 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
   };
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    <View
+      ref={overlayRef}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="box-none"
+      onLayout={measureFloor}
+    >
       <View style={styles.overlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
         <Animated.View style={[styles.centre, sheetShift]}>
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, { backgroundColor: note.bgColor }]}>
             {/* Header */}
             <View style={styles.header}>
               <View style={[styles.avatar, { backgroundColor: note.fromColor }]}>
@@ -123,6 +153,7 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
               style={styles.content}
               contentContainerStyle={{ paddingBottom: space.lg }}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
             >
               {note.imageUri ? (
                 <Image
@@ -218,7 +249,6 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   sheet: {
-    backgroundColor: color.white,
     borderTopLeftRadius: radius.xxl,
     borderTopRightRadius: radius.xxl,
     paddingTop: space.xl,
@@ -290,7 +320,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xl,
     paddingVertical: space.md,
     borderTopWidth: 1,
-    borderTopColor: color.borderLight,
+    borderTopColor: "rgba(15,23,42,0.06)",
   },
   actionBtn: {
     flexDirection: "row",
@@ -299,7 +329,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: radius.full,
-    backgroundColor: color.surface,
+    backgroundColor: "rgba(255,255,255,0.7)",
   },
   actionText: {
     color: color.muted,
@@ -312,11 +342,12 @@ const styles = StyleSheet.create({
     gap: space.sm,
     paddingHorizontal: space.xl,
     paddingTop: space.sm,
-    paddingBottom: space.xl,
+    // Tight bottom so the sheet sits flush on the keyboard when open.
+    paddingBottom: space.md,
   },
   input: {
     flex: 1,
-    backgroundColor: color.surface,
+    backgroundColor: "rgba(255,255,255,0.85)",
     borderRadius: radius.xl,
     paddingHorizontal: space.lg,
     paddingTop: 12,
