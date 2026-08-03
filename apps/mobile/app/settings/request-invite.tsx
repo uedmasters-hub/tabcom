@@ -1,8 +1,11 @@
 import { useState } from "react";
 import {
   Text, View, Pressable, TextInput,
-  KeyboardAvoidingView, Platform, Alert,
 } from "react-native";
+import {
+  KeyboardAvoidingView,
+  KeyboardStickyView,
+} from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -74,10 +77,7 @@ export default function RequestInviteScreen() {
         <Text className="text-ink text-[16px] font-medium">Back</Text>
       </Pressable>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        className="flex-1"
-      >
+      <KeyboardAvoidingView behavior="padding" className="flex-1">
         <View className="flex-1 px-6 pt-4">
           <Text className="text-ink text-[28px] font-extrabold tracking-tight">
             Request an invite
@@ -119,11 +119,13 @@ export default function RequestInviteScreen() {
           </View>
         </View>
 
-        <View className="px-6 pb-6">
-          <Button onPress={submit} disabled={!canSubmit} loading={submitting}>
-            Send request
-          </Button>
-        </View>
+        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+          <View className="px-6 pb-6 pt-2">
+            <Button onPress={submit} disabled={!canSubmit} loading={submitting}>
+              Send request
+            </Button>
+          </View>
+        </KeyboardStickyView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

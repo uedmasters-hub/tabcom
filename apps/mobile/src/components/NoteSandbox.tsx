@@ -39,6 +39,7 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
   // native <Modal> renders in a separate window the provider can't
   // measure, which is why the keyboard used to overflow the sheet.
   const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
+  const bottomInset = insets.bottom;
   const markRead = useNotesStore((s) => s.markRead);
   const dismiss = useNotesStore((s) => s.dismiss);
   const [reply, setReply] = useState("");
@@ -63,9 +64,14 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
   // Otherwise the hook count changes as the sandbox opens/closes and
   // React throws a Rules-of-Hooks error. It only reads keyboardHeight,
   // never `note`, so running it when note is null is harmless.
-  const sheetShift = useAnimatedStyle(() => ({
-    transform: [{ translateY: keyboardHeight.value }],
-  }));
+  const sheetShift = useAnimatedStyle(() => {
+    const kb = keyboardHeight.value;
+    const keyboardOpen = kb < 0;
+    return {
+      transform: [{ translateY: kb }],
+      paddingBottom: keyboardOpen ? 0 : bottomInset,
+    };
+  });
 
   if (!note) return null;
 
@@ -93,7 +99,7 @@ export function NoteSandbox({ note, onClose, onOpenConversation }: Props) {
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
         <Animated.View style={[styles.centre, sheetShift]}>
-          <View style={[styles.sheet, { marginBottom: insets.bottom }]}>
+          <View style={styles.sheet}>
             {/* Header */}
             <View style={styles.header}>
               <View style={[styles.avatar, { backgroundColor: note.fromColor }]}>
@@ -204,6 +210,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   centre: {
+    // Must be flex:1 (a DEFINITE height) or the sheet's percentage
+    // maxHeight below has nothing to resolve against — RN then leaves
+    // the sheet unconstrained, the ScrollView can't size itself, and
+    // the note text gets clipped mid-line under the actions row.
+    flex: 1,
     justifyContent: "flex-end",
   },
   sheet: {
@@ -211,7 +222,10 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: radius.xxl,
     borderTopRightRadius: radius.xxl,
     paddingTop: space.xl,
-    maxHeight: "82%",
+    // Now that `centre` is flex:1 this resolves against the full screen.
+    // 88% leaves the note's origin card peeking behind the scrim so the
+    // sheet still reads as an overlay, not a full-screen takeover.
+    maxHeight: "88%",
     ...elevation.medium,
   },
   header: {
@@ -247,6 +261,9 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   content: {
+    // flexShrink lets the scroll area give up space to the header,
+    // actions and composer instead of overflowing past them.
+    flexShrink: 1,
     paddingHorizontal: space.xl,
   },
   image: {

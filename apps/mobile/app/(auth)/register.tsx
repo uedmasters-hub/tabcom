@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Text, View, Pressable, ScrollView,
-  KeyboardAvoidingView, Platform,
+  Text, View, Pressable, ScrollView, Platform,
 } from "react-native";
+import {
+  KeyboardAvoidingView,
+  KeyboardStickyView,
+} from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -178,12 +181,9 @@ export default function RegisterScreen() {
         <Text className="text-ink text-[16px] font-medium">Back</Text>
       </Pressable>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        className="flex-1"
-      >
+      <KeyboardAvoidingView behavior="padding" className="flex-1">
         <ScrollView className="flex-1"
-          contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 40 }}
+          contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
@@ -215,9 +215,6 @@ export default function RegisterScreen() {
                     fontSize: 17, letterSpacing: 1.5, textAlign: "center",
                   }}
                 />
-              </View>
-              <View className="mt-6">
-                <Button onPress={goToIdentity} disabled={!canContinue}>Continue</Button>
               </View>
               <Pressable
                 onPress={() => router.push("/(auth)/sign-in" as any)}
@@ -302,13 +299,21 @@ export default function RegisterScreen() {
                   <Text className="flex-1 text-[13px] text-danger leading-[18px]">{error}</Text>
                 </View>
               )}
-
-              <Button onPress={submit} disabled={!canSubmit} loading={submitting}>
-                {submitting ? "Creating account\u2026" : "Create account"}
-              </Button>
             </View>
           )}
         </ScrollView>
+
+        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+          <View className="px-6 pb-8 pt-2 bg-background">
+            {step === "invite" ? (
+              <Button onPress={goToIdentity} disabled={!canContinue}>Continue</Button>
+            ) : (
+              <Button onPress={submit} disabled={!canSubmit} loading={submitting}>
+                {submitting ? "Creating account\u2026" : "Create account"}
+              </Button>
+            )}
+          </View>
+        </KeyboardStickyView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

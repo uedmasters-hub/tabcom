@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Text, View, Pressable, TextInput, ScrollView,
-  KeyboardAvoidingView, Platform, Alert, Keyboard,
+  Alert, Keyboard,
   Dimensions,
 } from "react-native";
+import {
+  KeyboardAvoidingView,
+  KeyboardStickyView,
+} from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -171,10 +175,7 @@ export default function ProfileScreen() {
   if (editing) {
     return (
       <View className="flex-1" style={{ backgroundColor: heroColor }}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          className="flex-1"
-        >
+        <KeyboardAvoidingView behavior="padding" className="flex-1">
           <SafeAreaView edges={["top"]} className="w-full">
             {headerContent}
           </SafeAreaView>
@@ -198,9 +199,11 @@ export default function ProfileScreen() {
             </Text>
           </View>
 
-          <SafeAreaView edges={["bottom"]} className="px-6 pb-2">
-            <Button onPress={saveName} loading={saving}>Update</Button>
-          </SafeAreaView>
+          <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+            <SafeAreaView edges={["bottom"]} className="px-6 pb-2">
+              <Button onPress={saveName} loading={saving}>Update</Button>
+            </SafeAreaView>
+          </KeyboardStickyView>
         </KeyboardAvoidingView>
       </View>
     );
