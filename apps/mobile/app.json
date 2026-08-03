@@ -7,7 +7,7 @@
     "scheme": "tabcom",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    // "newArchEnabled": true,
     "icon": "./assets/images/icon.png",
     "android": {
       "package": "dev.tabcom.app",

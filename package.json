@@ -9,8 +9,8 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "format": "prettier --write .",
-    "mobile:android": "cd apps/mobile && expo run:android",
-    "mobile:start": "cd apps/mobile && expo start --clear"
+    "mobile:start": "cd apps/mobile && expo start --clear",
+    "mobile:android": "cd apps/mobile && expo run:android"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -21,9 +21,9 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.1"
   },
-  "dependencies": {
-    "expo": "~57.0.7",
-    "react": "19.2.3",
-    "react-native": "0.86.0"
+  "pnpm": {
+    "overrides": {
+      "react-native-worklets": "0.10.2"
+    }
   }
 }
