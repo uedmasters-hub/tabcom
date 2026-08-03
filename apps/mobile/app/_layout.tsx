@@ -135,6 +135,16 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#ffffff" } }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="(auth)" />
+        {/* Calls take over the whole screen (FaceTime-style): no header,
+            above the tab bar, and not swipe-dismissable mid-call. */}
+        <Stack.Screen
+          name="call/[peer]"
+          options={{
+            presentation: "fullScreenModal",
+            gestureEnabled: false,
+            animation: "fade",
+          }}
+        />
       </Stack>
       </ToastHost>
       </AlertHost>

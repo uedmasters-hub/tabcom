@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { View, Text, Pressable } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { View, Text } from "react-native";
 import type { Contact } from "@tabcom/shared";
 import { Avatar } from "./Avatar";
+import { Button } from "@/components/ui";
 import { acceptConnection, ignoreConnection } from "@/hooks/useConnections";
 import { sendConnectRequest } from "@/lib/realtime";
 
@@ -25,18 +25,12 @@ export function ConnectionRequestCard({ contact, variant = "card", onResolved }:
   if (variant === "inline") {
     return (
       <View className="flex-row items-center gap-2">
-        <Pressable
-          onPress={accept}
-          className="bg-primary rounded-full px-4 py-2 active:opacity-80"
-        >
-          <Text className="text-white text-[14px] font-bold">Accept</Text>
-        </Pressable>
-        <Pressable
-          onPress={ignore}
-          className="bg-surface rounded-full px-4 py-2 active:opacity-70"
-        >
-          <Text className="text-slate-500 text-[14px] font-semibold">Ignore</Text>
-        </Pressable>
+        <Button size="sm" variant="primary" fullWidth={false} onPress={accept}>
+          Accept
+        </Button>
+        <Button size="sm" variant="ghost" fullWidth={false} onPress={ignore}>
+          Ignore
+        </Button>
       </View>
     );
   }
@@ -55,20 +49,16 @@ export function ConnectionRequestCard({ contact, variant = "card", onResolved }:
         </Text>
 
         <View className="flex-row gap-3 mt-6 w-full">
-          <Pressable
-            onPress={accept}
-            className="flex-1 flex-row items-center justify-center gap-2 bg-primary rounded-2xl py-4 active:opacity-85"
-          >
-            <Ionicons name="checkmark" size={19} color="#fff" />
-            <Text className="text-white font-bold text-[16px]">Accept</Text>
-          </Pressable>
-          <Pressable
-            onPress={ignore}
-            className="flex-1 flex-row items-center justify-center gap-2 bg-white border border-slate-200 rounded-2xl py-4 active:opacity-70"
-          >
-            <Ionicons name="close" size={19} color="#64748b" />
-            <Text className="text-muted font-semibold text-[16px]">Ignore</Text>
-          </Pressable>
+          <View className="flex-1">
+            <Button variant="primary" icon="checkmark" onPress={accept}>
+              Accept
+            </Button>
+          </View>
+          <View className="flex-1">
+            <Button variant="secondary" icon="close" onPress={ignore}>
+              Ignore
+            </Button>
+          </View>
         </View>
       </View>
     </View>
@@ -132,15 +122,16 @@ export function NotConnectedCard({
           ? `Your previous request was declined. You can send a new one.`
           : `You need to connect before you can message @${contact.username}.`}
       </Text>
-      <Pressable
-        onPress={send}
-        className="flex-row items-center bg-ink rounded-full px-6 py-3.5 mt-5 active:opacity-80"
-      >
-        <Ionicons name="person-add" size={17} color="#ffffff" />
-        <Text className="text-white font-semibold text-[15px] ml-2">
+      <View className="mt-5">
+        <Button
+          variant="primary"
+          icon="person-add"
+          fullWidth={false}
+          onPress={send}
+        >
           Send connection request
-        </Text>
-      </Pressable>
+        </Button>
+      </View>
     </View>
   );
 }

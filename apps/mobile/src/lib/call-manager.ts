@@ -41,6 +41,32 @@ export function isCallingAvailable(): boolean {
   return getWebRTC() !== null;
 }
 
+/**
+ * react-native-incall-manager owns the audio *session* — earpiece vs
+ * speaker routing, the proximity sensor, and ring/ringback tones. It's
+ * loaded lazily and guarded exactly like WebRTC: if the native module
+ * isn't in the build, speaker control simply isn't offered and calls
+ * fall back to the platform default route. Nothing crashes.
+ */
+let incall: any = null;
+let incallChecked = false;
+function getInCall(): any {
+  if (!incallChecked) {
+    incallChecked = true;
+    try {
+      incall = require("react-native-incall-manager").default;
+    } catch {
+      incall = null;
+    }
+  }
+  return incall;
+}
+
+/** True when speaker/earpiece routing can be controlled on this build. */
+export function isSpeakerAvailable(): boolean {
+  return getInCall() !== null;
+}
+
 type MediaStream = any;
 import type { CallSignal, IncomingCallSignal } from "@tabcom/shared";
 import { sendCallSignal, updatePresence } from "./realtime";
@@ -59,6 +85,7 @@ export interface CallState {
   peer: { username: string; name: string; color: string };
   role: CallRole;
   muted: boolean;
+  speaker: boolean;
   video: boolean;
   startedAt: number | null;
   localStream: MediaStream | null;
@@ -96,6 +123,7 @@ let state: CallState = {
   peer: { username: "", name: "", color: "#2563eb" },
   role: "caller",
   muted: false,
+  speaker: false,
   video: false,
   startedAt: null,
   localStream: null,
@@ -116,14 +144,41 @@ function signal(to: string, payload: CallSignal) {
   sendCallSignal(to, payload);
 }
 
+// Bring up the audio session for a live call. Video calls default to
+// the loudspeaker (you're holding the phone away from your ear); voice
+// calls stay on the earpiece. `ringback` gives the caller the ringing
+// tone until the callee answers. All best-effort — a missing module or
+// a routing hiccup must never break the call itself.
+function startAudioSession(video: boolean, role: CallRole) {
+  const ic = getInCall();
+  if (!ic) return;
+  try {
+    ic.stopRingtone?.();
+    ic.start({ media: video ? "video" : "audio", auto: true, ringback: role === "caller" ? "_DTMF_" : "" });
+    ic.setForceSpeakerphoneOn(video);
+    update({ speaker: video });
+  } catch { /* best-effort */ }
+}
+
+function stopAudioSession() {
+  const ic = getInCall();
+  if (!ic) return;
+  try {
+    ic.stopRingtone?.();
+    ic.stopRingback?.();
+    ic.stop();
+  } catch { /* best-effort */ }
+}
+
 function teardown() {
   restorePresence();
+  stopAudioSession();
   try { pc?.close(); } catch { /* already closed */ }
   pc = null;
   state.localStream?.getTracks().forEach((t: any) => t.stop());
   pendingOffer = null;
   pendingCandidates = [];
-  state = { ...state, localStream: null, remoteStream: null, startedAt: null };
+  state = { ...state, localStream: null, remoteStream: null, startedAt: null, speaker: false };
 }
 
 async function acquireMedia(video: boolean): Promise<MediaStream | null> {
@@ -169,6 +224,8 @@ function buildPeerConnection(stream: MediaStream): any {
   (conn as any).onconnectionstatechange = () => {
     switch ((conn as any).connectionState) {
       case "connected":
+        getInCall()?.stopRingback?.();
+        getInCall()?.stopRingtone?.();
         update({ phase: "connected", startedAt: state.startedAt ?? Date.now() });
         break;
       case "disconnected":
@@ -226,6 +283,7 @@ export async function startCall(
   const stream = await acquireMedia(video);
   if (!stream) return;
 
+  startAudioSession(video, "caller");
   const conn = buildPeerConnection(stream);
   const offer = await conn.createOffer({});
   await conn.setLocalDescription(offer);
@@ -240,6 +298,7 @@ export async function acceptCall() {
   const stream = await acquireMedia(wantsVideo);
   if (!stream) return;
 
+  startAudioSession(wantsVideo, "callee");
   const conn = buildPeerConnection(stream);
   const rtcA = getWebRTC()!;
   await conn.setRemoteDescription(
@@ -270,6 +329,14 @@ export function toggleMute() {
   update({ muted: next });
 }
 
+export function toggleSpeaker() {
+  const ic = getInCall();
+  if (!ic) return;
+  const next = !state.speaker;
+  try { ic.setForceSpeakerphoneOn(next); } catch { /* best-effort */ }
+  update({ speaker: next });
+}
+
 export function toggleCamera() {
   const tracks = state.localStream?.getVideoTracks() ?? [];
   tracks.forEach((t: any) => { t.enabled = !t.enabled; });
@@ -291,6 +358,7 @@ export function handleCallSignal(payload: IncomingCallSignal) {
       }
       pendingOffer = payload;
       markBusy();
+      getInCall()?.startRingtone?.("_DEFAULT_", "", "", 30);
       update({
         phase: "ringing", peer: from, role: "callee",
         muted: false, video: !!incoming.video, startedAt: null,

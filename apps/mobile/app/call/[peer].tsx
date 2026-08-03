@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Text, View, Pressable } from "react-native";
+import { Text, View, Pressable, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -17,7 +17,8 @@ function getRTCView(): any | null {
 }
 import {
   subscribe, acceptCall, declineCall, endCall,
-  toggleMute, switchCamera, isCallingAvailable, type CallState,
+  toggleMute, toggleSpeaker, switchCamera,
+  isCallingAvailable, isSpeakerAvailable, type CallState,
 } from "@/lib/call-manager";
 
 export default function CallScreen() {
@@ -96,19 +97,38 @@ export default function CallScreen() {
 
   const live = state.phase === "connected" || state.phase === "reconnecting";
   const incoming = state.role === "callee" && state.phase === "ringing";
-  const showVideo = state.video && live;
+  const hasRTC = !!RTCView;
+  // Remote fills the screen once connected.
+  const showRemote = state.video && live && !!state.remoteStream && hasRTC;
+  // Before the call connects, a video caller sees their OWN camera full
+  // screen — the "preview before connecting" the user asked for. (The
+  // callee gets the same self-view during the connecting handshake.)
+  const showSelfPreview = state.video && !live && !!state.localStream && hasRTC;
+  const videoMode = showRemote || showSelfPreview;
+  const speakerAvailable = isSpeakerAvailable();
 
   return (
     <SafeAreaView className="flex-1 bg-slate-900">
-      {showVideo && state.remoteStream && RTCView ? (
+      {/* Connected: remote fills the screen, self shrinks to a PiP tile */}
+      {showRemote ? (
         <RTCView
           streamURL={(state.remoteStream as any).toURL()}
           objectFit="cover"
-          style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+          style={StyleSheet.absoluteFill}
         />
       ) : null}
 
-      {showVideo && state.localStream && RTCView ? (
+      {/* Pre-connect: self camera fills the screen (FaceTime-style preview) */}
+      {showSelfPreview ? (
+        <RTCView
+          streamURL={(state.localStream as any).toURL()}
+          objectFit="cover"
+          mirror
+          style={StyleSheet.absoluteFill}
+        />
+      ) : null}
+
+      {showRemote && state.localStream ? (
         <View className="absolute top-16 right-4 w-28 h-40 rounded-2xl overflow-hidden bg-black z-10">
           <RTCView
             streamURL={(state.localStream as any).toURL()}
@@ -119,8 +139,19 @@ export default function CallScreen() {
         </View>
       ) : null}
 
-      <View className="flex-1 items-center justify-center">
-        {!showVideo && (
+      {/* Scrim keeps name + status + controls legible over live video */}
+      {videoMode ? (
+        <View pointerEvents="none" style={StyleSheet.absoluteFill} className="bg-black/25" />
+      ) : null}
+
+      <View
+        className={
+          videoMode
+            ? "absolute top-0 left-0 right-0 items-center pt-16 px-6"
+            : "flex-1 items-center justify-center"
+        }
+      >
+        {!videoMode && (
           <>
             <View style={{ backgroundColor: color }} className="w-28 h-28 rounded-full items-center justify-center mb-6">
               <Text className="text-white font-bold text-5xl">{name.slice(0, 1).toUpperCase()}</Text>
@@ -129,12 +160,17 @@ export default function CallScreen() {
             <Text className="text-slate-400 mt-0.5">@{peer}</Text>
           </>
         )}
-        <Text className={`mt-4 text-base ${state.phase === "failed" || state.phase === "mic-blocked" ? "text-red-400 px-10 text-center" : "text-slate-300"}`}>
+        {videoMode && (
+          <Text className="text-white text-2xl font-bold">{name}</Text>
+        )}
+        <Text className={`mt-2 text-base ${state.phase === "failed" || state.phase === "mic-blocked" ? "text-red-400 px-10 text-center" : "text-slate-200"}`}>
           {labels[state.phase] ?? state.phase}
         </Text>
       </View>
 
-      <View className="flex-row items-center justify-center gap-6 pb-14">
+      <View
+        className={`${videoMode ? "absolute bottom-0 left-0 right-0" : ""} flex-row items-center justify-center gap-5 pb-14`}
+      >
         {incoming ? (
           <>
             <Pressable onPress={declineCall} className="w-16 h-16 rounded-full bg-red-600 items-center justify-center active:opacity-80">
@@ -152,6 +188,18 @@ export default function CallScreen() {
             >
               <Ionicons name={state.muted ? "mic-off" : "mic"} size={23} color={state.muted ? "#0f172a" : "#fff"} />
             </Pressable>
+            {speakerAvailable && (
+              <Pressable
+                onPress={toggleSpeaker}
+                className={`w-14 h-14 rounded-full items-center justify-center ${state.speaker ? "bg-white" : "bg-white/15"}`}
+              >
+                <Ionicons
+                  name={state.speaker ? "volume-high" : "volume-medium"}
+                  size={23}
+                  color={state.speaker ? "#0f172a" : "#fff"}
+                />
+              </Pressable>
+            )}
             {state.video && (
               <Pressable onPress={switchCamera} className="w-14 h-14 rounded-full bg-white/15 items-center justify-center">
                 <Ionicons name="camera-reverse" size={24} color="#fff" />

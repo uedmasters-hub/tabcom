@@ -1,7 +1,7 @@
 import { Text, View, Pressable, Image } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
+import { Button } from "@/components/ui";
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -39,21 +39,21 @@ export default function WelcomeScreen() {
 
         {/* Actions */}
         <View className="gap-3">
-          <Pressable
+          <Button
+            variant="primary"
+            icon="ticket-outline"
             onPress={() => router.push("/(auth)/register" as any)}
-            className="flex-row items-center justify-center gap-2.5 bg-ink rounded-full py-[19px] active:opacity-85"
           >
-            <Ionicons name="ticket-outline" size={20} color="#fff" />
-            <Text className="text-white font-semibold text-[16px]">Join with an invite code</Text>
-          </Pressable>
+            Join with an invite code
+          </Button>
 
-          <Pressable
+          <Button
+            variant="secondary"
+            icon="person-outline"
             onPress={() => router.push("/(auth)/guest" as any)}
-            className="flex-row items-center justify-center gap-2.5 bg-white border border-border rounded-full py-[19px] active:opacity-70"
           >
-            <Ionicons name="person-outline" size={20} color="#0f172a" />
-            <Text className="text-ink font-semibold text-[16px]">Continue as a guest</Text>
-          </Pressable>
+            Continue as a guest
+          </Button>
 
           <Pressable
             onPress={() => router.push("/(auth)/sign-in" as any)}

@@ -1,8 +1,6 @@
 import { useState } from "react";
-import {
-  Text, View, Pressable, ActivityIndicator,
-  KeyboardAvoidingView, Platform,
-} from "react-native";
+import { Text, View, Pressable } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -48,11 +46,7 @@ export default function GuestSetupScreen() {
         <Text className="text-ink text-[16px] font-medium">Back</Text>
       </Pressable>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        className="flex-1"
-      >
-        <View className="flex-1 px-6 pt-4">
+      <View className="flex-1 px-6 pt-4">
           <Text className="text-ink text-[30px] font-extrabold tracking-tight">
             What should people call you?
           </Text>
@@ -92,13 +86,14 @@ export default function GuestSetupScreen() {
           )}
         </View>
 
-        {/* CTA pinned to bottom — above keyboard */}
-        <View className="px-6 pb-8 pt-2">
-          <Button onPress={submit} disabled={!canSubmit} loading={starting}>
-            {starting ? "Starting session\u2026" : "Start new session"}
-          </Button>
-        </View>
-      </KeyboardAvoidingView>
+        {/* CTA sticks above the keyboard whenever the field is focused */}
+        <KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+          <View className="px-6 pb-8 pt-2">
+            <Button onPress={submit} disabled={!canSubmit} loading={starting}>
+              {starting ? "Starting session\u2026" : "Start new session"}
+            </Button>
+          </View>
+        </KeyboardStickyView>
     </SafeAreaView>
   );
 }

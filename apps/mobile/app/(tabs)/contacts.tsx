@@ -5,6 +5,7 @@ import {
 import { useRouter } from "expo-router";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { Avatar } from "@/components/Avatar";
+import { Button } from "@/components/ui";
 import { useChatStore } from "@/stores/chat";
 import { useAuth } from "@/stores/auth";
 import {
@@ -232,9 +233,15 @@ export default function ContactsScreen() {
               autoFocus
               className="flex-1 border border-border rounded-xl px-4 py-2.5 text-ink text-sm"
             />
-            <Pressable onPress={submitAdd} disabled={!newUsername.trim()} className={`px-4 py-2.5 rounded-[14px] ${newUsername.trim() ? "bg-ink" : "bg-slate-200"}`}>
-              <Text className="text-white text-sm font-semibold">Request</Text>
-            </Pressable>
+            <Button
+              size="sm"
+              variant="primary"
+              fullWidth={false}
+              disabled={!newUsername.trim()}
+              onPress={submitAdd}
+            >
+              Request
+            </Button>
             <Pressable onPress={() => { setAdding(false); setNewUsername(""); }} className="py-2.5">
               <Text className="text-muted text-sm">✕</Text>
             </Pressable>
