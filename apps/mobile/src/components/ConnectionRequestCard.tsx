@@ -135,3 +135,30 @@ export function NotConnectedCard({
     </View>
   );
 }
+
+/** Guest peer whose session ended — 24h grace stub. Messaging disabled. */
+export function UnavailableCard({
+  contact,
+  onRemove,
+}: {
+  contact: Contact;
+  onRemove?: () => void;
+}) {
+  return (
+    <View className="items-center px-10">
+      <Avatar name="?" color="#94a3b8" size="xl" />
+      <Text className="text-ink font-bold text-[19px] mt-4">User unavailable</Text>
+      <Text className="text-muted text-[15px] text-center leading-[22px] mt-2">
+        This account no longer exists. You can still remove them from your
+        contacts. Local chat history stays on this device until you delete it.
+      </Text>
+      {onRemove ? (
+        <View className="mt-5">
+          <Button variant="secondary" icon="person-remove" fullWidth={false} onPress={onRemove}>
+            Remove
+          </Button>
+        </View>
+      ) : null}
+    </View>
+  );
+}

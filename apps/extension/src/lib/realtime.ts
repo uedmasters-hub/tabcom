@@ -214,7 +214,9 @@ export type ConnectionStatus =
   | "pending_in"
   | "accepted"
   | "declined"
-  | "blocked";
+  | "blocked"
+  /** Peer was a guest whose session ended — 24h grace stub. */
+  | "unavailable";
 
 export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;

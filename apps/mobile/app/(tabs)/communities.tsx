@@ -14,6 +14,7 @@ import {
 } from "@/lib/realtime";
 import type { BoardItem } from "@tabcom/shared";
 import { alert } from "@/lib/alert";
+import { isIdentityUnavailable } from "@/lib/identity";
 
 type Segment = "groups" | "activities" | "discover";
 
@@ -330,9 +331,11 @@ export default function CommunitiesScreen() {
             contentContainerStyle={{ paddingBottom: 24 }}
             renderItem={({ item: person }) => {
               const status = connections[person.username] ?? "none";
+              const unavailable = isIdentityUnavailable(status);
               return (
                 <Pressable
                   onPress={() => {
+                    if (unavailable) return;
                     if (status === "accepted") {
                       const convId = useChatStore.getState().startConversation(person.id);
                       router.push(`/conversation/${convId}` as any);
@@ -341,14 +344,21 @@ export default function CommunitiesScreen() {
                   className="flex-row items-center px-5 py-3 active:bg-surface"
                 >
                   <View className="relative mr-4">
-                    <View style={{ backgroundColor: person.color }} className="w-[60px] h-[60px] rounded-full items-center justify-center">
-                      <Text className="text-white font-bold text-2xl">{person.name.slice(0, 1).toUpperCase()}</Text>
-                    </View>
-                    <View className="absolute bottom-0 right-0 w-[18px] h-[18px] rounded-full border-[3px] border-white bg-emerald-500" />
+                    <Avatar
+                      name={unavailable ? "?" : person.name}
+                      color={unavailable ? "#94a3b8" : person.color}
+                      photo={unavailable ? undefined : person.photo}
+                      size="lg"
+                      presence={unavailable ? "offline" : person.presence}
+                    />
                   </View>
                   <View className="flex-1 border-b border-slate-100 py-4 flex-row items-center">
-                    <Text className="flex-1 text-ink font-semibold text-[19px]">{person.name}</Text>
-                    {status === "accepted" ? (
+                    <Text className="flex-1 text-ink font-semibold text-[19px]">
+                      {unavailable ? "User unavailable" : person.name}
+                    </Text>
+                    {unavailable ? (
+                      <Text className="text-slate-400 text-[15px] font-semibold">Unavailable</Text>
+                    ) : status === "accepted" ? (
                       <Pressable
                         onPress={() => {
                           const convId = useChatStore.getState().startConversation(person.id);

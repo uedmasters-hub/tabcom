@@ -34,7 +34,8 @@ import { MorphAttachButton } from "./MorphAttachButton";
 import { ContactPickerSheet } from "./ContactPickerSheet";
 import { NoteComposer } from "./NoteComposer";
 import { LocationPreview } from "./LocationPreview";
-import { ConnectionRequestCard, PendingOutgoingCard, NotConnectedCard } from "./ConnectionRequestCard";
+import { ConnectionRequestCard, PendingOutgoingCard, NotConnectedCard, UnavailableCard } from "./ConnectionRequestCard";
+import { isIdentityUnavailable, UNAVAILABLE_LABEL } from "@/lib/identity";
 import { VoiceBubble } from "./VoiceBubble";
 import { ChatSwitcherSheet, type ChatSwitcherHandle } from "./ChatSwitcherSheet";
 import { ChatSkeleton } from "./ChatSkeleton";
@@ -234,6 +235,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const threadContact = contacts.find((c) => c.username === peer.username);
   const awaitingMe = isDm && connectionStatus === "pending_in" && !!threadContact;
   const awaitingThem = isDm && connectionStatus === "pending_out" && !!threadContact;
+  const peerUnavailable = isDm && isIdentityUnavailable(connectionStatus);
   // Not connected at all — no composer, only a "send request" card.
   // This is the same boundary the server enforces; showing the composer
   // here would let a user type a message that can only ever be rejected.
@@ -241,7 +243,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     isDm &&
     (connectionStatus === "none" || connectionStatus === "declined") &&
     !!threadContact;
-  const gated = awaitingMe || awaitingThem || notConnected;
+  const gated = awaitingMe || awaitingThem || notConnected || peerUnavailable;
 
   const privacyDefaults = useConversationPrivacy(
     (s) => s.byConversation[conversationId]
@@ -730,8 +732,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             )}
           </View>
           <View className="flex-1">
-            <Text className="text-ink font-bold text-[21px]" numberOfLines={1}>{peer.title}</Text>
-            {isTyping ? (
+            <Text className="text-ink font-bold text-[21px]" numberOfLines={1}>
+              {peerUnavailable ? UNAVAILABLE_LABEL : peer.title}
+            </Text>
+            {peerUnavailable ? (
+              <Text className="text-muted text-[13px]">Account ended</Text>
+            ) : isTyping ? (
               <Text className="text-primary text-[13px]">typing…</Text>
             ) : peer.subtitle ? (
               <Text className="text-muted text-[13px]" numberOfLines={1}>{peer.subtitle}</Text>
@@ -838,6 +844,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               <ConnectionRequestCard contact={threadContact} />
             ) : awaitingThem && threadContact ? (
               <PendingOutgoingCard contact={threadContact} />
+            ) : peerUnavailable && threadContact ? (
+              <UnavailableCard
+                contact={threadContact}
+                onRemove={() => {
+                  useChatStore.getState().removeContact(threadContact.id);
+                  router.back();
+                }}
+              />
             ) : notConnected && threadContact ? (
               <NotConnectedCard
                 contact={threadContact}

@@ -12,6 +12,7 @@ import {
   sendConnectRequest,
 } from "@/lib/realtime";
 import { alert } from "@/lib/alert";
+import { isIdentityUnavailable, UNAVAILABLE_LABEL, UNAVAILABLE_SUBTITLE } from "@/lib/identity";
 
 export default function ProfileScreen() {
   const { username } = useLocalSearchParams<{ username: string }>();
@@ -26,6 +27,7 @@ export default function ProfileScreen() {
     (c) => c.username === username || c.id === `u-${username}`
   );
   const status = username ? connections[username] ?? "none" : "none";
+  const unavailable = isIdentityUnavailable(status);
 
   if (!contact) {
     return (
@@ -67,14 +69,23 @@ export default function ProfileScreen() {
 
   const handleRemove = () => {
     alert(
-      "Remove connection",
-      `Remove @${contact.username} from your connections? You'll need to reconnect to chat again.`,
+      unavailable ? "Remove contact" : "Remove connection",
+      unavailable
+        ? `Remove this unavailable account from your contacts?`
+        : `Remove @${contact.username} from your connections? You'll need to reconnect to chat again.`,
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Remove",
           style: "destructive",
-          onPress: () => removeConnection(contact.username),
+          onPress: () => {
+            if (unavailable) {
+              useChatStore.getState().removeContact(contact.id);
+              router.back();
+            } else {
+              removeConnection(contact.username);
+            }
+          },
         },
       ]
     );
@@ -98,24 +109,24 @@ export default function ProfileScreen() {
         {/* Avatar + name */}
         <View className="items-center pt-6 pb-8">
           <Avatar
-            name={contact.name}
-            color={contact.color}
+            name={unavailable ? "?" : contact.name}
+            color={unavailable ? "#94a3b8" : contact.color}
             size="xl"
-            presence={contact.presence}
-            photo={contact.photo}
+            presence={unavailable ? "offline" : contact.presence}
+            photo={unavailable ? undefined : contact.photo}
           />
           <Text className="text-ink font-bold text-[26px] mt-5">
-            {contact.alias ?? contact.name}
+            {unavailable ? UNAVAILABLE_LABEL : (contact.alias ?? contact.name)}
           </Text>
           <Text className="text-muted text-[16px] mt-1">
-            @{contact.username}
+            {unavailable ? UNAVAILABLE_SUBTITLE : `@${contact.username}`}
           </Text>
-          {contact.alias && (
+          {!unavailable && contact.alias && (
             <Text className="text-slate-400 text-[14px] mt-0.5">
               {contact.name}
             </Text>
           )}
-          {isGuest && (
+          {!unavailable && isGuest && (
             <View className="bg-amber-50 border border-amber-200 rounded-full px-4 py-1.5 mt-3">
               <Text className="text-amber-700 text-[13px] font-medium">
                 Guest user
@@ -126,7 +137,7 @@ export default function ProfileScreen() {
 
         {/* Quick actions */}
         <View className="flex-row justify-center gap-4 px-8 mb-8">
-          {status === "accepted" && (
+          {unavailable ? null : status === "accepted" && (
             <Pressable
               onPress={() => {
                 const convId = useChatStore
@@ -142,7 +153,7 @@ export default function ProfileScreen() {
               </Text>
             </Pressable>
           )}
-          {status === "none" && (
+          {!unavailable && status === "none" && (
             <Pressable
               onPress={() => sendConnectRequest(contact.username)}
               className="items-center bg-surface rounded-2xl px-6 py-4 flex-1 active:opacity-70"
@@ -153,7 +164,7 @@ export default function ProfileScreen() {
               </Text>
             </Pressable>
           )}
-          {status === "pending_out" && (
+          {!unavailable && status === "pending_out" && (
             <View className="items-center bg-surface rounded-2xl px-6 py-4 flex-1 opacity-60">
               <Ionicons name="time" size={24} color="#64748b" />
               <Text className="text-muted text-[13px] font-semibold mt-1.5">
@@ -165,14 +176,16 @@ export default function ProfileScreen() {
 
         {/* Info rows */}
         <View className="px-5">
+          {!unavailable && (
           <View className="bg-surface rounded-2xl px-5 py-4 mb-3">
             <Text className="text-muted text-[13px] mb-1">Status</Text>
             <Text className="text-ink text-[16px] capitalize">
               {contact.presence ?? "offline"}
             </Text>
           </View>
+          )}
 
-          {conv && (
+          {conv && !unavailable && (
             <View className="bg-surface rounded-2xl px-5 py-4 mb-3">
               <Text className="text-muted text-[13px] mb-1">Messages</Text>
               <Text className="text-ink text-[16px]">
@@ -185,7 +198,9 @@ export default function ProfileScreen() {
           <View className="bg-surface rounded-2xl px-5 py-4 mb-3">
             <Text className="text-muted text-[13px] mb-1">Connection</Text>
             <Text className="text-ink text-[16px] capitalize">
-              {status === "accepted"
+              {unavailable
+                ? "Unavailable"
+                : status === "accepted"
                 ? "Connected"
                 : status === "pending_out"
                 ? "Request sent"
@@ -200,7 +215,7 @@ export default function ProfileScreen() {
 
         {/* Danger zone */}
         <View className="px-5 mt-6">
-          {status === "accepted" && (
+          {(status === "accepted" || unavailable) && (
             <Pressable
               onPress={handleRemove}
               className="flex-row items-center bg-surface rounded-2xl px-5 py-4 mb-3 active:opacity-70"
@@ -211,10 +226,11 @@ export default function ProfileScreen() {
                 color="#ef4444"
               />
               <Text className="text-red-500 text-[16px] ml-3">
-                Remove connection
+                {unavailable ? "Remove from contacts" : "Remove connection"}
               </Text>
             </Pressable>
           )}
+          {!unavailable && (
           <Pressable
             onPress={handleBlock}
             className="flex-row items-center bg-surface rounded-2xl px-5 py-4 active:opacity-70"
@@ -236,6 +252,7 @@ export default function ProfileScreen() {
                 : `Block @${contact.username}`}
             </Text>
           </Pressable>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>

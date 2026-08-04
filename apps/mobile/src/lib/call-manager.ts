@@ -513,6 +513,21 @@ export async function startCall(
   if (["ringing", "calling", "connecting", "connected", "reconnecting", "on-hold"].includes(state.phase)) {
     return;
   }
+  try {
+    const { useChatStore } = require("@/stores/chat") as typeof import("@/stores/chat");
+    const status = useChatStore.getState().connections[peer.username];
+    if (status === "unavailable") {
+      update({
+        phase: "failed",
+        peer,
+        role: "caller",
+        statusDetail: "User unavailable",
+      });
+      return;
+    }
+  } catch {
+    /* store optional at boot */
+  }
   if (!isCallingAvailable()) {
     update({ phase: "failed", peer, role: "caller", statusDetail: "Calling isn't available in this build" });
     return;

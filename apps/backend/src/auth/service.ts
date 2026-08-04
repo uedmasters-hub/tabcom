@@ -1,6 +1,7 @@
 import { and, desc, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
 
 import { db, schema } from "../db/client";
+import { TERMINATED_IDENTITY_GRACE_MS, assertNotEssentialMutation } from "../db/lifecycle";
 import { checkInvite, consumeInvite, ensureInviteAllowance } from "./invites";
 import { sendInviteRequestConfirmationEmail, sendMagicLinkEmail } from "./mailer";
 import { generateToken, hashToken } from "./tokens";
@@ -922,40 +923,24 @@ export interface DeviceSessionInfo {
 }
 
 /**
- * Ends a guest's session on THIS device right now, on manual sign-out
- * — not waiting for either its natural 30-minute expiry or the
- * once-a-minute sweep to notice.
+ * Ends a guest's session on THIS device.
  *
- * This closes a real gap: a registered account's sign-out revokes its
- * session row via revokeSession, but a guest has no sessionToken to
- * revoke with in the first place (see SettingsView's signOut, which
- * takes an entirely separate no-token branch for guests) — so before
- * this function existed, choosing "Sign out" as a guest cleared local
- * state only. The server-side session row was left "active" and
- * un-revoked for the rest of its real 30-minute TTL, so the very next
- * device-recognition check (on the next popup open, which the client
- * runs unconditionally) would find that still-valid row and silently
- * resume the very identity the person had just tried to leave —
- * sign-out appearing to do nothing.
+ * Permanent relationship purge + tombstone require `localCleared: true`
+ * (client confirmed SQLite wipe). Without it we only soft-expire the
+ * session row so device recognition stops, but graph purge waits.
  *
- * Deliberately mirrors sweepExpiredSessions' guest cleanup exactly
- * (delete the session row, cascade-delete that username's
- * community_activity) rather than merely marking revoked=true — a
- * manually-ended guest session and a naturally-expired one are the
- * same lifecycle event from one minute earlier, not two different
- * ones, and the project's own stated principle is that ending a guest
- * session "by choice or by the 30-minute timeout" should behave
- * identically.
+ * Expiry sweep calls the permanent path with `confirmed: true`.
  *
- * Scoped to deviceId only (no guestUsername check) since a device is
- * only ever supposed to hold one active session at a time — the same
- * invariant registerGuestSession/registerAccount/pollLoginRequest all
- * enforce — so "the active guest session on this device" is
- * unambiguous without needing the caller to prove which username it
- * expects.
+ * Returns guest usernames that were fully purged so the realtime layer
+ * can strip pairs/communities and notify peers.
  */
-export async function endGuestSessionNow(deviceId: string): Promise<void> {
-  if (!deviceId) return;
+export async function endGuestSessionNow(
+  deviceId: string,
+  opts?: { localCleared?: boolean; confirmed?: boolean }
+): Promise<{ purgedUsernames: string[] }> {
+  if (!deviceId) return { purgedUsernames: [] };
+
+  const permanent = opts?.localCleared === true || opts?.confirmed === true;
 
   const guestRows = await db
     .select({ guestUsername: schema.sessions.guestUsername })
@@ -972,13 +957,22 @@ export async function endGuestSessionNow(deviceId: string): Promise<void> {
     .map((row) => row.guestUsername)
     .filter((username): username is string => !!username);
 
-  for (const guestUsername of guestUsernames) {
+  if (!permanent) {
     await db
-      .delete(schema.communityActivity)
-      .where(eq(schema.communityActivity.username, guestUsername))
-      .catch((error) => {
-        console.error("[tabcom] guest activity cleanup failed:", guestUsername, error);
-      });
+      .update(schema.sessions)
+      .set({ status: "expired", revoked: true })
+      .where(
+        and(
+          eq(schema.sessions.deviceId, deviceId),
+          eq(schema.sessions.sessionType, "guest"),
+          eq(schema.sessions.status, "active")
+        )
+      );
+    return { purgedUsernames: [] };
+  }
+
+  for (const guestUsername of guestUsernames) {
+    await purgeGuestSqlArtifacts(guestUsername);
   }
 
   await db
@@ -986,10 +980,46 @@ export async function endGuestSessionNow(deviceId: string): Promise<void> {
     .where(
       and(
         eq(schema.sessions.deviceId, deviceId),
-        eq(schema.sessions.sessionType, "guest"),
-        eq(schema.sessions.status, "active")
+        eq(schema.sessions.sessionType, "guest")
       )
     );
+
+  return { purgedUsernames: guestUsernames };
+}
+
+/** SQL-only guest artifacts (never touches users / invites / board_state DDL). */
+async function purgeGuestSqlArtifacts(guestUsername: string): Promise<void> {
+  // Dev guard: refuse accidental essential-table destruction from this path.
+  assertNotEssentialMutation("users", "delete_all");
+  assertNotEssentialMutation("board_state", "drop");
+
+  await db
+    .delete(schema.communityActivity)
+    .where(eq(schema.communityActivity.username, guestUsername))
+    .catch((error) => {
+      console.error("[tabcom] guest activity cleanup failed:", guestUsername, error);
+    });
+
+  const purgeAfter = new Date(Date.now() + TERMINATED_IDENTITY_GRACE_MS);
+  await db
+    .insert(schema.terminatedIdentities)
+    .values({
+      username: guestUsername,
+      kind: "guest",
+      terminatedAt: new Date(),
+      purgeAfter,
+    })
+    .onConflictDoUpdate({
+      target: schema.terminatedIdentities.username,
+      set: {
+        kind: "guest",
+        terminatedAt: new Date(),
+        purgeAfter,
+      },
+    })
+    .catch((error) => {
+      console.error("[tabcom] tombstone insert failed:", guestUsername, error);
+    });
 }
 
 /**
@@ -1045,31 +1075,6 @@ export async function findActiveSessionForDevice(
  * index.ts on the same kind of interval as the other periodic
  * housekeeping in this project.
  */
-/**
- * Registered sessions: marked "expired", never deleted — per the
- * spec's own framing, "only the session should expire, not the
- * user's data," and their data lives in the users/invites tables
- * regardless of session status.
- *
- * Guest sessions: the session row is DELETED outright once expired
- * (not just marked), and — deliberately SCOPED — their own
- * community_activity rows (their personal audit trail: which
- * communities they joined/left, which tabs/pins/areas they added) are
- * deleted alongside it. This is the guest cascading-cleanup the
- * session-management spec asked for, scoped to what's genuinely the
- * guest's OWN data.
- *
- * Explicitly NOT deleted: the pins/tabs/areas/community membership
- * itself. Those are shared community objects other members are
- * actively relying on — deleting a guest's contributions to a shared
- * board out from under everyone else the moment their personal 30
- * minutes run out would reintroduce the exact "pins vanish" failure
- * this project already spent real effort fixing (see boardState's own
- * doc comment), just reframed as an intentional feature. Their pin
- * stays, still attributed to their now-expired guest username — the
- * same way any other historical attribution in this app works once
- * the person behind it has moved on.
- */
 export async function sweepExpiredSessions(): Promise<{ expiredGuestUsernames: string[] }> {
   const expiredGuestSessions = await db
     .select({ guestUsername: schema.sessions.guestUsername })
@@ -1087,12 +1092,7 @@ export async function sweepExpiredSessions(): Promise<{ expiredGuestUsernames: s
     .filter((username): username is string => !!username);
 
   for (const guestUsername of expiredGuestUsernames) {
-    await db
-      .delete(schema.communityActivity)
-      .where(eq(schema.communityActivity.username, guestUsername))
-      .catch((error) => {
-        console.error("[tabcom] guest activity cleanup failed:", guestUsername, error);
-      });
+    await purgeGuestSqlArtifacts(guestUsername);
   }
 
   await db
@@ -1101,6 +1101,36 @@ export async function sweepExpiredSessions(): Promise<{ expiredGuestUsernames: s
       and(
         eq(schema.sessions.status, "active"),
         eq(schema.sessions.sessionType, "guest"),
+        lt(schema.sessions.expiresAt, new Date())
+      )
+    );
+
+  // Soft-expired guests that never got localCleared: promote once TTL passes.
+  const softExpired = await db
+    .select({ guestUsername: schema.sessions.guestUsername })
+    .from(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.sessionType, "guest"),
+        eq(schema.sessions.status, "expired"),
+        lt(schema.sessions.expiresAt, new Date())
+      )
+    );
+
+  for (const row of softExpired) {
+    if (!row.guestUsername) continue;
+    if (!expiredGuestUsernames.includes(row.guestUsername)) {
+      expiredGuestUsernames.push(row.guestUsername);
+    }
+    await purgeGuestSqlArtifacts(row.guestUsername);
+  }
+
+  await db
+    .delete(schema.sessions)
+    .where(
+      and(
+        eq(schema.sessions.sessionType, "guest"),
+        eq(schema.sessions.status, "expired"),
         lt(schema.sessions.expiresAt, new Date())
       )
     );
@@ -1117,6 +1147,50 @@ export async function sweepExpiredSessions(): Promise<{ expiredGuestUsernames: s
     );
 
   return { expiredGuestUsernames };
+}
+
+/** Active tombstones still inside the 24h grace window. */
+export async function listActiveTerminatedIdentities(): Promise<string[]> {
+  const rows = await db
+    .select({ username: schema.terminatedIdentities.username })
+    .from(schema.terminatedIdentities)
+    .where(gt(schema.terminatedIdentities.purgeAfter, new Date()))
+    .catch(() => [] as { username: string }[]);
+  return rows.map((r) => r.username);
+}
+
+export async function isIdentityTerminated(username: string): Promise<boolean> {
+  const [row] = await db
+    .select({ username: schema.terminatedIdentities.username })
+    .from(schema.terminatedIdentities)
+    .where(eq(schema.terminatedIdentities.username, username))
+    .limit(1)
+    .catch(() => [] as { username: string }[]);
+  return !!row;
+}
+
+/**
+ * Remove tombstones past purgeAfter. Returns usernames fully gone so
+ * peers can drop local stubs.
+ */
+export async function sweepTerminatedIdentityTombstones(): Promise<string[]> {
+  const due = await db
+    .select({ username: schema.terminatedIdentities.username })
+    .from(schema.terminatedIdentities)
+    .where(lt(schema.terminatedIdentities.purgeAfter, new Date()))
+    .catch(() => [] as { username: string }[]);
+
+  const usernames = due.map((r) => r.username);
+  if (usernames.length === 0) return [];
+
+  await db
+    .delete(schema.terminatedIdentities)
+    .where(lt(schema.terminatedIdentities.purgeAfter, new Date()))
+    .catch((error) => {
+      console.error("[tabcom] tombstone GC failed:", error);
+    });
+
+  return usernames;
 }
 
 // ---- Registered-user settings sync (Phase 2 of session management) --------

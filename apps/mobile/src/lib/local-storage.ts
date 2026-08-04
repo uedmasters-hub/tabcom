@@ -24,6 +24,11 @@
  *   - resetAll() wipes everything — called on sign-out
  *   - Media files are referenced by URI, not embedded in the DB
  *   - No analytics, no telemetry, no crash-report payloads from here
+ *
+ *  RELATIONSHIP TO NEON:
+ *   Neon is the session/identity/relationship registry only. It does
+ *   not store messages or media. Do not build a Neon↔SQLite full-database
+ *   sync for chat history — that would break zero-message-retention.
  */
 
 import * as SQLite from "expo-sqlite";
@@ -1271,6 +1276,57 @@ export function getUnseenMissedCount(): number {
   return row?.c ?? 0;
 }
 
+export function getDataOwner(): string | null {
+  try {
+    const row = db().getFirstSync<{ value: string }>(
+      "SELECT value FROM _meta WHERE key = 'data_owner'"
+    );
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function setDataOwner(username: string): void {
+  db().runSync(
+    `INSERT OR REPLACE INTO _meta (key, value) VALUES ('data_owner', ?)`,
+    username
+  );
+}
+
+export function clearDataOwner(): void {
+  try {
+    db().runSync(`DELETE FROM _meta WHERE key = 'data_owner'`);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * If local SQLite is scoped to a different authenticated user, wipe it.
+ * Returns true when data was cleared (caller should skip hydrate of stale rows).
+ */
+export function enforceDataOwner(username: string | null | undefined): boolean {
+  initLocalStorage();
+  if (!username) {
+    // No authenticated identity — never surface another user's rows.
+    if (getDataOwner()) {
+      resetAll();
+      clearDataOwner();
+      return true;
+    }
+    return false;
+  }
+  const owner = getDataOwner();
+  if (owner && owner !== username) {
+    resetAll();
+    setDataOwner(username);
+    return true;
+  }
+  if (!owner) setDataOwner(username);
+  return false;
+}
+
 export function resetAll(): void {
   const d = db();
   d.execSync("BEGIN TRANSACTION");
@@ -1287,6 +1343,7 @@ export function resetAll(): void {
     d.execSync("DELETE FROM communities");
     d.execSync("DELETE FROM conversations");
     d.execSync("DELETE FROM contacts");
+    d.execSync("DELETE FROM conversation_privacy");
     d.execSync("COMMIT");
   } catch (err) {
     d.execSync("ROLLBACK");

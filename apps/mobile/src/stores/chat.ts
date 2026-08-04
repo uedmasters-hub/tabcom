@@ -373,6 +373,37 @@ function attachPrivacyForSend(
   return materialized;
 }
 
+/** Remove peer-scoped local messages/media/avatars when access ends. */
+function purgePeerLocalData(username: string) {
+  const contactId = `u-${username}`;
+  const state = useChatStore.getState();
+  const conversation = state.conversations.find((c) => c.contactId === contactId);
+  useChatStore.setState((s) => {
+    const messages = { ...s.messages };
+    if (conversation) delete messages[conversation.id];
+    return {
+      contacts: s.contacts.map((c) =>
+        c.username === username ? { ...c, photo: undefined } : c
+      ),
+      conversations: conversation
+        ? s.conversations.filter((c) => c.id !== conversation.id)
+        : s.conversations,
+      messages,
+    };
+  });
+  try {
+    const {
+      deleteConversation,
+      deleteContact,
+    } = require("@/lib/local-storage") as typeof import("@/lib/local-storage");
+    if (conversation) deleteConversation(conversation.id);
+    deleteContact(contactId);
+  } catch { /* optional */ }
+  void import("@/lib/avatar-cache").then(({ removeCachedAvatar }) =>
+    removeCachedAvatar(username)
+  );
+}
+
 export const useChatStore = create<ChatState>()((set, get) => {
   const ensureConversation = (
     target: { contactId?: string; communityId?: string },
@@ -773,9 +804,20 @@ export const useChatStore = create<ChatState>()((set, get) => {
         const aliasById = new Map(
           state.contacts.filter((c) => c.alias).map((c) => [c.id, c.alias!])
         );
+        const photoByUsername = new Map(
+          state.contacts
+            .filter((c) => c.photo)
+            .map((c) => [c.username, c.photo!])
+        );
         const liveContacts: Contact[] = users.map((u) => ({
-          id: `u-${u.username}`, name: u.name, username: u.username,
-          color: u.color, photo: u.photo, presence: u.presence ?? "online",
+          id: `u-${u.username}`,
+          name: u.name,
+          username: u.username,
+          color: u.color,
+          // Prefer live roster photo; fall back to cached SQLite/file URI
+          // so Discover/Chat never flash a letter placeholder.
+          photo: u.photo || photoByUsername.get(u.username),
+          presence: u.presence ?? "online",
           alias: aliasById.get(`u-${u.username}`),
         }));
         const departed = state.contacts
@@ -990,14 +1032,14 @@ export const useChatStore = create<ChatState>()((set, get) => {
       set((state) => {
         const contacts = [...state.contacts];
         for (const item of snapshot) {
-          if (item.status !== "pending_in") continue;
+          if (item.status !== "pending_in" && item.status !== "unavailable") continue;
           const contactId = `u-${item.username}`;
           if (contacts.some((c) => c.id === contactId)) continue;
           contacts.unshift({
             id: contactId,
-            name: item.username,
+            name: item.status === "unavailable" ? "User unavailable" : item.username,
             username: item.username,
-            color: "#334155",
+            color: item.status === "unavailable" ? "#94a3b8" : "#334155",
             presence: "offline" as const,
           });
         }
@@ -1033,6 +1075,24 @@ export const useChatStore = create<ChatState>()((set, get) => {
       });
       if (status === "accepted") {
         const contactId = `u-${username}`;
+        // Ensure a conversation exists and contact profile is present
+        // for immediate Chat / Discover avatar consistency.
+        // Neon has no chat history to download — messages live only in
+        // peer SQLite; socket relay is incremental from this point on.
+        get().startConversation(contactId);
+        const contact = get().contacts.find((c) => c.username === username);
+        if (contact?.photo) {
+          void import("@/lib/avatar-cache").then(({ cacheContactPhoto }) =>
+            cacheContactPhoto(username, contact.photo).then((uri) => {
+              if (!uri || uri === contact.photo) return;
+              set((state) => ({
+                contacts: state.contacts.map((c) =>
+                  c.username === username ? { ...c, photo: uri } : c
+                ),
+              }));
+            })
+          );
+        }
         const conv = get().conversations.find((c) => c.contactId === contactId);
         const already = conv
           ? (get().messages[conv.id] ?? []).some(
@@ -1040,6 +1100,43 @@ export const useChatStore = create<ChatState>()((set, get) => {
             )
           : false;
         if (!already) systemNotice({ contactId }, "Connected securely.", true);
+      }
+      if (status === "unavailable") {
+        const contactId = `u-${username}`;
+        // Keep local history during 24h grace; disable actions via status.
+        if (!get().contacts.some((c) => c.id === contactId)) {
+          set((state) => ({
+            contacts: [
+              {
+                id: contactId,
+                name: "User unavailable",
+                username,
+                color: "#94a3b8",
+                presence: "offline" as const,
+              },
+              ...state.contacts,
+            ],
+          }));
+        }
+        const notice = "This account is no longer available.";
+        const conv = get().conversations.find((c) => c.contactId === contactId);
+        const already = conv
+          ? (get().messages[conv.id] ?? []).some(
+              (m) => m.kind === "system" && m.text === notice
+            )
+          : false;
+        if (!already) systemNotice({ contactId }, notice, true);
+      }
+      if (status === "none" || status === "declined" || status === "blocked") {
+        // Access revoked — drop peer-scoped local rows so another
+        // session cannot surface their media/avatars.
+        void purgePeerLocalData(username);
+        if (status === "none") {
+          // Post-grace prune: drop unavailable stub from contacts.
+          set((state) => ({
+            contacts: state.contacts.filter((c) => c.username !== username),
+          }));
+        }
       }
     },
 
@@ -1064,6 +1161,12 @@ export const useChatStore = create<ChatState>()((set, get) => {
         set((state) => ({
           connections: { ...state.connections, [contact.username]: "accepted" },
         }));
+        get().startConversation(contact.id);
+        if (contact.photo) {
+          void import("@/lib/avatar-cache").then(({ cacheContactPhoto }) =>
+            cacheContactPhoto(contact.username, contact.photo)
+          );
+        }
         systemNotice({ contactId: contact.id }, "Connected securely.", true);
       }
       if (action === "deny") {
@@ -1079,16 +1182,13 @@ export const useChatStore = create<ChatState>()((set, get) => {
       const contact = get().contacts.find((c) => c.id === contactId);
       if (!contact) return;
       removeConnection(contact.username);
+      purgePeerLocalData(contact.username);
       set((state) => {
-        const conversation = state.conversations.find((c) => c.contactId === contactId);
-        const messages = { ...state.messages };
-        if (conversation) delete messages[conversation.id];
         const connections = { ...state.connections };
         delete connections[contact.username];
         return {
           contacts: state.contacts.filter((c) => c.id !== contactId),
-          conversations: state.conversations.filter((c) => c.contactId !== contactId),
-          messages, connections,
+          connections,
         };
       });
     },

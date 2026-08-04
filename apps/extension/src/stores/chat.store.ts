@@ -1224,9 +1224,30 @@ export const useChatStore = create<ChatState>()(
 
           const contactId = `u-${username}`;
           if (status === "accepted") {
+            // Neon has no chat history to download — local store only.
             systemNotice(
               { contactId },
               `You're now connected with @${username}. Say hi!`,
+              true
+            );
+          } else if (status === "unavailable") {
+            if (!get().contacts.some((c) => c.id === contactId)) {
+              set((state) => ({
+                contacts: [
+                  {
+                    id: contactId,
+                    name: "User unavailable",
+                    username,
+                    color: "#94a3b8",
+                    presence: "offline" as const,
+                  },
+                  ...state.contacts,
+                ],
+              }));
+            }
+            systemNotice(
+              { contactId },
+              "This account is no longer available.",
               true
             );
           } else if (status === "declined") {
@@ -1235,6 +1256,10 @@ export const useChatStore = create<ChatState>()(
               `@${username} declined your request. You can send another one later.`,
               false
             );
+          } else if (status === "none") {
+            set((state) => ({
+              contacts: state.contacts.filter((c) => c.username !== username),
+            }));
           }
         },
 

@@ -14,6 +14,7 @@ import {
 } from "@/lib/realtime";
 import type { Contact } from "@tabcom/shared";
 import { alert } from "@/lib/alert";
+import { isIdentityUnavailable, UNAVAILABLE_LABEL } from "@/lib/identity";
 
 const presenceColors: Record<string, string> = {
   online: "#16a34a",
@@ -55,11 +56,14 @@ export default function ContactsScreen() {
     return (messages[c.id] ?? []).some((m) => m.kind !== "system");
   };
 
-  // Base contact list: accepted connections + anyone with chat history
+  // Base contact list: accepted connections + unavailable grace stubs
+  // + anyone with chat history
   const allContacts = useMemo(() => {
     const base = contacts.filter((c) =>
       c.id.startsWith("u-")
-        ? connections[c.username] === "accepted" || hasChatted(c.id)
+        ? connections[c.username] === "accepted" ||
+          isIdentityUnavailable(connections[c.username]) ||
+          hasChatted(c.id)
         : false
     );
     const q = query.trim().toLowerCase();
@@ -129,31 +133,45 @@ export default function ContactsScreen() {
   );
 
   const renderContact = (contact: Contact, action: "remove-connection" | "remove-member" | "add-member") => {
-    const dot = presenceColors[contact.presence];
     const isPendingInvite = pendingInviteUsernames.has(contact.username);
     const unread =
       conversations.find((c) => c.contactId === contact.id)?.unread ?? 0;
+    const unavailable = isIdentityUnavailable(connections[contact.username]);
+    const displayName = unavailable
+      ? UNAVAILABLE_LABEL
+      : (contact.alias ?? contact.name);
     return (
       <View key={contact.id} className="flex-row items-center px-5 py-3.5 border-b border-slate-100">
-        <Pressable onPress={() => openChat(contact)} className="flex-row items-center flex-1">
+        <Pressable
+          onPress={() => {
+            if (unavailable) {
+              router.push(`/profile/${contact.username}` as any);
+              return;
+            }
+            openChat(contact);
+          }}
+          className="flex-row items-center flex-1"
+        >
           <View className="mr-4">
             <Avatar
-              name={contact.alias ?? contact.name}
-              color={contact.color}
+              name={unavailable ? "?" : (contact.alias ?? contact.name)}
+              color={unavailable ? "#94a3b8" : contact.color}
               size="lg"
-              presence={contact.presence}
-              photo={contact.photo}
+              presence={unavailable ? "offline" : contact.presence}
+              photo={unavailable ? undefined : contact.photo}
             />
           </View>
           <View className="flex-1">
-            <Text className={`text-ink text-[17px] ${unread > 0 ? "font-extrabold" : "font-bold"}`}>
-              {contact.alias ?? contact.name}
+            <Text className={`text-ink text-[17px] ${unread > 0 && !unavailable ? "font-extrabold" : "font-bold"}`}>
+              {displayName}
             </Text>
             <Text className="text-muted text-[14px]">
-              @{contact.username} · {contact.presence}
+              {unavailable
+                ? "Account ended"
+                : `@${contact.username} · ${contact.presence}`}
             </Text>
           </View>
-          {unread > 0 && (
+          {unread > 0 && !unavailable && (
             <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center mr-3">
               <Text className="text-white text-xs font-bold">{unread}</Text>
             </View>
@@ -165,12 +183,12 @@ export default function ContactsScreen() {
             <Text className="text-muted text-sm">Remove</Text>
           </Pressable>
         )}
-        {action === "remove-member" && isAdminOfSelected && (
+        {action === "remove-member" && isAdminOfSelected && !unavailable && (
           <Pressable onPress={() => confirmRemoveFromCommunity(contact)} className="active:opacity-60">
             <Text className="text-muted text-sm">Remove</Text>
           </Pressable>
         )}
-        {action === "add-member" && (
+        {action === "add-member" && !unavailable && (
           isPendingInvite ? (
             <Text className="text-slate-400 text-sm font-semibold uppercase">Invited</Text>
           ) : (

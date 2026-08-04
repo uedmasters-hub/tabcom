@@ -35,17 +35,17 @@ export async function wipeGuestLocalState(): Promise<void> {
 
 /**
  * Full guest teardown used on logout, timeout, and before starting a
- * fresh guest. Awaits the server end so device recognition cannot
- * immediately resurrect the same session.
+ * fresh guest. Wipe local state first, then confirm to Neon with
+ * localCleared so relationship purge can proceed.
  */
 export async function endGuestSessionCompletely(): Promise<void> {
-  try {
-    await endGuestSessionOnServer();
-  } catch {
-    /* best effort — local wipe still proceeds */
-  }
-
   disconnectAllContexts();
   await wipeGuestLocalState();
   useProfileStore.getState().endGuestSession();
+
+  try {
+    await endGuestSessionOnServer({ localCleared: true });
+  } catch {
+    /* best effort — local wipe already completed */
+  }
 }

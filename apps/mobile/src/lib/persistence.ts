@@ -16,6 +16,17 @@
  *     URI is stored in the DB — not the blob itself.
  *   - The store remains the source of truth for the UI. SQLite is the
  *     durable backing store that survives app kills / restarts.
+ *
+ *  SYNC MODEL (Neon is NOT a content store):
+ *   - Neon holds sessions, registered identity, relationship snapshots,
+ *     and temporary guest tombstones only.
+ *   - Chat messages, media, notes, and call history never leave the
+ *     device via Neon — there is no "download history from server".
+ *   - Socket events are the incremental sync bus into SQLite (DMs,
+ *     roster, connection status, community board). Accepting a
+ *     connection creates a local conversation and caches peer profile
+ *     fields from the roster / get_my_connections — not from Neon chat
+ *     tables (those do not exist).
  */
 
 import * as FileSystem from "expo-file-system/legacy";
@@ -56,8 +67,10 @@ import {
   getMessage,
   resetAll,
   type StoredMessage,
+  enforceDataOwner,
 } from "./local-storage";
 import { useChatStore } from "@/stores/chat";
+import { useAuth } from "@/stores/auth";
 import type {
   Contact,
   Conversation,
@@ -249,6 +262,17 @@ export async function repairMediaLinks(): Promise<number> {
 export function hydrateFromLocalStorage(): void {
   initLocalStorage();
 
+  // Scope local rows to the authenticated identity. If another account
+  // previously owned this database, wipe before reading anything.
+  const auth = useAuth.getState();
+  const owner =
+    auth.user?.username ??
+    (auth.guest ? `guest:${auth.guest.username}` : null);
+  if (enforceDataOwner(owner)) {
+    useChatStore.getState().resetChat();
+    return;
+  }
+
   const store = useChatStore.getState();
 
   // ── Contacts ──
@@ -260,6 +284,7 @@ export function hydrateFromLocalStorage(): void {
       name: c.name,
       color: c.color,
       alias: c.alias ?? undefined,
+      photo: c.photo_uri ?? undefined,
       presence: "offline" as const,
       seeded: c.seeded === 1,
     }));
@@ -458,14 +483,46 @@ export function startPersistence(): () => void {
       // ── Contacts changed ──
       if (next.contacts !== prev.contacts) {
         for (const c of next.contacts) {
+          const prevC = prev.contacts.find((x) => x.id === c.id);
+          // Persist immediately with whatever URI we have; async-cache
+          // data URLs below so relaunch doesn't keep huge blobs in SQLite.
           upsertContact({
             id: c.id,
             username: c.username,
             name: c.name,
             color: c.color,
             alias: c.alias,
+            photoUri: c.photo,
             seeded: c.seeded,
           });
+
+          if (
+            c.photo &&
+            c.photo.startsWith("data:image/") &&
+            c.photo !== prevC?.photo
+          ) {
+            void import("@/lib/avatar-cache")
+              .then(({ cacheContactPhoto }) => cacheContactPhoto(c.username, c.photo))
+              .then((uri) => {
+                if (!uri || uri === c.photo) return;
+                upsertContact({
+                  id: c.id,
+                  username: c.username,
+                  name: c.name,
+                  color: c.color,
+                  alias: c.alias,
+                  photoUri: uri,
+                  seeded: c.seeded,
+                });
+                // Point the live store at the durable file URI.
+                useChatStore.setState((s) => ({
+                  contacts: s.contacts.map((x) =>
+                    x.id === c.id ? { ...x, photo: uri } : x
+                  ),
+                }));
+              })
+              .catch(() => { /* best effort */ });
+          }
         }
       }
 
@@ -717,12 +774,22 @@ export function startPersistence(): () => void {
 /** Wipe all local data — called on sign-out. */
 export async function clearAllLocalData(): Promise<void> {
   resetAll();
-  // Also wipe saved media files
+  try {
+    const { clearDataOwner } = require("./local-storage") as typeof import("./local-storage");
+    clearDataOwner();
+  } catch { /* ignore */ }
+  // Also wipe saved media + avatar files
   try {
     const info = await FileSystem.getInfoAsync(MEDIA_DIR);
     if (info.exists) {
       await FileSystem.deleteAsync(MEDIA_DIR, { idempotent: true });
     }
+  } catch {
+    /* best effort */
+  }
+  try {
+    const { clearAvatarCache } = require("./avatar-cache") as typeof import("./avatar-cache");
+    await clearAvatarCache();
   } catch {
     /* best effort */
   }

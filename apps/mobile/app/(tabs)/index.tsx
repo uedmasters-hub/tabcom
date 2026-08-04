@@ -19,12 +19,7 @@ import { RecentCalls } from "@/components/RecentCalls";
 import { NoteSandbox } from "@/components/NoteSandbox";
 import type { NoteCard } from "@/stores/notes";
 import { ChatListSkeleton } from "@/components/ChatListSkeleton";
-
-const presenceDot: Record<string, string> = {
-  online: "#16a34a",
-  away: "#eab308",
-  busy: "#ef4444",
-};
+import { isIdentityUnavailable, UNAVAILABLE_LABEL } from "@/lib/identity";
 
 /** Chat — conversation list with rich last-message previews:
  *  media-type icons, read receipts, presence, per the design. */
@@ -59,13 +54,19 @@ export default function ChatScreen() {
   const contacts = useChatStore((s) => s.contacts);
   const communities = useChatStore((s) => s.communities);
   const messages = useChatStore((s) => s.messages);
+  const connections = useChatStore((s) => s.connections);
   const pending = usePendingRequests();
 
-  const getTitle = (c: Conversation) =>
-    c.kind === "community" && c.communityId
-      ? communities[c.communityId]?.name ?? "Community"
-      : contacts.find((x) => x.id === c.contactId)?.alias ??
-        contacts.find((x) => x.id === c.contactId)?.name ?? "Unknown";
+  const getTitle = (c: Conversation) => {
+    if (c.kind === "community" && c.communityId) {
+      return communities[c.communityId]?.name ?? "Community";
+    }
+    const contact = contacts.find((x) => x.id === c.contactId);
+    if (contact && isIdentityUnavailable(connections[contact.username])) {
+      return UNAVAILABLE_LABEL;
+    }
+    return contact?.alias ?? contact?.name ?? "Unknown";
+  };
 
   const filtered = useMemo(() => {
     // Drop community threads whose community is gone (left/deleted).
@@ -77,7 +78,7 @@ export default function ChatScreen() {
     const q = query.trim().toLowerCase();
     if (!q) return live;
     return live.filter((c) => getTitle(c).toLowerCase().includes(q));
-  }, [conversations, query, contacts, communities]);
+  }, [conversations, query, contacts, communities, connections]);
 
   const lastMessage = (c: Conversation): Message | undefined => {
     const t = messages[c.id] ?? [];
@@ -207,7 +208,9 @@ export default function ChatScreen() {
           }
           renderItem={({ item: c }) => {
             const contact = c.kind === "dm" ? contacts.find((x) => x.id === c.contactId) : null;
-            const dot = contact ? presenceDot[contact.presence] : null;
+            const unavailable = contact
+              ? isIdentityUnavailable(connections[contact.username])
+              : false;
             return (
               <SwipeableRow
                 onDelete={() => {
@@ -229,21 +232,25 @@ export default function ChatScreen() {
                 >
                   <View className="mr-4">
                     <Avatar
-                      name={getTitle(c)}
-                      color={contact?.color ?? "#2563eb"}
+                      name={unavailable ? "?" : getTitle(c)}
+                      color={unavailable ? "#94a3b8" : (contact?.color ?? "#2563eb")}
                       size="lg"
-                      presence={contact?.presence}
-                      photo={contact?.photo}
+                      presence={unavailable ? "offline" : contact?.presence}
+                      photo={unavailable ? undefined : contact?.photo}
                     />
                   </View>
                   <View className="flex-1 border-b border-slate-100 py-2 flex-row items-center">
                     <View className="flex-1 mr-3">
                       <Text className="text-ink font-bold text-[16px]" numberOfLines={1}>{getTitle(c)}</Text>
-                      <Preview conv={c} />
+                      {unavailable ? (
+                        <Text className="text-muted text-[14px] mt-0.5">Account ended</Text>
+                      ) : (
+                        <Preview conv={c} />
+                      )}
                     </View>
                     <View className="items-end gap-1.5">
                       <Text className="text-slate-400 text-[14px]">{formatListTime(c.lastMessageAt)}</Text>
-                      {c.unread > 0 && (
+                      {c.unread > 0 && !unavailable && (
                         <View className="bg-primary rounded-full min-w-[22px] h-[22px] px-1.5 items-center justify-center">
                           <Text className="text-white text-xs font-bold">{c.unread}</Text>
                         </View>

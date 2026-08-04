@@ -82,23 +82,25 @@ export async function wipeGuestLocalState(): Promise<void> {
 }
 
 /**
- * Full guest teardown: server session, SecureStore key, local data,
- * and realtime disconnect. Used on logout and timeout.
+ * Full guest teardown: wipe local SQLite first, then confirm to Neon
+ * so the server can permanently purge guest relationship refs.
  */
 export async function endGuestSessionCompletely(
   guestUsername?: string | null
 ): Promise<void> {
-  if (guestUsername) {
-    void auth.endGuestSession(guestUsername).catch(() => {});
-  } else {
-    void auth.endGuestSession("").catch(() => {});
-  }
-
+  // 1) Local wipe first — Neon permanent purge requires localCleared.
   try {
     await SecureStore.deleteItemAsync(GUEST_KEY);
   } catch { /* already gone */ }
 
   await wipeGuestLocalState();
+
+  // 2) Confirm to backend after local data is gone.
+  if (guestUsername) {
+    await auth.endGuestSession(guestUsername, { localCleared: true }).catch(() => {});
+  } else {
+    await auth.endGuestSession("", { localCleared: true }).catch(() => {});
+  }
 
   try {
     const { useRealtime } = require("@/stores/realtime") as typeof import("@/stores/realtime");

@@ -324,12 +324,15 @@ export async function registerGuestSession(guestUsername: string): Promise<void>
  *  it can be imported alongside profile.store's own endGuestSession
  *  action — a same-name local reset — without a collision; the two
  *  are meant to be called together, one right after the other. */
-export async function endGuestSessionOnServer(): Promise<void> {
+export async function endGuestSessionOnServer(opts?: { localCleared?: boolean }): Promise<void> {
   const deviceId = await getDeviceId();
   await authFetch("/session/end-guest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deviceId }),
+    body: JSON.stringify({
+      deviceId,
+      localCleared: opts?.localCleared === true,
+    }),
   });
 }
 

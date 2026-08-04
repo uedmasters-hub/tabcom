@@ -261,14 +261,22 @@ export function createAuthClient(env: AuthEnv) {
     },
 
     /** Ends this device's guest session server-side. Must be called on
-     *  every guest-ending path or stale state survives on the server. */
-    async endGuestSession(guestUsername: string): Promise<void> {
+     *  every guest-ending path or stale state survives on the server.
+     *  Pass localCleared:true only after SQLite wipe so Neon can purge. */
+    async endGuestSession(
+      guestUsername: string,
+      opts?: { localCleared?: boolean }
+    ): Promise<void> {
       const deviceId = await env.getDeviceId();
       try {
         await authFetch<unknown>("/session/end-guest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ guestUsername, deviceId }),
+          body: JSON.stringify({
+            guestUsername,
+            deviceId,
+            localCleared: opts?.localCleared === true,
+          }),
         });
       } catch {
         /* best effort */

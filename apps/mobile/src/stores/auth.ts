@@ -226,8 +226,17 @@ export const useAuth = create<AuthState>((set, get) => ({
     if (sessionToken) void auth.logout(sessionToken);
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(USER_KEY);
-    // Registered users: keep local storage (messages, media, communities).
-    // They can manually clear via Settings → Storage → Clear cache.
+    // Always wipe user-scoped SQLite + avatar/media caches on sign-out
+    // so another account on this device cannot see prior profile photos
+    // or messages. Offline cache is rebuilt after the next login.
+    try {
+      const { useChatStore } = require("@/stores/chat") as typeof import("@/stores/chat");
+      useChatStore.getState().resetChat();
+    } catch { /* */ }
+    try {
+      const { clearAllLocalData } = require("@/lib/persistence") as typeof import("@/lib/persistence");
+      await clearAllLocalData();
+    } catch { /* */ }
     set({ sessionToken: null, user: null, guest: null });
   },
 }));

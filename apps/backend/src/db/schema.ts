@@ -264,3 +264,18 @@ export const communityImages = pgTable("community_images", {
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * Temporary tombstones for terminated guest identities.
+ * Peers see "unavailable" for 24h, then a GC pass removes the row.
+ * This table is guest-lifecycle metadata only — never holds messages.
+ * Safe to delete/GC; not an essential infrastructure table.
+ */
+export const terminatedIdentities = pgTable("terminated_identities", {
+  username: text("username").primaryKey(),
+  kind: text("kind").notNull().default("guest"), // "guest"
+  terminatedAt: timestamp("terminated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  purgeAfter: timestamp("purge_after", { withTimezone: true }).notNull(),
+});

@@ -28,6 +28,7 @@ import {
   saveUserSettings,
   sendVerificationEmail,
   sweepExpiredSessions,
+  sweepTerminatedIdentityTombstones,
   validateSession,
   verifyMagicLink,
 } from "./auth/service";
@@ -518,14 +519,28 @@ const httpServer = createServer((req, res) => {
     void readJsonBody(req)
       .then(async (body) => {
         const deviceId = String(body.deviceId ?? "");
+        const localCleared = body.localCleared === true;
         if (!deviceId) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: false, reason: "missing_fields" }));
           return;
         }
-        await endGuestSessionNow(deviceId);
+        // Permanent graph purge requires client-confirmed local SQLite wipe.
+        const { purgedUsernames } = await endGuestSessionNow(deviceId, {
+          localCleared,
+        });
+        if (purgedUsernames.length > 0) {
+          finalizeGuestPurge(purgedUsernames);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            purged: purgedUsernames.length > 0,
+            // Neon never stores chat/media — only session + relationship refs.
+            contentStore: "client_sqlite",
+          })
+        );
       })
       .catch((error) => {
         console.error("[tabcom] end-guest-session failed:", error);
@@ -987,6 +1002,29 @@ const BOARD_STATE_KEY = "singleton";
 // written to again after that.
 const LEGACY_STATE_FILE = process.env.TABCOM_STATE_FILE ?? "data/tabcom-state.json";
 
+/** peerUsername -> terminated guest usernames still in 24h grace. */
+const unavailableStubsByUser = new Map<string, Set<string>>();
+
+function rememberUnavailableStub(peer: string, guestUsername: string): void {
+  let set = unavailableStubsByUser.get(peer);
+  if (!set) {
+    set = new Set();
+    unavailableStubsByUser.set(peer, set);
+  }
+  set.add(guestUsername);
+}
+
+function forgetUnavailableStub(guestUsername: string): string[] {
+  const peers: string[] = [];
+  for (const [peer, set] of unavailableStubsByUser) {
+    if (!set.has(guestUsername)) continue;
+    peers.push(peer);
+    set.delete(guestUsername);
+    if (set.size === 0) unavailableStubsByUser.delete(peer);
+  }
+  return peers;
+}
+
 function buildSnapshot() {
   return {
     version: 1,
@@ -1007,6 +1045,11 @@ function buildSnapshot() {
     pairs: [...pairs.entries()],
     blocks: [...blocks],
     presenceHidden: [...presenceHidden],
+    // Grace stubs survive restarts so reconnecting peers still see
+    // "unavailable" until the 24h tombstone GC — not message content.
+    unavailableStubs: [...unavailableStubsByUser.entries()].map(
+      ([peer, set]) => [peer, [...set]] as [string, string[]]
+    ),
   };
 }
 
@@ -1025,11 +1068,121 @@ async function saveState(): Promise<void> {
   }
 }
 
+/**
+ * Strip a terminated guest from the in-memory relationship graph and
+ * persist via board_state. Never deletes registered users, invite
+ * rows, user_settings, or the board_state table itself — only guest
+ * refs inside the JSON snapshot.
+ *
+ * Neon does not store chat messages; there is nothing to delete there.
+ */
+function purgeGuestFromRealtimeState(guestUsername: string): string[] {
+  const notifiedPeers: string[] = [];
+
+  // ---- Connection pairs ----
+  for (const [key, pair] of [...pairs.entries()]) {
+    const [a, b] = key.split("|") as [string, string];
+    if (a !== guestUsername && b !== guestUsername) continue;
+    const other = a === guestUsername ? b : a;
+    pairs.delete(key);
+    if (other && other !== guestUsername) {
+      notifiedPeers.push(other);
+      rememberUnavailableStub(other, guestUsername);
+      notify(other, "connect_update", {
+        username: guestUsername,
+        status: "unavailable",
+      });
+      for (const id of allSocketIdsFor(other)) {
+        sendConnections(id, other);
+      }
+    }
+  }
+
+  // ---- Blocks / presence masks ----
+  for (const entry of [...blocks]) {
+    const [blocker, blocked] = entry.split("|") as [string, string];
+    if (blocker === guestUsername || blocked === guestUsername) {
+      blocks.delete(entry);
+    }
+  }
+  for (const entry of [...presenceHidden]) {
+    const [hider, viewer] = entry.split("|") as [string, string];
+    if (hider === guestUsername || viewer === guestUsername) {
+      presenceHidden.delete(entry);
+    }
+  }
+
+  // ---- Communities ----
+  for (const [communityId, community] of [...communities.entries()]) {
+    if (!community.members.has(guestUsername) && !community.invites.has(guestUsername)) {
+      // Still strip votes if guest voted without remaining as member.
+      let voted = false;
+      for (const item of community.board.values()) {
+        if (item.votes.delete(guestUsername)) voted = true;
+      }
+      if (voted) {
+        for (const member of community.members) {
+          notify(member, "community_update", serializeCommunity(community, member));
+        }
+      }
+      continue;
+    }
+
+    community.members.delete(guestUsername);
+    community.memberInfo.delete(guestUsername);
+    community.invites.delete(guestUsername);
+
+    for (const item of community.board.values()) {
+      item.votes.delete(guestUsername);
+    }
+
+    if (community.members.size === 0) {
+      communities.delete(communityId);
+      // Best-effort: orphan community image rows are harmless; leave
+      // community_images (essential) alone rather than cascading deletes.
+      continue;
+    }
+
+    if (community.admin === guestUsername) {
+      // Prefer another registered-looking member (non guest_ prefix);
+      // otherwise any remaining member.
+      const remaining = [...community.members];
+      const registered = remaining.find(
+        (u) => !u.startsWith("guest_") && !u.startsWith("guest-")
+      );
+      community.admin = registered ?? remaining[0]!;
+    }
+
+    for (const member of community.members) {
+      notify(member, "community_update", serializeCommunity(community, member));
+    }
+  }
+
+  void saveState();
+  broadcastRoster();
+  return notifiedPeers;
+}
+
+function finalizeGuestPurge(usernames: string[]): void {
+  for (const username of usernames) {
+    // Drop live sockets for this guest if any remain.
+    for (const [socketId, user] of [...users.entries()]) {
+      if (user.username !== username) continue;
+      io.sockets.sockets.get(socketId)?.disconnect(true);
+      users.delete(socketId);
+      guestInstanceIds.delete(socketId);
+    }
+    purgeGuestFromRealtimeState(username);
+  }
+  if (usernames.length > 0) broadcastRoster();
+}
+
 function applySnapshot(snapshot: {
   communities?: unknown[];
   pairs?: [string, Pair][];
   blocks?: string[];
   presenceHidden?: string[];
+  unavailableStubs?: [string, string[]][];
 }) {
   for (const c of (snapshot.communities ?? []) as Array<Record<string, unknown>>) {
     communities.set(c.id as string, {
@@ -1074,6 +1227,9 @@ function applySnapshot(snapshot: {
   for (const [key, value] of snapshot.pairs ?? []) pairs.set(key, value);
   for (const key of snapshot.blocks ?? []) blocks.add(key);
   for (const key of snapshot.presenceHidden ?? []) presenceHidden.add(key);
+  for (const [peer, guests] of snapshot.unavailableStubs ?? []) {
+    unavailableStubsByUser.set(peer, new Set(guests));
+  }
 }
 
 async function loadState(): Promise<void> {
@@ -1148,24 +1304,25 @@ if (!EPHEMERAL) {
   setInterval(() => {
     void sweepExpiredSessions().then(({ expiredGuestUsernames }) => {
       if (expiredGuestUsernames.length === 0) return;
-      const expired = new Set(expiredGuestUsernames);
+      // Timeout ≡ confirmed local wipe (client expiry watcher).
+      finalizeGuestPurge(expiredGuestUsernames);
+    });
 
-      for (const [socketId, user] of users) {
-        if (!expired.has(user.username)) continue;
-        console.log(
-          "[tabcom] disconnecting socket for expired guest session:",
-          user.username
-        );
-        io.sockets.sockets.get(socketId)?.disconnect(true);
-        // The socket's own "disconnect" handler also does this, but
-        // don't wait on that round trip — remove it from the roster
-        // immediately so presence reflects reality the instant the
-        // database says the session is gone, not one event-loop tick
-        // later.
-        users.delete(socketId);
-        guestInstanceIds.delete(socketId);
+    void sweepTerminatedIdentityTombstones().then((gone) => {
+      if (gone.length === 0) return;
+      for (const username of gone) {
+        const peers = forgetUnavailableStub(username);
+        for (const peer of peers) {
+          notify(peer, "connect_update", {
+            username,
+            status: "none",
+          });
+          for (const id of allSocketIdsFor(peer)) {
+            sendConnections(id, peer);
+          }
+        }
       }
-      broadcastRoster();
+      void saveState();
     });
   }, 60_000);
 }
@@ -1348,6 +1505,16 @@ function sendConnections(socketId: string, username: string): void {
     const [blocker, blocked] = entry.split("|") as [string, string];
     if (blocker === username) {
       snapshot.push({ username: blocked, status: "blocked" });
+    }
+  }
+
+  // Grace-period: peers we already notified as unavailable stay visible
+  // until the 24h tombstone GC emits status "none".
+  const stubs = unavailableStubsByUser.get(username);
+  if (stubs) {
+    for (const other of stubs) {
+      if (snapshot.some((s) => s.username === other)) continue;
+      snapshot.push({ username: other, status: "unavailable" });
     }
   }
 
@@ -1720,10 +1887,12 @@ async function ensureUniqueGuestUsername(
   // Only returns connections to REGISTERED accounts, deliberately — a
   // guest contact's username is inherently a dead end once that guest
   // session has ended (a new guest session picks a fresh, unrelated
-  // username), so "restoring" one would just repopulate the contact
-  // list with people who can never be reached again. A registered
-  // account's username is permanent, so restoring those is genuinely
-  // useful.
+  // Registered-account connection restore. Guests are excluded (their
+  // username dies with the session). Neon stores relationship edges +
+  // registered profile fields only — NEVER chat/message history.
+  // Clients must not expect a "download all messages from Neon" path;
+  // SQLite on each device is the content source of truth, synced
+  // incrementally over sockets from the moment of connection accept.
   socket.on(
     "get_my_connections",
     async (_: unknown, ack?: (response: { connections: Array<{ username: string; displayName: string | null; avatarColor: string | null }> }) => void) => {
