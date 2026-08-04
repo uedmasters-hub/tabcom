@@ -8,12 +8,21 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onSelect: (contact: Contact) => void;
+  /** Sheet title — "Share a contact" (default) or "Forward to". */
+  title?: string;
+  emptyTitle?: string;
+  emptySubtitle?: string;
 }
 
-/** Pick WHICH contact to share. Previously the composer grabbed the
- *  first entry in the roster, which was usually the wrong person (and
- *  often you). */
-export function ContactPickerSheet({ visible, onClose, onSelect }: Props) {
+/** Pick WHICH contact to share or forward to. */
+export function ContactPickerSheet({
+  visible,
+  onClose,
+  onSelect,
+  title = "Share a contact",
+  emptyTitle = "No contacts to share",
+  emptySubtitle = "Only accepted connections can be shared.",
+}: Props) {
   const contacts = useChatStore((s) => s.contacts);
   const connections = useChatStore((s) => s.connections);
   const me = useAuth((s) => s.user);
@@ -31,7 +40,7 @@ export function ContactPickerSheet({ visible, onClose, onSelect }: Props) {
         <Pressable className="flex-1" onPress={onClose} />
         <View className="bg-white rounded-t-3xl max-h-[70%]">
           <View className="flex-row items-center px-5 py-4 border-b border-slate-100">
-            <Text className="flex-1 text-ink font-bold text-[19px]">Share a contact</Text>
+            <Text className="flex-1 text-ink font-bold text-[19px]">{title}</Text>
             <Pressable onPress={onClose} hitSlop={10} className="active:opacity-60">
               <Ionicons name="close" size={24} color="#64748b" />
             </Pressable>
@@ -40,9 +49,9 @@ export function ContactPickerSheet({ visible, onClose, onSelect }: Props) {
           {shareable.length === 0 ? (
             <View className="items-center py-14 px-8">
               <Ionicons name="people-outline" size={44} color="#cbd5e1" />
-              <Text className="text-ink font-semibold text-base mt-3">No contacts to share</Text>
+              <Text className="text-ink font-semibold text-base mt-3">{emptyTitle}</Text>
               <Text className="text-muted text-center text-[15px] mt-1">
-                Only accepted connections can be shared.
+                {emptySubtitle}
               </Text>
             </View>
           ) : (

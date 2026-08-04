@@ -180,9 +180,17 @@ interface ChatState {
   incomingRefreshId: string | null;
   typing: string[];
   connected: boolean;
+  /** Per-conversation message id being replied to (null = none). */
+  replyTargets: Record<string, string | null>;
+  /** Per-conversation message currently being edited (null = none). */
+  editTargets: Record<string, string | null>;
 
   // actions
   setConnected: (v: boolean) => void;
+  setReplyTarget: (conversationId: string, messageId: string | null) => void;
+  setEditTarget: (conversationId: string, messageId: string | null) => void;
+  /** Re-send a message's content into another conversation (local + wire). */
+  forwardMessage: (toConversationId: string, message: Message) => void;
   openConversation: (id: string) => void;
   closeConversation: () => void;
   requestSwitchConversation: (id: string) => void;
@@ -524,8 +532,60 @@ export const useChatStore = create<ChatState>()((set, get) => {
     incomingRefreshId: null,
     typing: [],
     connected: false,
+    replyTargets: {},
+    editTargets: {},
 
     setConnected: (v) => set({ connected: v }),
+
+    setReplyTarget: (conversationId, messageId) =>
+      set((state) => ({
+        replyTargets: { ...state.replyTargets, [conversationId]: messageId },
+        editTargets:
+          messageId != null
+            ? { ...state.editTargets, [conversationId]: null }
+            : state.editTargets,
+      })),
+
+    setEditTarget: (conversationId, messageId) =>
+      set((state) => ({
+        editTargets: { ...state.editTargets, [conversationId]: messageId },
+        replyTargets:
+          messageId != null
+            ? { ...state.replyTargets, [conversationId]: null }
+            : state.replyTargets,
+      })),
+
+    forwardMessage: (toConversationId, message) => {
+      if (message.deletedAt || message.kind === "system") return;
+      const store = get();
+      if (message.kind === "text" || message.kind === "link" || message.kind === "note") {
+        store.sendText(
+          toConversationId,
+          message.kind === "link" && message.url
+            ? message.text || message.url
+            : message.text || "(forwarded)",
+          undefined,
+          null
+        );
+        return;
+      }
+      store.sendMedia(toConversationId, {
+        kind: message.kind,
+        text: message.text,
+        dataUrl: message.dataUrl,
+        thumbnailUrl: message.thumbnailUrl,
+        fileName: message.fileName,
+        fileSize: message.fileSize,
+        mimeType: message.mimeType,
+        durationMs: message.durationMs,
+        latitude: message.latitude,
+        longitude: message.longitude,
+        contactUsername: message.contactUsername,
+        contactName: message.contactName,
+        contactColor: message.contactColor,
+        privacy: null,
+      });
+    },
 
     openConversation: (id) =>
       set((state) => ({
@@ -1297,6 +1357,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         communities: {}, communityInvites: {}, muted: [], rosterUsernames: [],
         activeConversationId: null, pendingSwitchConversationId: null,
         incomingRefreshId: null, typing: [],
+        replyTargets: {}, editTargets: {},
       }),
   };
 });

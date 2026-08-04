@@ -32,6 +32,8 @@ interface Props {
   /** Optional confirmation dialog. If omitted, deletes immediately. */
   confirmTitle?: string;
   confirmMessage?: string;
+  /** Confirm button label (default "Delete"). Use "Remove" for contacts. */
+  confirmActionLabel?: string;
 }
 
 export function SwipeableRow({
@@ -39,6 +41,7 @@ export function SwipeableRow({
   onDelete,
   confirmTitle = "Delete",
   confirmMessage = "Are you sure you want to delete this?",
+  confirmActionLabel = "Delete",
 }: Props) {
   const translateX = useSharedValue(0);
   const rowWidth = useRef(300);
@@ -52,7 +55,7 @@ export function SwipeableRow({
     alert(confirmTitle, confirmMessage, [
       { text: "Cancel", style: "cancel", onPress: () => close() },
       {
-        text: "Delete",
+        text: confirmActionLabel,
         style: "destructive",
         onPress: () => {
           // Animate out, then delete
