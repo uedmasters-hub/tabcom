@@ -13,7 +13,8 @@ export type AttachmentAction =
   | "library"
   | "document"
   | "location"
-  | "contact";
+  | "contact"
+  | "privacy";
 
 /** Geometry shared with the composer so the button can travel exactly
  *  between the two anchor points without magic numbers drifting apart. */
@@ -67,6 +68,7 @@ const CHIPS: Array<{
   { id: "camera-video", icon: "videocam-outline", label: "Video" },
   { id: "location", icon: "location-outline", label: "Location" },
   { id: "contact", icon: "person-outline", label: "Contacts" },
+  { id: "privacy", icon: "shield-outline", label: "Privacy" },
 ];
 
 interface Props {

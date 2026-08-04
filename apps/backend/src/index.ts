@@ -104,6 +104,8 @@ export interface WireMessage {
   contactColor?: string;
   sentAt: number;
   replyToId?: string;
+  /** Opaque client-enforced privacy — relayed and forgotten. */
+  privacy?: Record<string, unknown>;
 }
 
 type PairStatus = "pending" | "accepted";
@@ -3155,6 +3157,35 @@ async function ensureUniqueGuestUsername(
       // Delivered/Read, while the recipient stays hidden.
       if (effectivePresenceOf(to) === "offline") {
         socket.emit("dm_notice", { to, reason: "recipient_offline" });
+      }
+    }
+  );
+
+  // ---- Privacy update (post-send edit / revoke / approve) --------------
+  // Zero retention: relay opaque policy between accepted contacts only.
+  socket.on(
+    "privacy_update",
+    ({
+      to,
+      payload,
+    }: {
+      to: string;
+      payload: { messageId: string; privacy: Record<string, unknown>; action?: string };
+    }) => {
+      const from = users.get(socket.id);
+      if (!from || !to || !payload?.messageId || !payload?.privacy) return;
+      if (from.visibility === "private") return;
+
+      const pair = pairs.get(pairKey(from.username, to));
+      if (
+        pair?.status !== "accepted" ||
+        isBlockedEitherWay(from.username, to)
+      ) {
+        return;
+      }
+
+      for (const id of publicSocketIdsFor(to)) {
+        io.to(id).emit("privacy_update", { from, payload });
       }
     }
   );

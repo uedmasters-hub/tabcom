@@ -52,6 +52,9 @@ export default function RootLayout() {
       void import("@/stores/call-history").then(({ useCallHistory }) => {
         useCallHistory.getState().hydrate();
       });
+      void import("@/stores/conversation-privacy").then(({ useConversationPrivacy }) => {
+        useConversationPrivacy.getState().hydrate();
+      });
     } catch (err) {
       if (__DEV__) console.warn("[tabcom] hydration error:", err);
     }

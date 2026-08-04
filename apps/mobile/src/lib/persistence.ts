@@ -31,6 +31,8 @@ import {
   updateMessageReadAt,
   updateMessageStatus,
   updateMessageMediaUri,
+  updateMessagePrivacy,
+  updateMessagePrivacyState,
   messageExists,
   upsertConnection,
   upsertCommunity,
@@ -428,6 +430,8 @@ function storedToMessage(s: StoredMessage): Message {
     albumId: s.album_id ?? undefined,
     albumIndex: s.album_index ?? undefined,
     albumCount: s.album_count ?? undefined,
+    privacy: s.privacy_json ? JSON.parse(s.privacy_json) : undefined,
+    privacyLocal: s.privacy_state_json ? JSON.parse(s.privacy_state_json) : undefined,
   };
 }
 
@@ -496,6 +500,12 @@ export function startPersistence(): () => void {
               if (m.readAt) updateMessageReadAt(m.id, m.readAt);
               if (m.status) updateMessageStatus(m.id, m.status);
               if (m.reactions) updateMessageReactions(m.id, JSON.stringify(m.reactions));
+              if (m.privacy) {
+                updateMessagePrivacy(m.id, JSON.stringify(m.privacy));
+              }
+              if (m.privacyLocal) {
+                updateMessagePrivacyState(m.id, JSON.stringify(m.privacyLocal));
+              }
               // Backfill: older builds inserted the row before the blob
               // finished writing and never stamped media_uri.
               if (
@@ -546,6 +556,10 @@ export function startPersistence(): () => void {
                 albumId: m.albumId,
                 albumIndex: m.albumIndex,
                 albumCount: m.albumCount,
+                privacyJson: m.privacy ? JSON.stringify(m.privacy) : undefined,
+                privacyStateJson: m.privacyLocal
+                  ? JSON.stringify(m.privacyLocal)
+                  : undefined,
               });
 
               void persistMessageMedia(convId, m).catch((err) => {

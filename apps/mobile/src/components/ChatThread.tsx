@@ -14,8 +14,18 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons";
 import {
   albumItems, albumPhotos, collapseAlbumLeads, type Message,
+  type ContentPrivacyPolicy, isPrivacyActive, DEFAULT_PRIVACY,
 } from "@tabcom/shared";
 import { useChatStore } from "@/stores/chat";
+import { useConversationPrivacy } from "@/stores/conversation-privacy";
+import {
+  resolveAccess, canCopy,
+} from "@/lib/privacy/access";
+import { requireRegisteredPrivacy } from "@/lib/privacy/gate";
+import { PrivacyIndicator } from "@/components/privacy/PrivacyIndicator";
+import { PrivacyPlaceholder } from "@/components/privacy/PrivacyPlaceholder";
+import { PrivacyPolicySheet } from "@/components/privacy/PrivacyPolicySheet";
+import { PrivacyDetailsSheet } from "@/components/privacy/PrivacyDetailsSheet";
 import {
   AttachmentBar, ATTACH_SPRING, ATTACH_BTN, ATTACH_LEFT,
   type AttachmentAction,
@@ -96,7 +106,18 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [photoViewer, setPhotoViewer] = useState<{
     photos: Message[];
     index: number;
+    watermark?: boolean;
+    messageId?: string;
+    viewOnce?: boolean;
   } | null>(null);
+  const [composePrivacy, setComposePrivacy] = useState<ContentPrivacyPolicy | null>(null);
+  const [privacySheetOpen, setPrivacySheetOpen] = useState(false);
+  const [editPrivacyMsg, setEditPrivacyMsg] = useState<Message | null>(null);
+  const [detailsMsg, setDetailsMsg] = useState<{
+    message: Message;
+    reason?: string;
+  } | null>(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   // Brief shimmer on switch. Swapping content instantly reads as a
   // glitch; a short skeleton makes the change legible.
   const [switching, setSwitching] = useState(false);
@@ -222,6 +243,16 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     !!threadContact;
   const gated = awaitingMe || awaitingThem || notConnected;
 
+  const privacyDefaults = useConversationPrivacy(
+    (s) => s.byConversation[conversationId]
+  ) ?? DEFAULT_PRIVACY;
+
+  // Re-evaluate time-limited / online_only policies periodically.
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
   // Brief shimmer only when opening an EMPTY thread. Chats that already
   // have history stay visible; incoming pushes use IncomingMessageSkeleton.
   useEffect(() => {
@@ -268,28 +299,43 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     sendLock.current = true;
 
     dismissSwitcher();
-    useChatStore.getState().sendText(conversationId, t);
+    useChatStore.getState().sendText(
+      conversationId,
+      t,
+      undefined,
+      composePrivacy
+    );
     setText("");
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
     setTimeout(() => { sendLock.current = false; }, 300);
   };
 
   const handleAttachment = async (action: AttachmentAction) => {
+    if (action === "privacy") {
+      if (!requireRegisteredPrivacy("Advanced Privacy")) return;
+      setPrivacySheetOpen(true);
+      return;
+    }
     setBusy(true);
     try {
       const store = useChatStore.getState();
+      const privacy = composePrivacy ?? undefined;
       if (action === "camera-photo" || action === "camera-video") {
         const media = await captureWithCamera(action === "camera-video" ? "video" : "photo");
-        if (media) store.sendMedia(conversationId, media);
+        if (media) store.sendMedia(conversationId, { ...media, privacy });
       } else if (action === "library") {
         const batch = await pickFromLibrary();
-        if (batch.length > 0) store.sendMediaBatch(conversationId, batch);
+        if (batch.length === 1) {
+          store.sendMedia(conversationId, { ...batch[0]!, privacy });
+        } else if (batch.length > 1) {
+          store.sendMediaBatch(conversationId, batch);
+        }
       } else if (action === "document") {
         const doc = await pickDocument();
-        if (doc) store.sendMedia(conversationId, doc);
+        if (doc) store.sendMedia(conversationId, { ...doc, privacy });
       } else if (action === "location") {
         const loc = await pickLocation();
-        if (loc) store.sendMedia(conversationId, { kind: "location", ...loc });
+        if (loc) store.sendMedia(conversationId, { kind: "location", ...loc, privacy });
       } else if (action === "contact") {
         setContactPickerOpen(true);
       } else if (action === "note") {
@@ -342,6 +388,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
           durationMs: packaged.durationMs,
           fileSize: packaged.fileSize,
           mimeType: "audio/mp4",
+          privacy: composePrivacy,
         });
       }
     } catch {
@@ -365,9 +412,40 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const onBubbleLongPress = (m: Message) => {
     if (m.deletedAt) return;
     const mine = m.authorId === ME;
+    const access = resolveAccess({
+      message: m,
+      defaults: privacyDefaults,
+      isMine: mine,
+      senderPresence: peer.presence,
+      now: nowTick,
+    });
     const options: any[] = [];
-    if (m.kind === "text" && m.text) {
+    if (
+      m.kind === "text" &&
+      m.text &&
+      access.status === "allowed" &&
+      canCopy(access.policy)
+    ) {
       options.push({ text: "Copy", onPress: () => Clipboard.setStringAsync(m.text ?? "") });
+    }
+    if (isPrivacyActive(access.policy) || access.status === "placeholder") {
+      options.push({
+        text: "Privacy details",
+        onPress: () =>
+          setDetailsMsg({
+            message: m,
+            reason: access.status === "placeholder" ? access.placeholderLabel : undefined,
+          }),
+      });
+    }
+    if (mine && isDm) {
+      options.push({
+        text: "Privacy",
+        onPress: () => {
+          if (!requireRegisteredPrivacy("Privacy controls")) return;
+          setEditPrivacyMsg(m);
+        },
+      });
     }
     if (mine) {
       options.push({
@@ -382,11 +460,32 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   const openPhoto = (m: Message) => {
     if (m.kind !== "image" || !m.dataUrl) return;
-    const photos = m.albumId
-      ? albumPhotos(messages, m.albumId)
-      : [m];
+    const access = resolveAccess({
+      message: m,
+      defaults: privacyDefaults,
+      isMine: m.authorId === ME,
+      senderPresence: peer.presence,
+      now: nowTick,
+    });
+    if (access.status === "placeholder") {
+      setDetailsMsg({ message: m, reason: access.placeholderLabel });
+      return;
+    }
+    if (access.policy.visibility === "biometric" && m.authorId !== ME) {
+      // Soft-gate: unlock for a short session without a native biometric module.
+      useChatStore.getState().updateMessagePrivacyLocal(conversationId, m.id, {
+        biometricUnlockedUntil: Date.now() + 5 * 60_000,
+      });
+    }
+    const photos = m.albumId ? albumPhotos(messages, m.albumId) : [m];
     const index = Math.max(0, photos.findIndex((p) => p.id === m.id));
-    setPhotoViewer({ photos, index });
+    setPhotoViewer({
+      photos,
+      index,
+      watermark: !!access.policy.watermark,
+      messageId: m.id,
+      viewOnce: access.policy.visibility === "view_once" && m.authorId !== ME,
+    });
   };
 
   const displayMessages = useMemo(
@@ -410,6 +509,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         </View>
       );
     }
+
+    const access = resolveAccess({
+      message: m,
+      defaults: privacyDefaults,
+      isMine: mine,
+      senderPresence: peer.presence,
+      now: nowTick,
+    });
 
     const receipt = mine ? (
       m.status === "failed" ? (
@@ -448,6 +555,14 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             <Text className={`italic text-[15px] px-4 py-3 ${mine ? "text-slate-400" : "text-slate-400"}`}>
               Message deleted
             </Text>
+          ) : access.status === "placeholder" ? (
+            <PrivacyPlaceholder
+              label={access.placeholderLabel}
+              mine={mine}
+              onDetails={() =>
+                setDetailsMsg({ message: m, reason: access.placeholderLabel })
+              }
+            />
           ) : album && album.length > 1 ? (
             <AlbumGrid
               items={album}
@@ -569,6 +684,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         <View className={`flex-row items-center gap-1.5 mt-1 ${mine ? "mr-1" : "ml-1"}`}>
           {mine && receipt}
           <Text className="text-slate-400 text-[12.5px]">{time}</Text>
+          <PrivacyIndicator kind={access.indicator} light={false} />
           {m.editedAt && <Text className="text-slate-400 text-[11px]">edited</Text>}
         </View>
         {m.reactions && m.reactions.length > 0 && (
@@ -624,15 +740,30 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         </Pressable>
 
         {isDm && !gated && isCallingAvailable() ? (
-          <View className="flex-row items-center bg-surface rounded-full px-1.5 py-1.5">
-            <Pressable onPress={() => startCall(true)} className="px-3 active:opacity-60">
-              <Ionicons name="videocam-outline" size={25} color="#334155" />
+          <View className="flex-row items-center">
+            <Pressable
+              onPress={() => router.push(`/conversation/info/${conversationId}` as any)}
+              className="w-11 h-11 rounded-full bg-surface items-center justify-center mr-1.5 active:opacity-60"
+            >
+              <Ionicons name="information-circle-outline" size={23} color="#334155" />
             </Pressable>
-            <View className="w-px h-6 bg-slate-300" />
-            <Pressable onPress={() => startCall(false)} className="px-3 active:opacity-60">
-              <Ionicons name="call-outline" size={23} color="#334155" />
-            </Pressable>
+            <View className="flex-row items-center bg-surface rounded-full px-1.5 py-1.5">
+              <Pressable onPress={() => startCall(true)} className="px-3 active:opacity-60">
+                <Ionicons name="videocam-outline" size={25} color="#334155" />
+              </Pressable>
+              <View className="w-px h-6 bg-slate-300" />
+              <Pressable onPress={() => startCall(false)} className="px-3 active:opacity-60">
+                <Ionicons name="call-outline" size={23} color="#334155" />
+              </Pressable>
+            </View>
           </View>
+        ) : isDm ? (
+          <Pressable
+            onPress={() => router.push(`/conversation/info/${conversationId}` as any)}
+            className="w-11 h-11 rounded-full bg-surface items-center justify-center active:opacity-60"
+          >
+            <Ionicons name="information-circle-outline" size={23} color="#334155" />
+          </Pressable>
         ) : onHeaderAction ? (
           <Pressable onPress={onHeaderAction} className="w-11 h-11 rounded-full bg-surface items-center justify-center active:opacity-60">
             <Ionicons name={headerActionIcon ?? "information-circle-outline"} size={23} color="#334155" />
@@ -821,9 +952,105 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         <PhotoViewer
           photos={photoViewer.photos}
           initialIndex={photoViewer.index}
-          onClose={() => setPhotoViewer(null)}
+          watermark={photoViewer.watermark}
+          watermarkLabel={peer.title}
+          onClose={() => {
+            if (photoViewer.viewOnce && photoViewer.messageId) {
+              useChatStore.getState().updateMessagePrivacyLocal(
+                conversationId,
+                photoViewer.messageId,
+                { viewOnceConsumed: true }
+              );
+            }
+            setPhotoViewer(null);
+          }}
         />
       )}
+
+      <PrivacyPolicySheet
+        visible={privacySheetOpen}
+        title="Advanced Privacy"
+        mode="compose"
+        initial={composePrivacy ?? { ...privacyDefaults, source: "inherit" }}
+        onClose={() => setPrivacySheetOpen(false)}
+        onSave={(policy) => {
+          setComposePrivacy(policy);
+          toast(
+            policy.source === "inherit"
+              ? "Using chat privacy defaults"
+              : "Custom privacy applied to next send",
+            "info"
+          );
+        }}
+      />
+
+      <PrivacyPolicySheet
+        visible={!!editPrivacyMsg}
+        title="Message privacy"
+        mode="edit"
+        initial={
+          editPrivacyMsg?.privacy ??
+          { ...privacyDefaults, source: "override" }
+        }
+        onClose={() => setEditPrivacyMsg(null)}
+        onSave={(policy) => {
+          if (!editPrivacyMsg) return;
+          useChatStore.getState().updateMessagePrivacy(
+            conversationId,
+            editPrivacyMsg.id,
+            policy,
+            "update"
+          );
+        }}
+        onApprove={() => {
+          if (!editPrivacyMsg) return;
+          const next = {
+            ...(editPrivacyMsg.privacy ?? { ...privacyDefaults, source: "override" }),
+            approved: true,
+            revoked: false,
+            source: "override" as const,
+          };
+          useChatStore.getState().updateMessagePrivacy(
+            conversationId,
+            editPrivacyMsg.id,
+            next,
+            "approve"
+          );
+          setEditPrivacyMsg(null);
+        }}
+        onRevoke={() => {
+          if (!editPrivacyMsg) return;
+          const next = {
+            ...(editPrivacyMsg.privacy ?? { ...privacyDefaults, source: "override" }),
+            revoked: true,
+            source: "override" as const,
+          };
+          useChatStore.getState().updateMessagePrivacy(
+            conversationId,
+            editPrivacyMsg.id,
+            next,
+            "revoke"
+          );
+          setEditPrivacyMsg(null);
+        }}
+      />
+
+      <PrivacyDetailsSheet
+        visible={!!detailsMsg}
+        policy={
+          detailsMsg
+            ? resolveAccess({
+                message: detailsMsg.message,
+                defaults: privacyDefaults,
+                isMine: detailsMsg.message.authorId === ME,
+                senderPresence: peer.presence,
+                now: nowTick,
+              }).policy
+            : null
+        }
+        placeholderReason={detailsMsg?.reason}
+        onClose={() => setDetailsMsg(null)}
+      />
 
       <ContactPickerSheet
         visible={contactPickerOpen}
@@ -835,6 +1062,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             contactUsername: c.username,
             contactName: c.name,
             contactColor: c.color,
+            privacy: composePrivacy,
           });
         }}
       />

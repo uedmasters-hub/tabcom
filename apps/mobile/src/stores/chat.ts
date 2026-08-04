@@ -10,6 +10,14 @@ import type {
   Community,
   WireCommunity,
   ConnectionStatus,
+  ContentPrivacyPolicy,
+  ContentPrivacyLocalState,
+  PrivacyUpdatePayload,
+} from "@tabcom/shared";
+import {
+  DEFAULT_PRIVACY,
+  materializePolicyForSend,
+  mergePrivacy,
 } from "@tabcom/shared";
 import {
   sendDm,
@@ -18,6 +26,7 @@ import {
   reactToDm,
   markDmRead,
   sendTyping,
+  sendPrivacyUpdate,
   sendConnectRequest,
   respondToConnectRequest,
   cancelConnectRequest,
@@ -44,6 +53,8 @@ import {
   hidePresenceFrom,
 } from "@/lib/realtime";
 import { useAuth } from "./auth";
+import { useConversationPrivacy } from "./conversation-privacy";
+import { isRegisteredForPrivacy } from "@/lib/privacy/gate";
 
 /**
  * Mobile chat store — adapted from the extension's chat.store.ts.
@@ -142,6 +153,7 @@ function wireToMessage(
     albumId: wire.albumId,
     albumIndex: wire.albumIndex,
     albumCount: wire.albumCount,
+    privacy: wire.privacy,
     ...extras,
   };
 }
@@ -180,7 +192,12 @@ interface ChatState {
   startConversation: (contactId: string) => string;
   openCommunityConversation: (communityId: string) => string;
 
-  sendText: (conversationId: string, text: string, replyToId?: string) => void;
+  sendText: (
+    conversationId: string,
+    text: string,
+    replyToId?: string,
+    privacy?: ContentPrivacyPolicy | null
+  ) => void;
   /** Media never syncs between a user's own devices — nothing is stored
    *  server-side. When another device sends media, drop a system notice
    *  into the thread so the file's whereabouts are obvious. */
@@ -212,6 +229,7 @@ interface ChatState {
       albumId?: string;
       albumIndex?: number;
       albumCount?: number;
+      privacy?: ContentPrivacyPolicy | null;
     }
   ) => void;
   /** Send one or more library picks. 2+ media share an albumId and
@@ -254,6 +272,18 @@ interface ChatState {
   receiveDmReaction: (from: string, messageId: string, emoji: string) => void;
   receiveDmReadReceipt: (from: string, messageId: string, readAt: number) => void;
   receiveDmError: (to: string, reason: string) => void;
+  receivePrivacyUpdate: (from: WireUser, payload: PrivacyUpdatePayload) => void;
+  updateMessagePrivacy: (
+    conversationId: string,
+    messageId: string,
+    privacy: ContentPrivacyPolicy,
+    action?: PrivacyUpdatePayload["action"]
+  ) => void;
+  updateMessagePrivacyLocal: (
+    conversationId: string,
+    messageId: string,
+    local: ContentPrivacyLocalState
+  ) => void;
 
   // connections
   receiveConnections: (snapshot: Array<{ username: string; status: ConnectionStatus }>) => void;
@@ -326,6 +356,21 @@ function toggleReaction(
   return list.map((r) =>
     r.emoji === emoji ? { ...r, usernames: [...r.usernames, username] } : r
   );
+}
+
+/** Attach conversation defaults (registered only). Guests send with no privacy. */
+function attachPrivacyForSend(
+  conversationId: string,
+  override: ContentPrivacyPolicy | null | undefined,
+  sentAt: number
+): ContentPrivacyPolicy | undefined {
+  if (!isRegisteredForPrivacy()) return undefined;
+  const defaults =
+    useConversationPrivacy.getState().getDefaults(conversationId) ?? DEFAULT_PRIVACY;
+  const merged = mergePrivacy(defaults, override ?? { ...defaults, source: "inherit" });
+  // Skip wire field when fully open defaults with inherit and no restrictions.
+  const materialized = materializePolicyForSend(merged, sentAt);
+  return materialized;
 }
 
 export const useChatStore = create<ChatState>()((set, get) => {
@@ -411,6 +456,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
       contactUsername: message.contactUsername, contactName: message.contactName,
       contactColor: message.contactColor, sentAt: message.sentAt, replyToId: message.replyToId,
       albumId: message.albumId, albumIndex: message.albumIndex, albumCount: message.albumCount,
+      privacy: message.privacy,
     };
 
     const onAck = (evidence: "delivered" | "rejected" | "unknown") => {
@@ -487,13 +533,16 @@ export const useChatStore = create<ChatState>()((set, get) => {
       return c.id;
     },
 
-    sendText: (conversationId, text, replyToId) => {
+    sendText: (conversationId, text, replyToId, privacy) => {
       const trimmed = text.trim();
       if (!trimmed) return;
+      const sentAt = Date.now();
+      const attached = attachPrivacyForSend(conversationId, privacy, sentAt);
       const message: Message = {
         id: uid(), authorId: ME, kind: "text", text: trimmed,
-        sentAt: Date.now(), status: "sending" as const,
+        sentAt, status: "sending" as const,
         replyToId,
+        privacy: attached,
       };
       set((state) => appendMessage(state, conversationId, message, false));
       deliver(conversationId, message);
@@ -574,6 +623,8 @@ export const useChatStore = create<ChatState>()((set, get) => {
     },
 
     sendMedia: (conversationId, payload) => {
+      const sentAt = Date.now();
+      const attached = attachPrivacyForSend(conversationId, payload.privacy, sentAt);
       const message: Message = {
         id: uid(),
         authorId: ME,
@@ -593,8 +644,9 @@ export const useChatStore = create<ChatState>()((set, get) => {
         albumId: payload.albumId,
         albumIndex: payload.albumIndex,
         albumCount: payload.albumCount,
-        sentAt: Date.now(),
+        sentAt,
         status: get().connected ? "sending" : "failed",
+        privacy: attached,
       };
       set((state) => appendMessage(state, conversationId, message, false));
       deliver(conversationId, message);
@@ -863,6 +915,22 @@ export const useChatStore = create<ChatState>()((set, get) => {
       );
     },
     receiveDmError: (toUsername, reason) => {
+      // Mark the most recent outbound "sending" message to that peer as failed.
+      const contact = get().contacts.find((c) => c.username === toUsername);
+      if (contact) {
+        const conv = get().conversations.find((c) => c.contactId === contact.id);
+        if (conv) {
+          const thread = get().messages[conv.id] ?? [];
+          for (let i = thread.length - 1; i >= 0; i--) {
+            const m = thread[i]!;
+            if (m.authorId === ME && m.status === "sending") {
+              mutateMessage(conv.id, m.id, (msg) => ({ ...msg, status: "failed" }));
+              break;
+            }
+          }
+        }
+      }
+
       const text =
         reason === "not_connected"
           ? `Not sent — you're not connected with @${toUsername}.`
@@ -879,6 +947,32 @@ export const useChatStore = create<ChatState>()((set, get) => {
       }
 
       systemNotice({ contactId: `u-${toUsername}` }, text, false);
+    },
+
+    receivePrivacyUpdate: (from, payload) => {
+      const contactId = `u-${from.username}`;
+      const conv = get().conversations.find((c) => c.contactId === contactId);
+      if (!conv) return;
+      mutateMessage(conv.id, payload.messageId, (m) => ({
+        ...m,
+        privacy: payload.privacy,
+      }));
+    },
+
+    updateMessagePrivacy: (conversationId, messageId, privacy, action = "update") => {
+      if (!isRegisteredForPrivacy()) return;
+      mutateMessage(conversationId, messageId, (m) => ({ ...m, privacy }));
+      const target = resolveTarget(conversationId);
+      if (target?.kind === "dm") {
+        sendPrivacyUpdate(target.username, { messageId, privacy, action });
+      }
+    },
+
+    updateMessagePrivacyLocal: (conversationId, messageId, local) => {
+      mutateMessage(conversationId, messageId, (m) => ({
+        ...m,
+        privacyLocal: { ...m.privacyLocal, ...local },
+      }));
     },
 
     // ── Connections ──

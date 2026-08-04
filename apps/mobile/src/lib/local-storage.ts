@@ -45,7 +45,7 @@ function db(): SQLite.SQLiteDatabase {
 
 // ── Schema ──────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 7;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -267,6 +267,19 @@ const MIGRATIONS: Record<number, string[]> = {
     `CREATE INDEX IF NOT EXISTS idx_calls_started ON call_history(started_at DESC)`,
     `CREATE INDEX IF NOT EXISTS idx_calls_peer ON call_history(peer_username)`,
   ],
+  6: [
+    `ALTER TABLE call_history ADD COLUMN device TEXT`,
+    `ALTER TABLE call_history ADD COLUMN quality TEXT`,
+  ],
+  7: [
+    `ALTER TABLE messages ADD COLUMN privacy_json TEXT`,
+    `ALTER TABLE messages ADD COLUMN privacy_state_json TEXT`,
+    `CREATE TABLE IF NOT EXISTS conversation_privacy (
+      conversation_id TEXT PRIMARY KEY,
+      defaults_json   TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+    )`,
+  ],
 };
 
 // ── Initialization ──────────────────────────────────────────────────
@@ -442,6 +455,7 @@ export function deleteConversation(id: string): void {
   try {
     d.runSync("DELETE FROM messages WHERE conversation_id = ?", id);
     d.runSync("DELETE FROM media WHERE conversation_id = ?", id);
+    d.runSync("DELETE FROM conversation_privacy WHERE conversation_id = ?", id);
     d.runSync("DELETE FROM conversations WHERE id = ?", id);
     d.execSync("COMMIT");
   } catch (err) {
@@ -482,6 +496,8 @@ export interface StoredMessage {
   album_id: string | null;
   album_index: number | null;
   album_count: number | null;
+  privacy_json: string | null;
+  privacy_state_json: string | null;
 }
 
 export function insertMessage(m: {
@@ -511,6 +527,8 @@ export function insertMessage(m: {
   albumId?: string;
   albumIndex?: number;
   albumCount?: number;
+  privacyJson?: string;
+  privacyStateJson?: string;
 }): void {
   db().runSync(
     `INSERT OR IGNORE INTO messages (
@@ -521,8 +539,9 @@ export function insertMessage(m: {
       contact_username, contact_name, contact_color,
       sent_at, status, reply_to_id,
       author_name, author_color, reactions,
-      album_id, album_index, album_count, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      album_id, album_index, album_count,
+      privacy_json, privacy_state_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     m.id, m.conversationId, m.authorId, m.kind, m.text,
     m.url ?? null, m.mediaUri ?? null, m.thumbnailUri ?? null,
     m.durationMs ?? null, m.fileName ?? null, m.fileSize ?? null,
@@ -531,6 +550,7 @@ export function insertMessage(m: {
     m.sentAt, m.status ?? null, m.replyToId ?? null,
     m.authorName ?? null, m.authorColor ?? null, m.reactions ?? null,
     m.albumId ?? null, m.albumIndex ?? null, m.albumCount ?? null,
+    m.privacyJson ?? null, m.privacyStateJson ?? null,
     Date.now()
   );
 }
@@ -591,6 +611,68 @@ export function updateMessageReadAt(id: string, readAt: number): void {
 export function updateMessageReactions(id: string, reactions: string): void {
   db().runSync(
     "UPDATE messages SET reactions = ? WHERE id = ?", reactions, id
+  );
+}
+
+export function updateMessagePrivacy(
+  id: string,
+  privacyJson: string | null,
+  privacyStateJson?: string | null
+): void {
+  if (privacyStateJson !== undefined) {
+    db().runSync(
+      "UPDATE messages SET privacy_json = ?, privacy_state_json = ? WHERE id = ?",
+      privacyJson,
+      privacyStateJson,
+      id
+    );
+  } else {
+    db().runSync(
+      "UPDATE messages SET privacy_json = ? WHERE id = ?",
+      privacyJson,
+      id
+    );
+  }
+}
+
+export function updateMessagePrivacyState(id: string, privacyStateJson: string): void {
+  db().runSync(
+    "UPDATE messages SET privacy_state_json = ? WHERE id = ?",
+    privacyStateJson,
+    id
+  );
+}
+
+export function getConversationPrivacy(conversationId: string): string | null {
+  const row = db().getFirstSync<{ defaults_json: string }>(
+    "SELECT defaults_json FROM conversation_privacy WHERE conversation_id = ?",
+    conversationId
+  );
+  return row?.defaults_json ?? null;
+}
+
+export function setConversationPrivacy(
+  conversationId: string,
+  defaultsJson: string
+): void {
+  db().runSync(
+    `INSERT INTO conversation_privacy (conversation_id, defaults_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET
+       defaults_json = excluded.defaults_json,
+       updated_at = excluded.updated_at`,
+    conversationId,
+    defaultsJson,
+    Date.now()
+  );
+}
+
+export function getAllConversationPrivacy(): Array<{
+  conversation_id: string;
+  defaults_json: string;
+}> {
+  return db().getAllSync(
+    "SELECT conversation_id, defaults_json FROM conversation_privacy"
   );
 }
 
@@ -1110,6 +1192,8 @@ export interface StoredCall {
   duration_ms: number | null;
   quick_reply: string | null;
   seen: number;
+  device: string | null;
+  quality: string | null;
 }
 
 export function insertCall(c: {
@@ -1125,12 +1209,15 @@ export function insertCall(c: {
   durationMs?: number;
   quickReply?: string;
   seen?: boolean;
+  device?: string;
+  quality?: string;
 }): void {
   db().runSync(
     `INSERT OR REPLACE INTO call_history (
       id, peer_username, peer_name, peer_color, direction, video,
-      outcome, started_at, ended_at, duration_ms, quick_reply, seen
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      outcome, started_at, ended_at, duration_ms, quick_reply, seen,
+      device, quality
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     c.id,
     c.peerUsername,
     c.peerName,
@@ -1142,7 +1229,9 @@ export function insertCall(c: {
     c.endedAt ?? null,
     c.durationMs ?? null,
     c.quickReply ?? null,
-    c.seen === false ? 0 : 1
+    c.seen === false ? 0 : 1,
+    c.device ?? null,
+    c.quality ?? null
   );
 }
 
@@ -1151,6 +1240,22 @@ export function getRecentCalls(limit = 30): StoredCall[] {
     `SELECT * FROM call_history ORDER BY started_at DESC LIMIT ?`,
     limit
   );
+}
+
+export function getCallsForPeer(peerUsername: string, limit = 100): StoredCall[] {
+  return db().getAllSync<StoredCall>(
+    `SELECT * FROM call_history WHERE peer_username = ? ORDER BY started_at DESC LIMIT ?`,
+    peerUsername,
+    limit
+  );
+}
+
+export function deleteCall(id: string): void {
+  db().runSync(`DELETE FROM call_history WHERE id = ?`, id);
+}
+
+export function clearCallsForPeer(peerUsername: string): void {
+  db().runSync(`DELETE FROM call_history WHERE peer_username = ?`, peerUsername);
 }
 
 export function markMissedCallsSeen(): void {

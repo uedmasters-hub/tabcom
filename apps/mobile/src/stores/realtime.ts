@@ -60,6 +60,8 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       onRoster: (users) => useChatStore.getState().applyRoster(users),
 
       onDm: (from, msg) => useChatStore.getState().receiveDm(from, msg),
+      onPrivacyUpdate: (from, payload) =>
+        useChatStore.getState().receivePrivacyUpdate(from, payload),
       onDmEdited: (from, id, text, at) => useChatStore.getState().receiveDmEdited(from, id, text, at),
       onDmDeleted: (from, id) => useChatStore.getState().receiveDmDeleted(from, id),
       onDmReaction: (from, id, emoji) => useChatStore.getState().receiveDmReaction(from, id, emoji),

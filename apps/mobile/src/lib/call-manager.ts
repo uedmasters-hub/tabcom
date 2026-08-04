@@ -254,6 +254,8 @@ function recordTerminal(phase: CallPhase) {
       durationMs,
       quickReply: state.quickReply ?? undefined,
       seen: outcome !== "missed",
+      quality:
+        state.networkQuality !== "unknown" ? state.networkQuality : undefined,
     });
   } catch { /* history is best-effort */ }
 }

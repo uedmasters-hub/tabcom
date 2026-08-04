@@ -3,16 +3,22 @@
  * Server never stores calls; this is the source of truth for the
  * Recent Calls strip and missed-call badges.
  */
+import { Platform } from "react-native";
 import { create } from "zustand";
 import {
   insertCall,
   getRecentCalls,
+  getCallsForPeer,
+  deleteCall,
+  clearCallsForPeer,
   markMissedCallsSeen,
   getUnseenMissedCount,
   initLocalStorage,
   type CallOutcome,
   type StoredCall,
 } from "@/lib/local-storage";
+
+export type { CallOutcome };
 
 export interface CallLogEntry {
   id: string;
@@ -27,13 +33,26 @@ export interface CallLogEntry {
   durationMs?: number;
   quickReply?: string;
   seen: boolean;
+  /** e.g. "Mobile", "Tablet" — optional. */
+  device?: string;
+  /** e.g. "good" | "fair" | "poor" — optional. */
+  quality?: string;
 }
 
 type State = {
   recent: CallLogEntry[];
   unseenMissed: number;
   hydrate: () => void;
-  record: (entry: Omit<CallLogEntry, "id" | "seen"> & { id?: string; seen?: boolean }) => void;
+  record: (
+    entry: Omit<CallLogEntry, "id" | "seen" | "device"> & {
+      id?: string;
+      seen?: boolean;
+      device?: string;
+    }
+  ) => void;
+  callsForPeer: (peerUsername: string) => CallLogEntry[];
+  remove: (id: string) => void;
+  clearPeer: (peerUsername: string) => void;
   markAllMissedSeen: () => void;
   notifyUnseenMissed: () => void;
 };
@@ -52,6 +71,8 @@ function mapRow(r: StoredCall): CallLogEntry {
     durationMs: r.duration_ms ?? undefined,
     quickReply: r.quick_reply ?? undefined,
     seen: r.seen === 1,
+    device: r.device ?? undefined,
+    quality: r.quality ?? undefined,
   };
 }
 
@@ -59,11 +80,42 @@ function newId() {
   return `call-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function formatDuration(ms: number): string {
+function defaultDevice(): string {
+  return Platform.OS === "ios" || Platform.OS === "android" ? "Mobile" : "Device";
+}
+
+export function formatCallDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   const m = Math.floor(s / 60);
   const r = s % 60;
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
   return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+export function outcomeLabel(outcome: CallOutcome): string {
+  switch (outcome) {
+    case "answered":
+      return "Answered";
+    case "missed":
+      return "Missed";
+    case "declined":
+      return "Declined";
+    case "busy":
+      return "Busy";
+    case "cancelled":
+      return "Cancelled";
+    case "timed_out":
+      return "No answer";
+    case "offline":
+      return "Network error";
+    case "failed":
+      return "Failed";
+    default:
+      return "Failed";
+  }
 }
 
 function callSystemLabel(
@@ -72,7 +124,7 @@ function callSystemLabel(
   const kind = entry.video ? "Video call" : "Voice call";
   const dur =
     entry.durationMs && entry.durationMs > 0
-      ? ` · ${formatDuration(entry.durationMs)}`
+      ? ` · ${formatCallDuration(entry.durationMs)}`
       : "";
   switch (entry.outcome) {
     case "answered":
@@ -112,7 +164,6 @@ function appendSystemNotice(
     const last = msgs[msgs.length - 1];
     if (last?.kind === "system" && last.text === label) return;
 
-    // Append a local-only system message (never sent to server).
     const message = {
       id: `sys-${id}`,
       authorId: "system",
@@ -147,7 +198,7 @@ export const useCallHistory = create<State>((set, get) => ({
     try {
       initLocalStorage();
       set({
-        recent: getRecentCalls(40).map(mapRow),
+        recent: getRecentCalls(80).map(mapRow),
         unseenMissed: getUnseenMissedCount(),
       });
     } catch (err) {
@@ -158,6 +209,7 @@ export const useCallHistory = create<State>((set, get) => ({
   record: (entry) => {
     const id = entry.id || newId();
     const seen = entry.seen ?? entry.outcome !== "missed";
+    const device = entry.device ?? defaultDevice();
     insertCall({
       id,
       peerUsername: entry.peerUsername,
@@ -171,8 +223,37 @@ export const useCallHistory = create<State>((set, get) => ({
       durationMs: entry.durationMs,
       quickReply: entry.quickReply,
       seen,
+      device,
+      quality: entry.quality,
     });
     appendSystemNotice(entry, id);
+    get().hydrate();
+  },
+
+  callsForPeer: (peerUsername) => {
+    try {
+      initLocalStorage();
+      return getCallsForPeer(peerUsername, 100).map(mapRow);
+    } catch {
+      return get().recent.filter((c) => c.peerUsername === peerUsername);
+    }
+  },
+
+  remove: (id) => {
+    try {
+      deleteCall(id);
+    } catch (err) {
+      if (__DEV__) console.warn("[tabcom-calls] delete failed:", err);
+    }
+    get().hydrate();
+  },
+
+  clearPeer: (peerUsername) => {
+    try {
+      clearCallsForPeer(peerUsername);
+    } catch (err) {
+      if (__DEV__) console.warn("[tabcom-calls] clear peer failed:", err);
+    }
     get().hydrate();
   },
 
@@ -184,7 +265,6 @@ export const useCallHistory = create<State>((set, get) => ({
     });
   },
 
-  /** When coming back online, surface unseen missed calls once each. */
   notifyUnseenMissed: () => {
     get().hydrate();
     const missed = get().recent.filter((c) => c.outcome === "missed" && !c.seen);

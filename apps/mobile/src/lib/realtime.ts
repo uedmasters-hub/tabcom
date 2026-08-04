@@ -174,6 +174,16 @@ export function initRealtime(
     handlers.onDm(from, message)
   );
   socket.on(
+    "privacy_update",
+    ({
+      from,
+      payload,
+    }: {
+      from: WireUser;
+      payload: import("@tabcom/shared").PrivacyUpdatePayload;
+    }) => handlers.onPrivacyUpdate?.(from, payload)
+  );
+  socket.on(
     "dm_edited",
     ({ from, messageId, text, editedAt }: { from: string; messageId: string; text: string; editedAt: number }) =>
       handlers.onDmEdited?.(from, messageId, text, editedAt)
@@ -408,6 +418,13 @@ export function reactToDm(toUsername: string, messageId: string, emoji: string):
 
 export function markDmRead(toUsername: string, messageId: string): void {
   socket?.emit("dm_read", { to: toUsername, messageId });
+}
+
+export function sendPrivacyUpdate(
+  toUsername: string,
+  payload: import("@tabcom/shared").PrivacyUpdatePayload
+): void {
+  socket?.emit("privacy_update", { to: toUsername, payload });
 }
 
 export function sendTyping(toUsername: string): void {

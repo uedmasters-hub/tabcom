@@ -11,6 +11,7 @@
  * platform-specific imports (wxt, react-native, express) to this file.
  */
 
+import type { ContentPrivacyPolicy, PrivacyUpdatePayload } from "./privacy";
 
 export type Visibility = "public" | "private";
 
@@ -150,7 +151,11 @@ export interface WireMessage {
   albumId?: string;
   albumIndex?: number;
   albumCount?: number;
+  /** Opaque client-enforced privacy policy — relayed, never stored. */
+  privacy?: ContentPrivacyPolicy;
 }
+
+export type { PrivacyUpdatePayload };
 
 /** One leg of WebRTC call negotiation, relayed (never stored) through
  *  the server between accepted contacts. Media itself is P2P. */
@@ -199,6 +204,11 @@ export interface RealtimeHandlers {
   onConnectionChange: (live: boolean) => void;
   onRoster: (users: WireUser[]) => void;
   onDm: (from: WireUser, message: WireMessage) => void;
+  /** Post-send privacy edit / revoke / approve — zero retention relay. */
+  onPrivacyUpdate?: (
+    from: WireUser,
+    payload: PrivacyUpdatePayload
+  ) => void;
   /** Server heads-up that a just-sent DM went to an appear-offline
    *  recipient — delivered, but expect no receipts and possibly no
    *  reply until they're back. */

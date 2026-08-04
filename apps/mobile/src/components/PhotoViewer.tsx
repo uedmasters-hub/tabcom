@@ -18,9 +18,18 @@ interface Props {
   /** Index into `photos` to open on. */
   initialIndex: number;
   onClose: () => void;
+  /** Subtle watermark overlay when policy requires it. */
+  watermark?: boolean;
+  watermarkLabel?: string;
 }
 
-export function PhotoViewer({ photos, initialIndex, onClose }: Props) {
+export function PhotoViewer({
+  photos,
+  initialIndex,
+  onClose,
+  watermark,
+  watermarkLabel,
+}: Props) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [index, setIndex] = useState(
@@ -64,6 +73,13 @@ export function PhotoViewer({ photos, initialIndex, onClose }: Props) {
                 style={styles.image}
                 resizeMode="contain"
               />
+              {watermark ? (
+                <View pointerEvents="none" style={styles.watermark}>
+                  <Text style={styles.watermarkText}>
+                    {watermarkLabel ? `@${watermarkLabel}` : "Tabcom"}
+                  </Text>
+                </View>
+              ) : null}
             </View>
           )}
         />
@@ -95,5 +111,16 @@ const styles = StyleSheet.create({
   image: {
     width: "100%",
     height: "100%",
+  },
+  watermark: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  watermarkText: {
+    color: "rgba(255,255,255,0.28)",
+    fontSize: 18,
+    fontWeight: "700",
+    transform: [{ rotate: "-28deg" }],
   },
 });

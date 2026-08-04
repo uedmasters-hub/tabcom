@@ -1,3 +1,5 @@
+import type { ContentPrivacyPolicy, ContentPrivacyLocalState } from "./privacy";
+
 export type Presence = "online" | "away" | "busy" | "offline";
 
 export interface Contact {
@@ -96,6 +98,10 @@ export interface Message {
   albumId?: string;
   albumIndex?: number;
   albumCount?: number;
+  /** Effective privacy policy attached at send (or updated later). */
+  privacy?: ContentPrivacyPolicy;
+  /** Device-local viewer state (view-once consumed, biometric unlock). */
+  privacyLocal?: ContentPrivacyLocalState;
 }
 
 export interface CommunityMember {
