@@ -11,6 +11,7 @@ import { useAuth } from "./auth";
 import { useChatStore } from "./chat";
 import { usePresence } from "./presence";
 import { REALTIME_URL } from "@/lib/config";
+import { alert } from "@/lib/alert";
 import { router } from "expo-router";
 import {
   initRealtime,
@@ -84,7 +85,18 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       onCommunityMessageEdited: (cid, from, id, text, at) => useChatStore.getState().receiveCommunityMessageEdited(cid, from, id, text, at),
       onCommunityMessageDeleted: (cid, from, id) => useChatStore.getState().receiveCommunityMessageDeleted(cid, from, id),
       onCommunityReaction: (cid, from, id, emoji) => useChatStore.getState().receiveCommunityReaction(cid, from, id, emoji),
-      onCommunityError: () => {},
+      onCommunityError: ({ username, reason }) => {
+        const who = username ? `@${username}` : "That person";
+        const message =
+          reason === "not_connected"
+            ? `${who} isn't in your connections yet. You can only invite people you're already connected with.`
+            : reason === "invite_limit"
+              ? `${who} has declined too many times and can't be invited to this community again.`
+              : reason === "already_pending"
+                ? `${who} already has a pending invite.`
+                : `That invite couldn't be sent. Please try again.`;
+        alert("Couldn't invite", message);
+      },
 
       // ── Calls ──
       // Every incoming offer/answer/ice/reject/end goes straight into

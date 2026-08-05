@@ -21,9 +21,8 @@ export function requireRegisteredPrivacy(featureLabel = "Privacy controls"): boo
     "Register to unlock privacy",
     `${featureLabel} are available on registered Tabcom accounts. Guests use standard messaging.`,
     [
-      { text: "Not now", style: "cancel" },
       {
-        text: "Create account",
+        text: "Register",
         onPress: () => {
           try {
             router.push("/(auth)/register" as any);
@@ -32,16 +31,7 @@ export function requireRegisteredPrivacy(featureLabel = "Privacy controls"): boo
           }
         },
       },
-      {
-        text: "Sign in",
-        onPress: () => {
-          try {
-            router.push("/(auth)/sign-in" as any);
-          } catch {
-            /* ignore */
-          }
-        },
-      },
+      { text: "Not now", style: "cancel" },
     ]
   );
   return false;

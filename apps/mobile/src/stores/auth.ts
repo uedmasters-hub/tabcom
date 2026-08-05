@@ -167,6 +167,16 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   startGuestSession: async (displayName, username, avatarColor) => {
+    // Never start a new guest until the previous one's cleanup has fully
+    // finished. If it was interrupted, this resumes it to completion
+    // (idempotent, no UI — the animated run happens on the expired screen).
+    try {
+      const { isGuestCleanupPending, runGuestCleanup } = require("@/lib/guest-cleanup");
+      if (await isGuestCleanupPending()) {
+        await runGuestCleanup(undefined, { stepDelayMs: 0 });
+      }
+    } catch { /* fall through to the eager wipe below */ }
+
     // Always start from a clean slate — even if a previous guest left
     // residual SQLite rows (e.g. process killed before wipe finished).
     const prior = get().guest;

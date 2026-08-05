@@ -1,24 +1,28 @@
 /**
- * Non-intrusive guest-expiry banner — appears in the final 5 minutes
- * with a live countdown. Shown below the screen header on tab screens.
+ * Guest-expiry banner — appears in the final 5 minutes with a live,
+ * Apple-style countdown. Purely informational: the real expiry (wipe +
+ * route to the expired screen) is owned by useGuestExpiryWatcher.
+ *
+ * Layout mirrors the design reference: a soft cream/yellow card with a
+ * rounded countdown capsule on the left and the message + supporting
+ * line on the right.
  */
 import { useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { View, Text, StyleSheet } from "react-native";
 import { useAuth } from "@/stores/auth";
 import {
-  formatGuestCountdown,
-  guestMsRemaining,
+  guestExpiresAt,
   shouldShowGuestExpiryBanner,
 } from "@/lib/guest-session";
+import { Countdown } from "@/components/ui/Countdown";
 
 export function GuestExpiryBanner() {
   const guest = useAuth((s) => s.guest);
-  const endGuestSession = useAuth((s) => s.endGuestSession);
-  const router = useRouter();
   const [, setTick] = useState(0);
 
+  // A light 1s tick only flips the banner's visibility when the final
+  // 5-minute window opens. The countdown drives its own animation from a
+  // stable deadline, so these re-renders never restart it.
   useEffect(() => {
     if (!guest) return;
     const id = setInterval(() => setTick((n) => n + 1), 1000);
@@ -27,29 +31,22 @@ export function GuestExpiryBanner() {
 
   if (!guest || !shouldShowGuestExpiryBanner(guest.startedAt)) return null;
 
-  const left = guestMsRemaining(guest.startedAt);
-  const clock = formatGuestCountdown(left);
-
   return (
     <View style={styles.banner} accessibilityRole="alert">
-      <Ionicons name="time-outline" size={18} color="#92400e" />
+      <View style={styles.capsule}>
+        <Countdown
+          expiresAt={guestExpiresAt(guest.startedAt)}
+          digitStyle={styles.digit}
+          cellHeight={26}
+        />
+      </View>
+
       <View style={styles.copy}>
         <Text style={styles.title}>Guest session ending soon</Text>
         <Text style={styles.sub}>
-          {clock} left — your data will be cleared when it expires
+          Your data will be cleared when it expires
         </Text>
       </View>
-      <Pressable
-        onPress={async () => {
-          await endGuestSession();
-          router.replace("/(auth)/guest-expired" as any);
-        }}
-        hitSlop={8}
-        style={styles.action}
-        accessibilityLabel="End guest session now"
-      >
-        <Text style={styles.actionText}>End</Text>
-      </Pressable>
     </View>
   );
 }
@@ -58,37 +55,52 @@ const styles = StyleSheet.create({
   banner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 14,
     marginHorizontal: 16,
     marginBottom: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 14,
-    backgroundColor: "#fffbeb",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: "#fdf6d9", // soft cream/yellow
     borderWidth: 1,
-    borderColor: "#fde68a",
+    borderColor: "#f4e4a6", // hairline gold
+    // Subtle iOS-style shadow.
+    shadowColor: "#b45309",
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  capsule: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    minWidth: 68,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fffdf5", // cream fill
+    borderWidth: 1,
+    borderColor: "#e6cf87", // thin gold border
+  },
+  digit: {
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: "800",
+    color: "#c2410c", // bold dark-orange
+    fontVariant: ["tabular-nums"],
+    textAlign: "center",
   },
   copy: { flex: 1 },
   title: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "700",
-    color: "#92400e",
+    color: "#b45309",
+    letterSpacing: -0.2,
   },
   sub: {
-    fontSize: 12,
-    color: "#a16207",
+    fontSize: 12.5,
+    color: "#b8862f",
     marginTop: 2,
-    lineHeight: 16,
-  },
-  action: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: "#fef3c7",
-  },
-  actionText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#92400e",
+    lineHeight: 17,
   },
 });

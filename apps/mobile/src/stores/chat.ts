@@ -184,11 +184,15 @@ interface ChatState {
   replyTargets: Record<string, string | null>;
   /** Per-conversation message currently being edited (null = none). */
   editTargets: Record<string, string | null>;
+  /** Per-conversation pinned message ids (device-local view state). */
+  pinnedIds: Record<string, string[]>;
 
   // actions
   setConnected: (v: boolean) => void;
   setReplyTarget: (conversationId: string, messageId: string | null) => void;
   setEditTarget: (conversationId: string, messageId: string | null) => void;
+  /** Pin/unpin a message locally (toggles). */
+  togglePin: (conversationId: string, messageId: string) => void;
   /** Re-send a message's content into another conversation (local + wire). */
   forwardMessage: (toConversationId: string, message: Message) => void;
   openConversation: (id: string) => void;
@@ -534,8 +538,18 @@ export const useChatStore = create<ChatState>()((set, get) => {
     connected: false,
     replyTargets: {},
     editTargets: {},
+    pinnedIds: {},
 
     setConnected: (v) => set({ connected: v }),
+
+    togglePin: (conversationId, messageId) =>
+      set((state) => {
+        const current = state.pinnedIds[conversationId] ?? [];
+        const next = current.includes(messageId)
+          ? current.filter((id) => id !== messageId)
+          : [...current, messageId];
+        return { pinnedIds: { ...state.pinnedIds, [conversationId]: next } };
+      }),
 
     setReplyTarget: (conversationId, messageId) =>
       set((state) => ({

@@ -82,13 +82,18 @@ export default function ChatInfoScreen() {
           <Ionicons name="chevron-forward" size={18} color={color.faint} />
         </Pressable>
 
-        <View style={styles.row}>
+        <Pressable
+          onPress={() => router.push(`/conversation/media/${id}` as any)}
+          style={styles.row}
+          className="active:opacity-70"
+        >
           <Ionicons name="images-outline" size={20} color={color.ink} />
           <View style={styles.rowCopy}>
             <Text style={styles.rowLabel}>Media & files</Text>
             <Text style={styles.rowSub}>{mediaCount} items in this chat</Text>
           </View>
-        </View>
+          <Ionicons name="chevron-forward" size={18} color={color.faint} />
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );

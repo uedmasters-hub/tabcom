@@ -46,8 +46,10 @@ export default function CommunityDetailScreen() {
             subtitle: `${community.members.length} members`,
             color: "#2563eb",
           }}
-          onHeaderAction={() => setTab("board")}
-          headerActionIcon="albums-outline"
+          onHeaderAction={() => router.push(`/community/manage/${id}` as any)}
+          headerActionIcon="people-outline"
+          onHeaderAction2={() => setTab("board")}
+          headerActionIcon2="albums-outline"
         />
       </View>
     );

@@ -772,6 +772,22 @@ export function startPersistence(): () => void {
 }
 
 /** Wipe all local data — called on sign-out. */
+/**
+ * Delete all saved guest media + avatar blobs from disk. Idempotent and
+ * retry-safe. Exposed so the guest-cleanup engine's "Media" step maps to
+ * a real file deletion.
+ */
+export async function clearMediaFiles(): Promise<void> {
+  try {
+    const info = await FileSystem.getInfoAsync(MEDIA_DIR);
+    if (info.exists) {
+      await FileSystem.deleteAsync(MEDIA_DIR, { idempotent: true });
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
 export async function clearAllLocalData(): Promise<void> {
   resetAll();
   try {

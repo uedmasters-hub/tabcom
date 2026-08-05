@@ -7,19 +7,18 @@ import {
   Text, View, TextInput, Pressable, FlatList, Image, Linking,
   Platform, ActivityIndicator, Keyboard, RefreshControl,
 } from "react-native";
-import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
   albumItems, albumPhotos, collapseAlbumLeads, type Message,
-  type ContentPrivacyPolicy, isPrivacyActive, DEFAULT_PRIVACY,
+  type ContentPrivacyPolicy, DEFAULT_PRIVACY,
 } from "@tabcom/shared";
 import { useChatStore } from "@/stores/chat";
 import { useConversationPrivacy } from "@/stores/conversation-privacy";
 import {
-  resolveAccess, canCopy,
+  resolveAccess,
 } from "@/lib/privacy/access";
 import { requireRegisteredPrivacy } from "@/lib/privacy/gate";
 import { PrivacyIndicator } from "@/components/privacy/PrivacyIndicator";
@@ -32,6 +31,8 @@ import {
 } from "./AttachmentBar";
 import { MorphAttachButton } from "./MorphAttachButton";
 import { ContactPickerSheet } from "./ContactPickerSheet";
+import { SelectionBar } from "./message/SelectionBar";
+import { ReactionBar } from "./message/ReactionBar";
 import { NoteComposer } from "./NoteComposer";
 import { LocationPreview } from "./LocationPreview";
 import { ConnectionRequestCard, PendingOutgoingCard, NotConnectedCard, UnavailableCard } from "./ConnectionRequestCard";
@@ -82,6 +83,10 @@ interface Props {
   /** Community/group threads show a header action instead of calls. */
   onHeaderAction?: () => void;
   headerActionIcon?: keyof typeof Ionicons.glyphMap;
+  /** Optional second header action, rendered to the left of the first.
+   *  Used by community chats to expose Members alongside the Board. */
+  onHeaderAction2?: () => void;
+  headerActionIcon2?: keyof typeof Ionicons.glyphMap;
 }
 
 /**
@@ -90,7 +95,7 @@ interface Props {
  * attachments, and behaviour. Header and composer are pinned; only the
  * message list scrolls.
  */
-export function ChatThread({ conversationId, peer, onHeaderAction, headerActionIcon, onSwitchConversation }: Props) {
+export function ChatThread({ conversationId, peer, onHeaderAction, headerActionIcon, onHeaderAction2, headerActionIcon2, onSwitchConversation }: Props) {
   const router = useRouter();
   const [text, setText] = useState("");
   // Guards against Android firing both onSubmitEditing AND the send
@@ -103,6 +108,13 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
   const [attachSettled, setAttachSettled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  // Long-press selection + quick-reaction state.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [reactionTop, setReactionTop] = useState<number | null>(null);
+  const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
+  const replyTargetId = useChatStore((s) => s.replyTargets[conversationId] ?? null);
+  const pinnedForConv = useChatStore((s) => s.pinnedIds[conversationId]);
+  const conversationsList = useChatStore((s) => s.conversations);
   const [noteComposerOpen, setNoteComposerOpen] = useState(false);
   const [photoViewer, setPhotoViewer] = useState<{
     photos: Message[];
@@ -304,10 +316,11 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     useChatStore.getState().sendText(
       conversationId,
       t,
-      undefined,
+      replyTargetId ?? undefined,
       composePrivacy
     );
     setText("");
+    if (replyTargetId) useChatStore.getState().setReplyTarget(conversationId, null);
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
     setTimeout(() => { sendLock.current = false; }, 300);
   };
@@ -411,56 +424,92 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     }
   };
 
-  const onBubbleLongPress = (m: Message) => {
-    if (m.deletedAt) return;
-    const mine = m.authorId === ME;
-    const access = resolveAccess({
-      message: m,
-      defaults: privacyDefaults,
-      isMine: mine,
-      senderPresence: peer.presence,
-      now: nowTick,
-    });
-    const options: any[] = [];
-    if (
-      m.kind === "text" &&
-      m.text &&
-      access.status === "allowed" &&
-      canCopy(access.policy)
-    ) {
-      options.push({ text: "Copy", onPress: () => Clipboard.setStringAsync(m.text ?? "") });
+  // ── Long-press selection (identical for incoming and outgoing) ──────
+  const clearSelection = () => {
+    setSelectedIds([]);
+    setReactionTop(null);
+  };
+
+  const beginSelection = (m: Message, pageY: number) => {
+    if (m.kind === "system" || m.deletedAt) return;
+    setSelectedIds([m.id]);
+    // Adaptive: normally float the pill just ABOVE the pressed row, but
+    // if that would collide with the selection bar (a top message), drop
+    // it BELOW the touch point instead so it's never cut off.
+    const barBottom = insets.top + 56;
+    const above = pageY - 68;
+    setReactionTop(above < barBottom + 12 ? pageY + 28 : above);
+  };
+
+  const toggleSelect = (m: Message) => {
+    if (m.kind === "system" || m.deletedAt) return;
+    setSelectedIds((prev) =>
+      prev.includes(m.id) ? prev.filter((id) => id !== m.id) : [...prev, m.id]
+    );
+    // More than one selected → reactions no longer make sense.
+    setReactionTop(null);
+  };
+
+  const doReact = (emoji: string) => {
+    if (selectedIds.length === 1) {
+      useChatStore.getState().reactToMessage(conversationId, selectedIds[0]!, emoji);
     }
-    if (isPrivacyActive(access.policy) || access.status === "placeholder") {
-      options.push({
-        text: "Privacy details",
-        onPress: () =>
-          setDetailsMsg({
-            message: m,
-            reason: access.status === "placeholder" ? access.placeholderLabel : undefined,
-          }),
-      });
+    clearSelection();
+  };
+
+  const doReply = () => {
+    if (selectedIds.length === 1) {
+      useChatStore.getState().setReplyTarget(conversationId, selectedIds[0]!);
     }
-    if (mine && isDm) {
-      options.push({
-        text: "Privacy",
-        onPress: () => {
-          if (!requireRegisteredPrivacy("Privacy controls")) return;
-          setEditPrivacyMsg(m);
+    clearSelection();
+  };
+
+  const doForward = () => {
+    const first = messages.find((m) => m.id === selectedIds[0]);
+    if (first) setForwardMsg(first);
+    clearSelection();
+  };
+
+  const doPin = () => {
+    if (selectedIds.length === 1) {
+      useChatStore.getState().togglePin(conversationId, selectedIds[0]!);
+    }
+    clearSelection();
+  };
+
+  const doPrivacy = () => {
+    const first = messages.find((m) => m.id === selectedIds[0]);
+    if (first) {
+      if (!requireRegisteredPrivacy("Privacy controls")) return;
+      setEditPrivacyMsg(first);
+    }
+    clearSelection();
+  };
+
+  const doDelete = () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    alert(
+      ids.length > 1 ? `Delete ${ids.length} messages?` : "Delete message?",
+      undefined,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            ids.forEach((id) =>
+              useChatStore.getState().deleteMessage(conversationId, id)
+            );
+            clearSelection();
+          },
         },
-      });
-    }
-    if (mine) {
-      options.push({
-        text: "Delete",
-        style: "destructive",
-        onPress: () => useChatStore.getState().deleteMessage(conversationId, m.id),
-      });
-    }
-    if (options.length === 0) return;
-    alert("Message", undefined, [...options, { text: "Cancel", style: "cancel" }]);
+      ]
+    );
   };
 
   const openPhoto = (m: Message) => {
+    if (selectedIds.length > 0) { toggleSelect(m); return; }
     if (m.kind !== "image" || !m.dataUrl) return;
     const access = resolveAccess({
       message: m,
@@ -502,7 +551,42 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     [messages, gated]
   );
 
+  // Selection-derived flags used by the top bar + reaction pill.
+  const selectionMode = selectedIds.length > 0;
+  const singleSel =
+    selectedIds.length === 1
+      ? messages.find((m) => m.id === selectedIds[0]) ?? null
+      : null;
+  const singleMine = singleSel ? singleSel.authorId === ME : false;
+  const canPrivacy =
+    !!singleSel &&
+    singleMine &&
+    isDm &&
+    (singleSel.kind === "image" ||
+      singleSel.kind === "video" ||
+      singleSel.kind === "file");
+  const singlePinned =
+    !!singleSel && (pinnedForConv ?? []).includes(singleSel.id);
+  const reactable =
+    !!singleSel && singleSel.kind !== "system" && !singleSel.deletedAt;
+  const replyPreview = (() => {
+    if (!replyTargetId) return "";
+    const rm = messages.find((m) => m.id === replyTargetId);
+    if (!rm) return "";
+    return (
+      rm.text?.trim() ||
+      (rm.kind === "image"
+        ? "Photo"
+        : rm.kind === "video"
+          ? "Video"
+          : rm.kind === "file"
+            ? rm.fileName ?? "File"
+            : "Message")
+    );
+  })();
+
   const Bubble = ({ m }: { m: Message }) => {
+    const isSelected = selectedIds.includes(m.id);
     const mine = m.authorId === ME;
     if (m.kind === "system") {
       return (
@@ -538,14 +622,15 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
     const album = m.albumId ? albumItems(messages, m.albumId) : null;
 
     return (
-      <View className={`px-4 mb-3 ${mine ? "items-end" : "items-start"}`}>
+      <View className={`px-4 mb-3 ${mine ? "items-end" : "items-start"} ${isSelected ? "bg-blue-50" : ""}`}>
         {!mine && m.authorName && (
           <Text style={{ color: m.authorColor ?? "#2563eb" }} className="text-[13px] font-semibold mb-1 ml-1">
             {m.authorName}
           </Text>
         )}
         <Pressable
-          onLongPress={() => onBubbleLongPress(m)}
+          onLongPress={(e) => beginSelection(m, e.nativeEvent.pageY)}
+          onPress={selectionMode ? () => toggleSelect(m) : undefined}
           delayLongPress={350}
           className={`max-w-[78%] overflow-hidden border ${
             mine
@@ -572,7 +657,11 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
               onOpenVideo={() => {}}
             />
           ) : m.kind === "image" && m.dataUrl ? (
-            <Pressable onPress={() => openPhoto(m)}>
+            <Pressable
+              onPress={() => openPhoto(m)}
+              onLongPress={(e) => beginSelection(m, e.nativeEvent.pageY)}
+              delayLongPress={350}
+            >
               <Image source={{ uri: m.dataUrl }} style={{ width: 240, height: 240 }} resizeMode="cover" />
             </Pressable>
           ) : m.kind === "video" && m.dataUrl ? (
@@ -605,7 +694,12 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             </View>
           ) : m.kind === "location" && m.latitude != null ? (
             <Pressable
-              onPress={() => Linking.openURL(`https://maps.google.com/?q=${m.latitude},${m.longitude}`)}
+              onLongPress={(e) => beginSelection(m, e.nativeEvent.pageY)}
+              delayLongPress={350}
+              onPress={() => {
+                if (selectionMode) return toggleSelect(m);
+                Linking.openURL(`https://maps.google.com/?q=${m.latitude},${m.longitude}`);
+              }}
             >
               <LocationPreview latitude={m.latitude} longitude={m.longitude!} />
               <View className="px-3.5 py-2.5">
@@ -705,6 +799,23 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
+      {selectionMode && (
+        <SelectionBar
+          count={selectedIds.length}
+          single={!!singleSel}
+          canPrivacy={canPrivacy}
+          pinned={singlePinned}
+          onClose={clearSelection}
+          onReply={doReply}
+          onForward={doForward}
+          onPin={doPin}
+          onDelete={doDelete}
+          onPrivacy={doPrivacy}
+        />
+      )}
+      {selectionMode && reactable && reactionTop != null && (
+        <ReactionBar top={reactionTop} onReact={doReact} />
+      )}
       {/* Pinned header */}
       <View className="flex-row items-center px-4 py-3 bg-background">
         <Pressable onPress={() => router.back()} hitSlop={8} className="pr-2 active:opacity-50">
@@ -771,11 +882,45 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             <Ionicons name="information-circle-outline" size={23} color="#334155" />
           </Pressable>
         ) : onHeaderAction ? (
-          <Pressable onPress={onHeaderAction} className="w-11 h-11 rounded-full bg-surface items-center justify-center active:opacity-60">
-            <Ionicons name={headerActionIcon ?? "information-circle-outline"} size={23} color="#334155" />
-          </Pressable>
+          <View className="flex-row items-center">
+            {onHeaderAction2 ? (
+              <Pressable onPress={onHeaderAction2} className="w-11 h-11 rounded-full bg-surface items-center justify-center mr-1.5 active:opacity-60">
+                <Ionicons name={headerActionIcon2 ?? "information-circle-outline"} size={23} color="#334155" />
+              </Pressable>
+            ) : null}
+            <Pressable onPress={onHeaderAction} className="w-11 h-11 rounded-full bg-surface items-center justify-center active:opacity-60">
+              <Ionicons name={headerActionIcon ?? "information-circle-outline"} size={23} color="#334155" />
+            </Pressable>
+          </View>
         ) : null}
       </View>
+
+      {(pinnedForConv?.length ?? 0) > 0 && (() => {
+        const pid = pinnedForConv![pinnedForConv!.length - 1];
+        const pm = messages.find((x) => x.id === pid);
+        if (!pm) return null;
+        const label =
+          pm.text?.trim() ||
+          (pm.kind === "image"
+            ? "Photo"
+            : pm.kind === "video"
+              ? "Video"
+              : pm.kind === "file"
+                ? pm.fileName ?? "File"
+                : "Message");
+        return (
+          <Pressable
+            onPress={() => useChatStore.getState().togglePin(conversationId, pid)}
+            className="flex-row items-center px-4 py-2 bg-surface border-b border-slate-200 active:opacity-70"
+          >
+            <Ionicons name="pin" size={15} color="#2563eb" />
+            <Text numberOfLines={1} className="text-ink text-[13px] ml-2 flex-1">
+              {label}
+            </Text>
+            <Ionicons name="close" size={16} color="#94a3b8" />
+          </Pressable>
+        );
+      })()}
 
       {/* Scrollable body */}
       <KeyboardAvoidingView behavior="padding" className="flex-1 bg-[#eef0f2]">
@@ -784,6 +929,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         ) : (
         <FlatList
           ref={listRef}
+          scrollEnabled={!selectionMode}
           data={displayMessages}
           keyExtractor={(m) => m.id}
           renderItem={({ item }) => <Bubble m={item} />}
@@ -883,7 +1029,24 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             </Pressable>
           </View>
         ) : (
-        <View style={{ paddingTop: 8, paddingBottom: 8 }} className="flex-row items-center px-3 bg-background border-t border-slate-100">
+        <View className="bg-background border-t border-slate-100">
+        {replyTargetId ? (
+          <View className="flex-row items-center px-4 py-2 border-b border-slate-100">
+            <View className="w-1 h-8 rounded bg-primary mr-2.5" />
+            <View className="flex-1">
+              <Text className="text-primary text-[12px] font-semibold">Replying</Text>
+              <Text numberOfLines={1} className="text-muted text-[13px]">{replyPreview}</Text>
+            </View>
+            <Pressable
+              onPress={() => useChatStore.getState().setReplyTarget(conversationId, null)}
+              hitSlop={8}
+              className="active:opacity-50"
+            >
+              <Ionicons name="close" size={18} color="#94a3b8" />
+            </Pressable>
+          </View>
+        ) : null}
+        <View style={{ paddingTop: 8, paddingBottom: 8 }} className="flex-row items-center px-3">
           {/* Healing slot: full-width while the "+" rests here, zero
               once it has detached. The input flows into the space. */}
           <Animated.View style={[attachSlotStyle, { overflow: "hidden" }]} />
@@ -922,6 +1085,7 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
             <Ionicons name="send" size={19} color={text.trim() ? "#ffffff" : "#94a3b8"} style={{ marginLeft: -2 }} />
           </Pressable>
         </View>
+        </View>
         )}
 
         {/* ONE button, absolutely positioned across both layers. Never
@@ -959,6 +1123,24 @@ export function ChatThread({ conversationId, peer, onHeaderAction, headerActionI
         onSend={(text, image) => {
           useChatStore.getState().sendNote(conversationId, text, image);
           setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
+        }}
+      />
+
+      <ContactPickerSheet
+        visible={!!forwardMsg}
+        title="Forward to"
+        emptyTitle="No one to forward to"
+        emptySubtitle="Only accepted connections can receive forwards."
+        onClose={() => setForwardMsg(null)}
+        onSelect={(contact) => {
+          const target = conversationsList.find((c) => c.contactId === contact.id);
+          if (target && forwardMsg) {
+            useChatStore.getState().forwardMessage(target.id, forwardMsg);
+            toast("Forwarded", "success");
+          } else {
+            toast("Start a chat with them first", "info");
+          }
+          setForwardMsg(null);
         }}
       />
 

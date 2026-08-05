@@ -45,9 +45,12 @@ export default function ManageCommunityScreen() {
   const submitInvite = () => {
     const u = inviteName.trim().replace(/^@/, "").toLowerCase();
     if (!u) return;
+    // Fire-and-forget: on success the server echoes an updated
+    // community with this user in `pendingInvites` (shown below); on
+    // failure onCommunityError surfaces the reason. So we don't claim
+    // success here — that avoids lying when the invite is rejected.
     inviteToCommunity(id, u);
     setInviteName("");
-    alert("Invite sent", `@${u} was invited to ${community.name}.`);
   };
 
   const confirmRemove = (username: string) =>
@@ -152,7 +155,7 @@ export default function ManageCommunityScreen() {
           })}
         </View>
 
-        {isAdmin && (
+        {(
           <View className="px-5 mb-8">
             <Text className="text-muted text-[13px] uppercase font-bold tracking-wide mb-3">Add people</Text>
             <View className="flex-row items-center gap-2.5">

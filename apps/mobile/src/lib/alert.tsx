@@ -181,38 +181,81 @@ export function AlertHost({ children }: { children: React.ReactNode }) {
               <Text style={styles.message}>{state.message}</Text>
             ) : null}
 
-            {/* Buttons */}
-            <View style={styles.buttonRow}>
-              {sortedButtons.map((btn, i) => {
-                const isCancel = btn.style === "cancel";
-                const isDestructive = btn.style === "destructive";
+            {/* Buttons — vertical (full-width action + cancel link) when
+                there are 3+ buttons or a primary+cancel pair, so long
+                labels never overflow; otherwise the compact row. */}
+            {(() => {
+              const isCancel = (b: AlertButton) => b.style === "cancel";
+              const actions = state.buttons.filter((b) => !isCancel(b));
+              const cancels = state.buttons.filter(isCancel);
+              const vertical =
+                state.buttons.length >= 3 ||
+                (state.buttons.length === 2 && cancels.length >= 1);
 
-                const btnStyle = isCancel
-                  ? styles.buttonCancel
-                  : isDestructive
-                  ? styles.buttonDestructive
-                  : styles.buttonPrimary;
-
-                const txtStyle = isCancel
-                  ? styles.buttonTextCancel
-                  : isDestructive
-                  ? styles.buttonTextDestructive
-                  : styles.buttonTextPrimary;
-
+              if (vertical) {
                 return (
-                  <Pressable
-                    key={i}
-                    onPress={() => dismiss(btn.onPress)}
-                    style={[styles.button, btnStyle]}
-                    android_ripple={{ color: "rgba(255,255,255,0.2)" }}
-                  >
-                    <Text style={[styles.buttonText, txtStyle]}>
-                      {btn.text}
-                    </Text>
-                  </Pressable>
+                  <View style={styles.buttonColumn}>
+                    {actions.map((btn, i) => (
+                      <Pressable
+                        key={`a${i}`}
+                        onPress={() => dismiss(btn.onPress)}
+                        style={[
+                          styles.buttonV,
+                          btn.style === "destructive"
+                            ? styles.buttonDestructive
+                            : styles.buttonPrimary,
+                        ]}
+                        android_ripple={{ color: "rgba(255,255,255,0.2)" }}
+                      >
+                        <Text style={[styles.buttonText, styles.buttonTextPrimary]}>
+                          {btn.text}
+                        </Text>
+                      </Pressable>
+                    ))}
+                    {cancels.map((btn, i) => (
+                      <Pressable
+                        key={`c${i}`}
+                        onPress={() => dismiss(btn.onPress)}
+                        style={styles.buttonLink}
+                      >
+                        <Text style={[styles.buttonText, styles.buttonTextLink]}>
+                          {btn.text}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
                 );
-              })}
-            </View>
+              }
+
+              return (
+                <View style={styles.buttonRow}>
+                  {sortedButtons.map((btn, i) => {
+                    const isCancelBtn = btn.style === "cancel";
+                    const isDestructive = btn.style === "destructive";
+                    const btnStyle = isCancelBtn
+                      ? styles.buttonCancel
+                      : isDestructive
+                        ? styles.buttonDestructive
+                        : styles.buttonPrimary;
+                    const txtStyle = isCancelBtn
+                      ? styles.buttonTextCancel
+                      : isDestructive
+                        ? styles.buttonTextDestructive
+                        : styles.buttonTextPrimary;
+                    return (
+                      <Pressable
+                        key={i}
+                        onPress={() => dismiss(btn.onPress)}
+                        style={[styles.button, btnStyle]}
+                        android_ripple={{ color: "rgba(255,255,255,0.2)" }}
+                      >
+                        <Text style={[styles.buttonText, txtStyle]}>{btn.text}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              );
+            })()}
           </Animated.View>
         </View>
       </Modal>
@@ -268,6 +311,29 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: space.sm,
     marginTop: space.md,
+  },
+
+  buttonColumn: {
+    marginTop: space.md,
+    gap: space.sm,
+  },
+
+  buttonV: {
+    width: "100%",
+    height: 52,
+    borderRadius: radius.full,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  buttonLink: {
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  buttonTextLink: {
+    color: color.muted,
   },
 
   button: {

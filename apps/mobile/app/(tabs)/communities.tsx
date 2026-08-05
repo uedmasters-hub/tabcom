@@ -177,6 +177,13 @@ export default function CommunitiesScreen() {
                     <Text className="text-slate-400 text-[14px] mr-2">{formatListTime(latestBoard)}</Text>
                   )}
                   <Pressable
+                    onPress={() => router.push(`/community/manage/${item.id}` as any)}
+                    hitSlop={10}
+                    className="p-1.5 mr-1 active:opacity-50"
+                  >
+                    <Ionicons name="person-add-outline" size={20} color="#2563eb" />
+                  </Pressable>
+                  <Pressable
                     onPress={() => confirmLeaveOrDelete(item.id, item.name, item.admin === user?.username)}
                     hitSlop={10}
                     className="p-1.5 active:opacity-50"

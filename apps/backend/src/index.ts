@@ -925,7 +925,10 @@ function ensureBoardItem(
 
 function serializeCommunity(c: Community, forUsername?: string) {
   const invite = forUsername ? c.invites.get(forUsername) : undefined;
-  const isAdmin = forUsername === c.admin;
+  // Any member manages membership now, so members (not just the admin)
+  // can see who's been invited and hasn't responded. Non-members
+  // (e.g. someone currently being invited) still see nothing.
+  const isMember = forUsername ? c.members.has(forUsername) : false;
 
   return {
     id: c.id,
@@ -936,9 +939,9 @@ function serializeCommunity(c: Community, forUsername?: string) {
       ...(c.memberInfo.get(username) ?? { name: username, color: "#334155" }),
     })),
     pendingForMe: invite?.pending ?? false,
-    // Only the admin can see who's been invited and hasn't responded —
-    // it's membership-management info, not something every member needs.
-    pendingInvites: isAdmin
+    // Members can see who's been invited and hasn't responded, since any
+    // member may now manage invites. Non-members see nothing.
+    pendingInvites: isMember
       ? [...c.invites.entries()]
           .filter(([, state]) => state.pending)
           .map(([username, state]) => ({
@@ -2114,11 +2117,12 @@ async function ensureUniqueGuestUsername(
       const community = communities.get(communityId);
       if (!me || !community || !username) return;
 
-      // Only the admin invites; membership is never imposed.
-      if (community.admin !== me.username) return;
+      // Any member of the community may invite; membership is never
+      // imposed, and the invitee still has to accept.
+      if (!community.members.has(me.username)) return;
       if (community.members.has(username)) return;
 
-      // Invitees must be ACCEPTED connections of the admin.
+      // Invitees must be ACCEPTED connections of whoever is inviting.
       const pair = pairs.get(pairKey(me.username, username));
       if (pair?.status !== "accepted" || isBlockedEitherWay(me.username, username)) {
         socket.emit("community_error", {

@@ -1351,6 +1351,25 @@ export function resetAll(): void {
   }
 }
 
+/**
+ * Delete every row from the named tables in a single transaction.
+ * Idempotent and retry-safe — clearing an already-empty table is a
+ * no-op. Used by the guest-cleanup engine so each checklist step maps
+ * to a real, resumable deletion. Table names are internal constants,
+ * never user input.
+ */
+export function clearTables(tables: readonly string[]): void {
+  const d = db();
+  d.execSync("BEGIN TRANSACTION");
+  try {
+    for (const t of tables) d.execSync(`DELETE FROM ${t}`);
+    d.execSync("COMMIT");
+  } catch (err) {
+    d.execSync("ROLLBACK");
+    throw err;
+  }
+}
+
 /** Close the database connection. */
 export function closeLocalStorage(): void {
   if (_db) {
